@@ -6,5 +6,7 @@ export interface DemoTrade {
   side: 'BUY' | 'SELL';
   price: string;
   quantity: string;
+  fee?: string;
+  feeAsset?: string;
   timestamp: number;
 }

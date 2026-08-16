@@ -31,7 +31,7 @@ const poll = async (intervalMs: number) => {
     isFetching = false;
     notify();
     if (subscribers.size > 0) {
-      timeoutId = window.setTimeout(() => poll(intervalMs), intervalMs);
+      timeoutId = setTimeout(() => poll(intervalMs), intervalMs) as unknown as number;
     } else {
       timeoutId = null;
     }
@@ -71,7 +71,7 @@ export function useMarketData(pollingIntervalMs: number = 10000) {
     return () => {
       subscribers.delete(handleUpdate);
       if (subscribers.size === 0 && timeoutId !== null) {
-        window.clearTimeout(timeoutId);
+        clearTimeout(timeoutId);
         timeoutId = null;
       }
     };

@@ -3,6 +3,7 @@ import { validateDemoOrder } from './orderValidation';
 import { DemoLedger, demoLedger } from './ledger';
 import { TradeService, tradeService } from './TradeService';
 import { fetchMarketData } from './marketData';
+import { FeeService } from './FeeService';
 import { Decimal } from 'decimal.js';
 
 export class OrderService {
@@ -148,12 +149,23 @@ export class OrderService {
       const qty = new Decimal(order.quantity);
       const cost = qty.mul(price);
 
+      let fee = new Decimal(0);
+      let feeAsset = '';
+
       if (order.side === 'BUY') {
+        fee = new Decimal(FeeService.calculateFee(qty));
+        feeAsset = baseAsset;
+        const netQty = qty.minus(fee);
+        
         this.ledger.debit(quoteAsset, cost.toString(), `Market BUY ${order.id}`);
-        this.ledger.credit(baseAsset, qty.toString(), `Market BUY ${order.id}`);
+        this.ledger.credit(baseAsset, netQty.toString(), `Market BUY ${order.id}`);
       } else {
+        fee = new Decimal(FeeService.calculateFee(cost));
+        feeAsset = quoteAsset;
+        const netCost = cost.minus(fee);
+        
         this.ledger.debit(baseAsset, qty.toString(), `Market SELL ${order.id}`);
-        this.ledger.credit(quoteAsset, cost.toString(), `Market SELL ${order.id}`);
+        this.ledger.credit(quoteAsset, netCost.toString(), `Market SELL ${order.id}`);
       }
 
       // Record Trade
@@ -164,6 +176,8 @@ export class OrderService {
         side: order.side,
         price: price.toString(),
         quantity: qty.toString(),
+        fee: fee.toString(),
+        feeAsset,
       });
 
       this.updateOrderStatus(order.id, 'FILLED');
@@ -217,9 +231,16 @@ export class OrderService {
     const lockedCost = qty.mul(lockedPrice);
     const actualCost = qty.mul(executionPrice);
 
+    let fee = new Decimal(0);
+    let feeAsset = '';
+
     if (order.side === 'BUY') {
-      // Funds were locked, we now credit the base asset.
-      this.ledger.credit(baseAsset, qty.toString(), `Limit BUY execution ${order.id}`);
+      fee = new Decimal(FeeService.calculateFee(qty));
+      feeAsset = baseAsset;
+      const netQty = qty.minus(fee);
+
+      // Funds were locked, we now credit the base asset minus fee
+      this.ledger.credit(baseAsset, netQty.toString(), `Limit BUY execution ${order.id}`);
       
       // If executed at a better price, refund the difference
       if (actualCost.lt(lockedCost)) {
@@ -227,8 +248,12 @@ export class OrderService {
         this.ledger.credit(quoteAsset, refund.toString(), `Limit BUY price improvement refund ${order.id}`);
       }
     } else {
-      // Base asset was locked, we now credit the quote asset.
-      this.ledger.credit(quoteAsset, actualCost.toString(), `Limit SELL execution ${order.id}`);
+      fee = new Decimal(FeeService.calculateFee(actualCost));
+      feeAsset = quoteAsset;
+      const netCost = actualCost.minus(fee);
+
+      // Base asset was locked, we now credit the quote asset minus fee
+      this.ledger.credit(quoteAsset, netCost.toString(), `Limit SELL execution ${order.id}`);
     }
 
     this.tradeSvc.recordTrade({
@@ -238,6 +263,8 @@ export class OrderService {
       side: order.side,
       price: executionPrice.toString(),
       quantity: qty.toString(),
+      fee: fee.toString(),
+      feeAsset,
     });
 
     this.updateOrderStatus(order.id, 'FILLED');

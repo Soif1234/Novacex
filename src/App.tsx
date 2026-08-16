@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import { marketStore } from './store/marketStore';
+import React, { useState, useEffect } from 'react';
 import { BottomNav } from './components/BottomNav';
 import { TopNav } from './components/TopNav';
 import { Home } from './pages/Home';
@@ -11,15 +12,23 @@ import { Login } from './pages/Login';
 import { Signup } from './pages/Signup';
 import { Admin } from './pages/Admin';
 import { useAuth } from './contexts/AuthContext';
+import { priceAlertService } from './services/alerts/PriceAlertService';
+import { notificationService } from './services/notifications/NotificationService';
+import { NotificationToaster } from './components/notifications/NotificationToaster';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('home');
-  const [selectedSymbol, setSelectedSymbol] = useState('BTC');
+  
   const { isAuthenticated } = useAuth();
+
+  useEffect(() => {
+    priceAlertService.initialize();
+    notificationService.initialize();
+  }, []);
 
   const handleNavigate = (tab: string, symbol?: string) => {
     if (symbol) {
-      setSelectedSymbol(symbol);
+      marketStore.setSelectedSymbol(symbol.includes('USDT') ? symbol : `${symbol}USDT`);
     }
     setActiveTab(tab);
   };
@@ -31,9 +40,9 @@ export default function App() {
       case 'markets':
         return <Markets onNavigate={handleNavigate} />;
       case 'trade':
-        return isAuthenticated ? <SpotTrading selectedSymbol={selectedSymbol} /> : <Login onNavigate={handleNavigate} returnTab="trade" />;
+        return isAuthenticated ? <SpotTrading onNavigate={handleNavigate} /> : <Login onNavigate={handleNavigate} returnTab="trade" />;
       case 'futures':
-        return isAuthenticated ? <Futures /> : <Login onNavigate={handleNavigate} returnTab="futures" />;
+        return isAuthenticated ? <Futures onNavigate={handleNavigate} /> : <Login onNavigate={handleNavigate} returnTab="futures" />;
       case 'assets':
         return isAuthenticated ? <Assets /> : <Login onNavigate={handleNavigate} returnTab="assets" />;
       case 'account':
@@ -52,6 +61,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-black text-gray-100 font-sans selection:bg-blue-500/30 flex justify-center">
       <main className="w-full max-w-md bg-gray-950 min-h-screen relative shadow-2xl flex flex-col border-x border-gray-900 overflow-hidden tabular-nums">
+        <NotificationToaster />
         {activeTab !== 'account' && activeTab !== 'admin' && <TopNav onAccountClick={() => setActiveTab('account')} />}
         
         <div className="flex-1 overflow-y-auto hide-scrollbar">

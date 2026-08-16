@@ -14,11 +14,13 @@ export interface LedgerEntry {
 export class DemoLedger {
   private balances: Record<string, string> = {
     USDT: '10000',
+    FUTURES_USDT: '0',
     BTC: '0',
     ETH: '0',
     SOL: '0',
     XRP: '0',
     DOGE: '0',
+    BNB: '0',
   };
   private history: LedgerEntry[] = [];
   private persistKey = 'demo_ledger_state';
@@ -133,6 +135,7 @@ export class DemoLedger {
   public reset() {
     this.balances = {
       USDT: '10000',
+    FUTURES_USDT: '0',
       BTC: '0',
       ETH: '0',
       SOL: '0',

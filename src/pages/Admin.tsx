@@ -270,18 +270,18 @@ function MarketsAdmin() {
     <div className="space-y-4">
       <h3 className="text-white font-bold mb-2">Market Data Feed</h3>
       <div className="space-y-2">
-        {markets.map(m => {
-          const isPositive = Number(m.change24hPercent) >= 0;
+        {markets.map((m: any) => {
+          const isPositive = Number(m.change24h) >= 0;
           return (
-            <div key={m.symbol} className="bg-gray-900 border border-gray-800 rounded p-3 flex justify-between items-center">
+            <div key={m.id} className="bg-gray-900 border border-gray-800 rounded p-3 flex justify-between items-center">
               <div>
                 <div className="font-bold text-white">{m.baseAsset}/{m.quoteAsset}</div>
-                <div className="text-xs text-gray-500">Vol: {parseFloat(m.volume24h).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                <div className="text-xs text-gray-500">Vol: {Number(m.volume).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
               </div>
               <div className="text-right">
-                <div className="font-mono text-white">{m.price}</div>
+                <div className="font-mono text-white">{m.priceStr}</div>
                 <div className={`text-xs ${isPositive ? 'text-emerald-500' : 'text-red-500'}`}>
-                  {isPositive ? '+' : ''}{m.change24hPercent}%
+                  {isPositive ? '+' : ''}{m.change24h}%
                 </div>
               </div>
             </div>

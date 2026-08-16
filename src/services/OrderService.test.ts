@@ -45,7 +45,7 @@ describe('Execution Engine (OrderService & Portfolio)', () => {
 
     // Check balances
     expect(ledger.getBalance('USDT')).toBe('4000');
-    expect(ledger.getBalance('BTC')).toBe('0.1');
+    expect(ledger.getBalance('BTC')).toBe('0.0999'); // 0.1 - 0.1% fee
 
     // Check trades
     const trades = tradeSvc.getTradesByAccount('acc-1');
@@ -73,7 +73,7 @@ describe('Execution Engine (OrderService & Portfolio)', () => {
     });
 
     expect(order.status).toBe('FILLED');
-    expect(ledger.getBalance('USDT')).toBe('40000'); // 10k + 30k
+    expect(ledger.getBalance('USDT')).toBe('39970'); // 10k + 30k - 30 fee
     expect(ledger.getBalance('BTC')).toBe('0.5'); // 1 - 0.5
   });
 
@@ -158,9 +158,9 @@ describe('Execution Engine (OrderService & Portfolio)', () => {
     const fetchedOrder = orderSvc.getOrdersByAccount('acc-1')[0];
     expect(fetchedOrder.status).toBe('FILLED');
     
-    // We locked 6000, it filled at 60000 (costing 6000). We should now have 0.1 BTC.
+    // We locked 6000, it filled at 60000 (costing 6000). We should now have 0.0999 BTC.
     expect(ledger.getBalance('USDT')).toBe('4000');
-    expect(ledger.getBalance('BTC')).toBe('0.1');
+    expect(ledger.getBalance('BTC')).toBe('0.0999');
   });
 
   it('should maintain correct portfolio value despite locked funds', async () => {
@@ -206,4 +206,30 @@ describe('Execution Engine (OrderService & Portfolio)', () => {
     let val = await portfolioSvc.getPortfolioValueUSDT('acc-1');
     expect(val).toBe('10000');
   });
+  it('should process a valid limit SELL', async () => {
+    ledger.credit('BTC', '1', 'Initial');
+    expect(ledger.getBalance('BTC')).toBe('1');
+    const order = await orderSvc.placeOrder({
+      id: 'ord-limit-sell',
+      accountId: 'acc-1',
+      symbol: 'BTCUSDT',
+      side: 'SELL',
+      type: 'LIMIT',
+      price: '50000', // Market is 60000, so this limit sell should fill immediately
+      quantity: '0.1',
+      status: 'PENDING',
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    });
+    // Limit price is worse than market, wait, Limit SELL at 50000 when market is 60000 -> Should fill immediately at market price or better (60000).
+    const fetchedOrder = orderSvc.getOrdersByAccount('acc-1').find(o => o.id === 'ord-limit-sell');
+    expect(fetchedOrder!.status).toBe('FILLED');
+    
+    // We sold 0.1 BTC at 60000 = 6000 USDT.
+    // Fee = 6000 * 0.001 = 6 USDT. Net = 5994 USDT.
+    // Initial USDT is 10000 + 5994 = 15994.
+    expect(ledger.getBalance('USDT')).toBe('15994');
+    expect(ledger.getBalance('BTC')).toBe('0.9');
+  });
+
 });
