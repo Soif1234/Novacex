@@ -25,11 +25,10 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
   const { user } = useAuth();
   const accountId = user?.id || 'demo-user-1';
   const { selectedSymbol, setSelectedSymbol } = useSelectedSymbol();
-  const [internalSymbol, setInternalSymbol] = useState(selectedSymbol.replace('USDT', ''));
-
-  useEffect(() => {
-    if (selectedSymbol) setInternalSymbol(selectedSymbol.replace('USDT', ''));
-  }, [selectedSymbol]);
+  
+  const pair = tradingPairRegistry.getSpotPair(selectedSymbol) || tradingPairRegistry.getPair(selectedSymbol) || tradingPairRegistry.getSpotPairs()[0];
+  const targetBase = pair?.baseAsset || (selectedSymbol.endsWith('USDT') ? selectedSymbol.replace('USDT', '') : (selectedSymbol.endsWith('USDC') ? selectedSymbol.replace('USDC', '') : selectedSymbol));
+  const targetQuote = pair?.quoteAsset || 'USDT';
   
   const [orderSide, setOrderSide] = useState<'BUY' | 'SELL'>('BUY');
   const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET'>('LIMIT');
@@ -52,11 +51,18 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
   const { orders, pendingOrders, orderService } = useOrders(accountId);
   const { trades } = useTrades(accountId);
   
-  const market = markets.find(m => m.baseAsset === internalSymbol) || markets[0];
-  const currentPrice = parseFloat(ticker?.lastPrice || market?.price || '0');
-  const currentChange = parseFloat(ticker?.priceChangePercent || market?.change24h || '0');
+  const market = (markets && markets.length > 0)
+    ? (markets.find(m => m.id === selectedSymbol || (m.baseAsset === targetBase && m.quoteAsset === targetQuote) || m.baseAsset === targetBase) || markets[0])
+    : null;
+
+  const currentPrice = parseFloat(ticker?.lastPrice || market?.price?.toString() || '0');
+  const currentChange = parseFloat(ticker?.priceChangePercent || market?.change24h?.toString() || '0');
   
-  const orderBook = React.useMemo(() => OrderBookService.generateSimulatedBook(market.baseAsset, currentPrice, 8, 0.0005), [market.baseAsset, currentPrice]);
+  const orderBook = React.useMemo(() => {
+    if (!market) return { asks: [], bids: [] };
+    return OrderBookService.generateSimulatedBook(market.baseAsset, currentPrice, 8, 0.0005);
+  }, [market?.baseAsset, currentPrice]);
+
   const maxTotal = React.useMemo(() => {
     const maxAsk = orderBook.asks.length > 0 ? orderBook.asks[0].total : 0;
     const maxBid = orderBook.bids.length > 0 ? orderBook.bids[orderBook.bids.length - 1].total : 0;
@@ -64,7 +70,7 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
   }, [orderBook]);
 
   const chartData = React.useMemo(() => {
-    // Generate deterministic-looking random history based on the asset string length + simple hash
+    if (!market) return [];
     const data = [];
     let current = currentPrice * 0.95;
     
@@ -81,17 +87,23 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
     }
     data.push({ time: 20, price: currentPrice });
     return data;
-  }, [market.baseAsset, currentPrice]);
+  }, [market?.baseAsset, currentPrice]);
 
   useEffect(() => {
     setPriceInput('');
     setAmountInput('');
     setErrorMsg('');
     setSuccessMsg('');
-  }, [internalSymbol]);
+  }, [selectedSymbol]);
 
   if (!market) {
-    return <div className="flex items-center justify-center min-h-screen text-gray-500">Loading market...</div>;
+    return (
+      <div className="flex items-center justify-center min-h-screen text-gray-500 bg-gray-950">
+        <div className="text-center p-4">
+          <p className="text-sm">Loading market data...</p>
+        </div>
+      </div>
+    );
   }
 
   const isPositive = currentChange >= 0;

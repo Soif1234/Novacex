@@ -28,8 +28,15 @@ export function MarketSelector({ isOpen, onClose, onSelect }: MarketSelectorProp
 
   const getPairsForTab = (): TradingPair[] => {
     switch (activeTab) {
-      case 'Favorites':
-        return tradingPairRegistry.getAllPairs().filter(p => favorites.includes(p.symbol));
+      case 'Favorites': {
+        const favs = tradingPairRegistry.getAllPairs().filter(p => favorites.includes(p.symbol));
+        const seen = new Set<string>();
+        return favs.filter(p => {
+          if (seen.has(p.symbol)) return false;
+          seen.add(p.symbol);
+          return true;
+        });
+      }
       case 'Spot':
         return tradingPairRegistry.getSpotPairs();
       case 'Futures':
@@ -161,7 +168,7 @@ export function MarketSelector({ isOpen, onClose, onSelect }: MarketSelectorProp
 
                 return (
                   <div 
-                    key={pair.symbol} 
+                    key={`${pair.marketType}-${pair.symbol}`} 
                     className="flex items-center justify-between p-3 rounded-xl hover:bg-gray-800/50 cursor-pointer group transition-colors"
                     onClick={() => handleSelect(pair.symbol)}
                   >

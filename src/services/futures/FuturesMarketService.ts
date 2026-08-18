@@ -1,6 +1,7 @@
 import { FuturesMarket } from '../../types/futures';
-import { FUTURES_MARKETS, FuturesMarketConfig } from './FuturesMarketConfig';
+import { FuturesMarketConfig, getFuturesMarketConfigs } from './FuturesMarketConfig';
 import { fetchMarketData } from '../marketData';
+import { tradingPairRegistry } from '../market/TradingPairRegistry';
 
 export class FuturesMarketService {
   /**
@@ -8,8 +9,9 @@ export class FuturesMarketService {
    */
   public async getMarkets(): Promise<FuturesMarket[]> {
     const liveMarkets = await fetchMarketData();
+    const configs = getFuturesMarketConfigs();
     
-    return FUTURES_MARKETS.map(config => {
+    return configs.map(config => {
       // Find matching live market for dynamic data
       const live = liveMarkets.find(m => m.baseAsset === config.baseAsset && m.quoteAsset === config.quoteAsset);
       
@@ -20,10 +22,10 @@ export class FuturesMarketService {
         indexPrice: live?.priceStr || '0', // In demo, mark = index = spot
         fundingRate: '0.0001', // Mock 0.01%
         openInterest: '0',
-        volume24h: live?.volume.toString() || '0',
+        volume24h: live?.volume?.toString() || '0',
         high24h: live?.high24h?.toString() || '0',
         low24h: live?.low24h?.toString() || '0',
-        change24h: live?.change24h.toString() || '0',
+        change24h: live?.change24h?.toString() || '0',
       };
     });
   }
@@ -42,14 +44,16 @@ export class FuturesMarketService {
    * Gets the static configuration for a symbol.
    */
   public getMarketConfig(symbol: string): FuturesMarketConfig | null {
-    return FUTURES_MARKETS.find(m => m.symbol === symbol) || null;
+    const configs = getFuturesMarketConfigs();
+    return configs.find(m => m.symbol === symbol) || null;
   }
 
   /**
    * Validates if a symbol is supported by the futures exchange.
    */
   public isValidSymbol(symbol: string): boolean {
-    return FUTURES_MARKETS.some(m => m.symbol === symbol);
+    const pair = tradingPairRegistry.getFuturesPair(symbol);
+    return !!pair;
   }
 }
 

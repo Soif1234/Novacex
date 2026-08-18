@@ -14,7 +14,8 @@ export interface TradingPair {
 }
 
 export class TradingPairRegistry {
-  private pairs: Map<string, TradingPair> = new Map();
+  private spotPairs: Map<string, TradingPair> = new Map();
+  private futuresPairs: Map<string, TradingPair> = new Map();
   private loaded: boolean = false;
 
   constructor() {
@@ -22,7 +23,7 @@ export class TradingPairRegistry {
   }
 
   private registerDefaultPairs() {
-    const defaultPairs: TradingPair[] = [
+    const defaultFutures: TradingPair[] = [
       {
         symbol: 'BTCUSDT',
         apiSymbol: 'BTCUSDT',
@@ -32,7 +33,8 @@ export class TradingPairRegistry {
         tickSize: '0.10',
         quantityPrecision: 3,
         minQuantity: '0.001',
-        categories: ['Layer 1', 'USDT']
+        categories: ['Layer 1', 'USDT'],
+        name: 'Bitcoin'
       },
       {
         symbol: 'ETHUSDT',
@@ -43,7 +45,8 @@ export class TradingPairRegistry {
         tickSize: '0.01',
         quantityPrecision: 3,
         minQuantity: '0.01',
-        categories: ['Layer 1', 'DeFi', 'USDT']
+        categories: ['Layer 1', 'DeFi', 'USDT'],
+        name: 'Ethereum'
       },
       {
         symbol: 'SOLUSDT',
@@ -54,7 +57,8 @@ export class TradingPairRegistry {
         tickSize: '0.001',
         quantityPrecision: 1,
         minQuantity: '0.1',
-        categories: ['Layer 1', 'USDT']
+        categories: ['Layer 1', 'USDT'],
+        name: 'Solana'
       },
       {
         symbol: 'XRPUSDT',
@@ -65,7 +69,8 @@ export class TradingPairRegistry {
         tickSize: '0.0001',
         quantityPrecision: 0,
         minQuantity: '10',
-        categories: ['Layer 1', 'USDT']
+        categories: ['Layer 1', 'USDT'],
+        name: 'Ripple'
       },
       {
         symbol: 'DOGEUSDT',
@@ -76,7 +81,8 @@ export class TradingPairRegistry {
         tickSize: '0.00001',
         quantityPrecision: 0,
         minQuantity: '100',
-        categories: ['Meme', 'USDT']
+        categories: ['Meme', 'USDT'],
+        name: 'Dogecoin'
       },
       {
         symbol: 'FETUSDT',
@@ -87,7 +93,95 @@ export class TradingPairRegistry {
         tickSize: '0.0001',
         quantityPrecision: 0,
         minQuantity: '10',
-        categories: ['AI', 'USDT']
+        categories: ['AI', 'USDT'],
+        name: 'Artificial Superintelligence Alliance'
+      }
+    ];
+
+    const defaultSpot: TradingPair[] = [
+      {
+        symbol: 'BTCUSDT',
+        apiSymbol: 'BTCUSDT',
+        baseAsset: 'BTC',
+        quoteAsset: 'USDT',
+        marketType: 'SPOT',
+        tickSize: '0.01',
+        quantityPrecision: 3,
+        minQuantity: '0.001',
+        categories: ['Layer 1', 'USDT'],
+        name: 'Bitcoin'
+      },
+      {
+        symbol: 'ETHUSDT',
+        apiSymbol: 'ETHUSDT',
+        baseAsset: 'ETH',
+        quoteAsset: 'USDT',
+        marketType: 'SPOT',
+        tickSize: '0.01',
+        quantityPrecision: 3,
+        minQuantity: '0.01',
+        categories: ['Layer 1', 'DeFi', 'USDT'],
+        name: 'Ethereum'
+      },
+      {
+        symbol: 'SOLUSDT',
+        apiSymbol: 'SOLUSDT',
+        baseAsset: 'SOL',
+        quoteAsset: 'USDT',
+        marketType: 'SPOT',
+        tickSize: '0.001',
+        quantityPrecision: 1,
+        minQuantity: '0.1',
+        categories: ['Layer 1', 'USDT'],
+        name: 'Solana'
+      },
+      {
+        symbol: 'XRPUSDT',
+        apiSymbol: 'XRPUSDT',
+        baseAsset: 'XRP',
+        quoteAsset: 'USDT',
+        marketType: 'SPOT',
+        tickSize: '0.0001',
+        quantityPrecision: 0,
+        minQuantity: '10',
+        categories: ['Layer 1', 'USDT'],
+        name: 'Ripple'
+      },
+      {
+        symbol: 'DOGEUSDT',
+        apiSymbol: 'DOGEUSDT',
+        baseAsset: 'DOGE',
+        quoteAsset: 'USDT',
+        marketType: 'SPOT',
+        tickSize: '0.00001',
+        quantityPrecision: 0,
+        minQuantity: '100',
+        categories: ['Meme', 'USDT'],
+        name: 'Dogecoin'
+      },
+      {
+        symbol: 'ADAUSDT',
+        apiSymbol: 'ADAUSDT',
+        baseAsset: 'ADA',
+        quoteAsset: 'USDT',
+        marketType: 'SPOT',
+        tickSize: '0.0001',
+        quantityPrecision: 1,
+        minQuantity: '1',
+        categories: ['Layer 1', 'USDT'],
+        name: 'Cardano'
+      },
+      {
+        symbol: 'AVAXUSDT',
+        apiSymbol: 'AVAXUSDT',
+        baseAsset: 'AVAX',
+        quoteAsset: 'USDT',
+        marketType: 'SPOT',
+        tickSize: '0.01',
+        quantityPrecision: 2,
+        minQuantity: '0.1',
+        categories: ['Layer 1', 'USDT'],
+        name: 'Avalanche'
       },
       {
         symbol: 'LINKUSDC',
@@ -98,7 +192,8 @@ export class TradingPairRegistry {
         tickSize: '0.001',
         quantityPrecision: 2,
         minQuantity: '1',
-        categories: ['DeFi', 'RWA', 'USDC']
+        categories: ['DeFi', 'RWA', 'USDC'],
+        name: 'Chainlink'
       },
       {
         symbol: 'BTCUSDC',
@@ -109,11 +204,22 @@ export class TradingPairRegistry {
         tickSize: '0.10',
         quantityPrecision: 3,
         minQuantity: '0.001',
-        categories: ['Layer 1', 'USDC']
+        categories: ['Layer 1', 'USDC'],
+        name: 'Bitcoin'
       }
     ];
 
-    defaultPairs.forEach(p => this.pairs.set(p.symbol, p));
+    defaultFutures.forEach(p => this.futuresPairs.set(p.symbol, p));
+    defaultSpot.forEach(p => this.spotPairs.set(p.symbol, p));
+  }
+
+  public resolveCanonicalSymbol(symbol: string): string {
+    if (!symbol) return 'BTCUSDT';
+    // Remove legacy -SPOT / -PERP suffixes
+    let cleaned = symbol.replace(/-SPOT$/i, '').replace(/-PERP$/i, '').trim();
+    // Prevent BTC-SPOT -> BTC
+    if (cleaned.endsWith('-SPOT')) cleaned = cleaned.replace('-SPOT', '');
+    return cleaned;
   }
 
   public async loadTop200() {
@@ -128,8 +234,15 @@ export class TradingPairRegistry {
           if (parsed && parsed.timestamp && Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000) {
             if (Array.isArray(parsed.pairs)) {
               parsed.pairs.forEach((p: TradingPair) => {
-                if (!this.pairs.has(p.symbol)) {
-                  this.pairs.set(p.symbol, p);
+                const canonicalSym = this.resolveCanonicalSymbol(p.symbol);
+                const normalized: TradingPair = {
+                  ...p,
+                  symbol: canonicalSym
+                };
+                if (p.marketType === 'FUTURES') {
+                  if (!this.futuresPairs.has(canonicalSym)) this.futuresPairs.set(canonicalSym, normalized);
+                } else {
+                  if (!this.spotPairs.has(canonicalSym)) this.spotPairs.set(canonicalSym, normalized);
                 }
               });
               return;
@@ -195,8 +308,10 @@ export class TradingPairRegistry {
         
         qtyPrecision = info.quantityPrecision || 3;
 
+        const canonicalSymbol = t.symbol;
+
         const futuresPair: TradingPair = {
-          symbol: t.symbol,
+          symbol: canonicalSymbol,
           apiSymbol: t.symbol,
           baseAsset: info.baseAsset,
           quoteAsset: info.quoteAsset,
@@ -204,13 +319,12 @@ export class TradingPairRegistry {
           tickSize: parseFloat(tickSize).toString(),
           quantityPrecision: qtyPrecision,
           minQuantity: parseFloat(minQty).toString(),
-          categories: ['USDT'], name: name || info.baseAsset
+          categories: ['USDT'],
+          name: name || info.baseAsset
         };
 
-        
-        
         const spotPair: TradingPair = {
-          symbol: t.symbol + '-SPOT',
+          symbol: canonicalSymbol,
           apiSymbol: t.symbol,
           baseAsset: info.baseAsset,
           quoteAsset: info.quoteAsset,
@@ -218,16 +332,17 @@ export class TradingPairRegistry {
           tickSize: parseFloat(tickSize).toString(),
           quantityPrecision: qtyPrecision,
           minQuantity: parseFloat(minQty).toString(),
-          categories: ['USDT'], name: name || info.baseAsset
+          categories: ['USDT'],
+          name: name || info.baseAsset
         };
 
-        if (!this.pairs.has(futuresPair.symbol)) {
-          this.pairs.set(futuresPair.symbol, futuresPair);
+        if (!this.futuresPairs.has(futuresPair.symbol)) {
+          this.futuresPairs.set(futuresPair.symbol, futuresPair);
           newPairs.push(futuresPair);
         }
         
-        if (!this.pairs.has(spotPair.symbol)) {
-          this.pairs.set(spotPair.symbol, spotPair);
+        if (!this.spotPairs.has(spotPair.symbol)) {
+          this.spotPairs.set(spotPair.symbol, spotPair);
           newPairs.push(spotPair);
         }
       });
@@ -242,24 +357,54 @@ export class TradingPairRegistry {
     }
   }
 
-  public getPair(symbol: string): TradingPair | undefined {
-    return this.pairs.get(symbol);
+  public getSpotPair(symbol: string): TradingPair | undefined {
+    if (!symbol) return undefined;
+    const canonical = this.resolveCanonicalSymbol(symbol);
+    return this.spotPairs.get(canonical) || this.spotPairs.get(symbol);
+  }
+
+  public getFuturesPair(symbol: string): TradingPair | undefined {
+    if (!symbol) return undefined;
+    const canonical = this.resolveCanonicalSymbol(symbol);
+    return this.futuresPairs.get(canonical) || this.futuresPairs.get(symbol);
+  }
+
+  public getPair(symbol: string, marketType?: MarketType): TradingPair | undefined {
+    if (!symbol) return undefined;
+    if (marketType === 'SPOT') {
+      return this.getSpotPair(symbol) || this.getFuturesPair(symbol);
+    }
+    if (marketType === 'FUTURES') {
+      return this.getFuturesPair(symbol) || this.getSpotPair(symbol);
+    }
+    const canonical = this.resolveCanonicalSymbol(symbol);
+    return this.futuresPairs.get(canonical) || 
+           this.spotPairs.get(canonical) || 
+           this.futuresPairs.get(symbol) || 
+           this.spotPairs.get(symbol);
   }
 
   public getAllPairs(): TradingPair[] {
-    return Array.from(this.pairs.values());
+    return [...Array.from(this.futuresPairs.values()), ...Array.from(this.spotPairs.values())];
   }
 
   public getSpotPairs(): TradingPair[] {
-    return this.getAllPairs().filter(p => p.marketType === 'SPOT');
+    return Array.from(this.spotPairs.values());
   }
 
   public getFuturesPairs(): TradingPair[] {
-    return this.getAllPairs().filter(p => p.marketType === 'FUTURES');
+    return Array.from(this.futuresPairs.values());
   }
 
-  public isSupported(symbol: string): boolean {
-    return this.pairs.has(symbol);
+  public isSupported(symbol: string, marketType?: MarketType): boolean {
+    if (!symbol) return false;
+    if (marketType === 'SPOT') return this.spotPairs.has(this.resolveCanonicalSymbol(symbol)) || this.spotPairs.has(symbol);
+    if (marketType === 'FUTURES') return this.futuresPairs.has(this.resolveCanonicalSymbol(symbol)) || this.futuresPairs.has(symbol);
+    const canonical = this.resolveCanonicalSymbol(symbol);
+    return this.futuresPairs.has(canonical) || 
+           this.spotPairs.has(canonical) || 
+           this.futuresPairs.has(symbol) || 
+           this.spotPairs.has(symbol);
   }
 }
 

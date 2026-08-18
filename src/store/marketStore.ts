@@ -10,11 +10,11 @@ class MarketStore {
   constructor() {
     const saved = localStorage.getItem('selectedSymbol');
     if (saved && tradingPairRegistry.isSupported(saved)) {
-      this.selectedSymbol = saved;
+      this.selectedSymbol = tradingPairRegistry.resolveCanonicalSymbol(saved);
     } else {
       const prefs = preferencesService.getPreferences();
       if (prefs && prefs.defaultMarket && tradingPairRegistry.isSupported(prefs.defaultMarket)) {
-        this.selectedSymbol = prefs.defaultMarket;
+        this.selectedSymbol = tradingPairRegistry.resolveCanonicalSymbol(prefs.defaultMarket);
       }
     }
   }
@@ -24,11 +24,13 @@ class MarketStore {
   }
 
   setSelectedSymbol(symbol: string): void {
-    if (!tradingPairRegistry.isSupported(symbol)) {
+    if (!symbol) return;
+    const canonical = tradingPairRegistry.resolveCanonicalSymbol(symbol);
+    if (!tradingPairRegistry.isSupported(canonical) && !tradingPairRegistry.isSupported(symbol)) {
       return;
     }
-    this.selectedSymbol = symbol;
-    localStorage.setItem('selectedSymbol', symbol);
+    this.selectedSymbol = canonical;
+    localStorage.setItem('selectedSymbol', canonical);
     this.notify();
   }
 

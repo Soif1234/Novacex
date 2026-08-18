@@ -76,6 +76,7 @@ export async function fetchMarketData(): Promise<MarketPair[]> {
 
     return mockMarkets.map(m => ({
       ...m,
+      id: `${m.baseAsset}${m.quoteAsset}`,
       priceStr: m.price.toString(),
       high24h: m.price * 1.05,
       low24h: m.price * 0.95

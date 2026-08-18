@@ -16,6 +16,8 @@ import { priceAlertService } from './services/alerts/PriceAlertService';
 import { notificationService } from './services/notifications/NotificationService';
 import { NotificationToaster } from './components/notifications/NotificationToaster';
 
+import { ErrorBoundary } from './components/ErrorBoundary';
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('home');
   
@@ -28,7 +30,7 @@ export default function App() {
 
   const handleNavigate = (tab: string, symbol?: string) => {
     if (symbol) {
-      marketStore.setSelectedSymbol(symbol.includes('USDT') ? symbol : `${symbol}USDT`);
+      marketStore.setSelectedSymbol(symbol);
     }
     setActiveTab(tab);
   };
@@ -65,7 +67,9 @@ export default function App() {
         {activeTab !== 'account' && activeTab !== 'admin' && <TopNav onAccountClick={() => setActiveTab('account')} />}
         
         <div className="flex-1 overflow-y-auto hide-scrollbar">
-          {renderPage()}
+          <ErrorBoundary>
+            {renderPage()}
+          </ErrorBoundary>
         </div>
         
         {activeTab !== 'admin' && <BottomNav activeTab={activeTab} onChange={setActiveTab} />}
