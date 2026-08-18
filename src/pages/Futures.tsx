@@ -40,7 +40,6 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
       const timeUntil = futuresFundingService.getTimeUntilNextFunding();
       if (timeUntil <= 0) {
          setNextFundingStr('00:00:00');
-         futuresFundingService.settleFunding(futuresOrderService.getPositions(user?.id || 'demo-user-1'), {});
       } else {
          const h = Math.floor(timeUntil / (1000 * 60 * 60)).toString().padStart(2, '0');
          const m = Math.floor((timeUntil % (1000 * 60 * 60)) / (1000 * 60)).toString().padStart(2, '0');
@@ -93,26 +92,6 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
   const isClosingPositionRef = useRef(false);
   const [isUpdatingMargin, setIsUpdatingMargin] = useState(false);
   const isUpdatingMarginRef = useRef(false);
-
-  // Demo TP/SL checker loop
-  useEffect(() => {
-    const interval = setInterval(() => {
-        const markPrices: Record<string, string> = {};
-        markets.forEach(m => {
-            markPrices[m.symbol] = m.markPrice;
-        });
-        futuresTpSlService.checkTriggers(
-            positions,
-            markPrices,
-            async (order, price) => {
-                await futuresOrderService.placeOrder(order);
-                const updatedPositions = futuresOrderService.getPositions(user?.id || 'demo-user-1');
-                setPositions(updatedPositions);
-            }
-        );
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [positions, markets]);
   
 
   const market = markets.find(m => m.symbol === selectedSymbol) || markets[0];

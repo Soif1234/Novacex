@@ -13,10 +13,18 @@ export async function fetchMarketData(): Promise<MarketPair[]> {
     }
 
     // Attempt to fetch from Binance to guarantee fresh data for legacy callers
-    const [fapiRes, apiRes] = await Promise.all([
-      fetch('https://fapi.binance.com/fapi/v1/ticker/24hr').catch(() => null),
-      fetch('https://api.binance.com/api/v3/ticker/24hr').catch(() => null)
-    ]);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1500);
+    let fapiRes: any = null;
+    let apiRes: any = null;
+    try {
+      [fapiRes, apiRes] = await Promise.all([
+        fetch('https://fapi.binance.com/fapi/v1/ticker/24hr', { signal: controller.signal }).catch(() => null),
+        fetch('https://api.binance.com/api/v3/ticker/24hr', { signal: controller.signal }).catch(() => null)
+      ]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     const data: any[] = [];
     if (fapiRes && fapiRes.ok) {

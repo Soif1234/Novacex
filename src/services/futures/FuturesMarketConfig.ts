@@ -20,4 +20,17 @@ export function getFuturesMarketConfigs(): FuturesMarketConfig[] {
   }));
 }
 
-export const FUTURES_MARKETS: FuturesMarketConfig[] = getFuturesMarketConfigs();
+export const FUTURES_MARKETS: FuturesMarketConfig[] = new Proxy([] as FuturesMarketConfig[], {
+  get(target, prop, receiver) {
+    const fresh = getFuturesMarketConfigs();
+    if (prop === 'length') return fresh.length;
+    if (typeof prop === 'string' && !isNaN(Number(prop))) {
+      return fresh[Number(prop)];
+    }
+    const val = (fresh as any)[prop];
+    if (typeof val === 'function') {
+      return val.bind(fresh);
+    }
+    return val;
+  }
+});

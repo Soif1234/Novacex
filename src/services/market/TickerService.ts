@@ -13,7 +13,8 @@ export interface Ticker {
 }
 
 class TickerService {
-  private tickers: Map<string, Ticker> = new Map();
+  private spotTickers: Map<string, Ticker> = new Map();
+  private futuresTickers: Map<string, Ticker> = new Map();
   private subscribers: Set<() => void> = new Set();
   
   private fapiWs: WebSocket | null = null;
@@ -22,12 +23,50 @@ class TickerService {
 
   constructor() {}
 
-  public getTicker(symbol: string): Ticker | undefined {
-    return this.tickers.get(symbol);
+  public get tickers(): Map<string, Ticker> {
+    const self = this;
+    return new Proxy(this.spotTickers, {
+      get(target, prop, receiver) {
+        if (prop === 'clear') {
+          return () => {
+            self.spotTickers.clear();
+            self.futuresTickers.clear();
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      }
+    });
+  }
+
+  public getSpotTicker(symbol: string): Ticker | undefined {
+    return this.spotTickers.get(symbol);
+  }
+
+  public getFuturesTicker(symbol: string): Ticker | undefined {
+    return this.futuresTickers.get(symbol);
+  }
+
+  public getSpotTickers(): Ticker[] {
+    return Array.from(this.spotTickers.values());
+  }
+
+  public getFuturesTickers(): Ticker[] {
+    return Array.from(this.futuresTickers.values());
+  }
+
+  public getTicker(symbol: string, marketType?: 'SPOT' | 'FUTURES'): Ticker | undefined {
+    if (marketType === 'FUTURES') return this.futuresTickers.get(symbol);
+    if (marketType === 'SPOT') return this.spotTickers.get(symbol);
+    return this.futuresTickers.get(symbol) || this.spotTickers.get(symbol);
   }
 
   public getAllTickers(): Ticker[] {
-    return Array.from(this.tickers.values());
+    const merged = new Map<string, Ticker>();
+    this.spotTickers.forEach((v, k) => merged.set(k, v));
+    this.futuresTickers.forEach((v, k) => {
+      if (!merged.has(k)) merged.set(k, v);
+    });
+    return Array.from(merged.values());
   }
 
   public subscribe(callback: () => void): () => void {
@@ -61,7 +100,7 @@ class TickerService {
                 data.forEach((item: any) => {
                   const matchingPairs = futuresPairs.filter(p => (p.apiSymbol || p.symbol) === item.symbol);
                   matchingPairs.forEach(p => {
-                    this.updateTickerFromRest(p.symbol, item);
+                    this.updateTickerFromRest('fapi', p.symbol, item);
                   });
                 });
               }
@@ -79,7 +118,7 @@ class TickerService {
                 data.forEach((item: any) => {
                   const matchingPairs = spotPairs.filter(p => (p.apiSymbol || p.symbol) === item.symbol);
                   matchingPairs.forEach(p => {
-                    this.updateTickerFromRest(p.symbol, item);
+                    this.updateTickerFromRest('api', p.symbol, item);
                   });
                 });
               }
@@ -95,8 +134,19 @@ class TickerService {
     }
   }
 
-  private updateTickerFromRest(symbolKey: string, item: any) {
-    this.tickers.set(symbolKey, {
+  private updateTickerFromRest(arg1: string, arg2: any, arg3?: any) {
+    let type: 'fapi' | 'api' = 'api';
+    let symbolKey: string = arg1;
+    let item: any = arg2;
+
+    if (arg1 === 'fapi' || arg1 === 'api' || arg1 === 'futures' || arg1 === 'spot') {
+      type = (arg1 === 'fapi' || arg1 === 'futures') ? 'fapi' : 'api';
+      symbolKey = arg2;
+      item = arg3;
+    }
+
+    const targetMap = type === 'fapi' ? this.futuresTickers : this.spotTickers;
+    targetMap.set(symbolKey, {
       symbol: symbolKey,
       lastPrice: item.lastPrice,
       priceChange: item.priceChange,
@@ -131,12 +181,13 @@ class TickerService {
         const data = JSON.parse(event.data);
         if (Array.isArray(data)) {
           let updated = false;
+          const targetMap = type === 'fapi' ? this.futuresTickers : this.spotTickers;
           data.forEach((item: any) => {
             const apiSymbol = item.s;
             if (relevantApiSymbols.includes(apiSymbol)) {
               const matchingPairs = pairs.filter(p => (p.apiSymbol || p.symbol) === apiSymbol);
               matchingPairs.forEach(p => {
-                this.tickers.set(p.symbol, {
+                targetMap.set(p.symbol, {
                   symbol: p.symbol,
                   lastPrice: item.c,
                   priceChange: item.p,

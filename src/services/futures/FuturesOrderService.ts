@@ -108,8 +108,16 @@ export class FuturesOrderService {
     return this.orders.filter(o => o.accountId === accountId);
   }
   
+  public getAllOrders(): FuturesOrder[] {
+    return [...this.orders];
+  }
+  
   public getPositions(accountId: string): FuturesPosition[] {
     return this.positions.filter(p => p.accountId === accountId);
+  }
+
+  public getAllPositions(): FuturesPosition[] {
+    return [...this.positions];
   }
 
   public getTrades(accountId: string): FuturesTrade[] {
@@ -263,7 +271,7 @@ export class FuturesOrderService {
   }
 
   
-  public async checkStopOrders() {
+  public async checkStopOrders(markPrices?: Record<string, string>) {
     const pendingStops = this.orders.filter(o => o.status === 'PENDING' && !o.isTriggered && (o.type === 'STOP_MARKET' || o.type === 'STOP_LIMIT'));
     if (pendingStops.length === 0) return;
 
@@ -273,7 +281,9 @@ export class FuturesOrderService {
         const market = await futuresMarketService.getMarket(order.symbol);
         if (!market) continue;
 
-        const currentPrice = new Decimal(market.lastPrice);
+        const priceStr = (markPrices && markPrices[order.symbol]) ? markPrices[order.symbol] : market.lastPrice;
+        const currentPrice = new Decimal(priceStr);
+        if (currentPrice.lte(0)) continue;
         const stopPrice = new Decimal(order.stopPrice!);
 
         let shouldTrigger = false;
@@ -311,7 +321,7 @@ export class FuturesOrderService {
                         order.updatedAt = Date.now();
                         this.save();
                         this.notify();
-                        await this.checkLimitOrders(); // might execute immediately
+                        await this.checkLimitOrders(markPrices); // might execute immediately
                     } else {
                         order.status = 'REJECTED';
                         order.updatedAt = Date.now();
@@ -322,14 +332,14 @@ export class FuturesOrderService {
                     order.updatedAt = Date.now();
                     this.save();
                     this.notify();
-                    await this.checkLimitOrders();
+                    await this.checkLimitOrders(markPrices);
                 }
             }
         }
     }
   }
 
-  public async checkLimitOrders() {
+  public async checkLimitOrders(markPrices?: Record<string, string>) {
     const pendingLimits = this.orders.filter(o => o.status === 'PENDING' && (o.type === 'LIMIT' || (o.type === 'STOP_LIMIT' && o.isTriggered)));
     if (pendingLimits.length === 0) return;
 
@@ -339,7 +349,9 @@ export class FuturesOrderService {
         const market = await futuresMarketService.getMarket(order.symbol);
         if (!market) continue;
 
-        const currentPrice = new Decimal(market.lastPrice);
+        const priceStr = (markPrices && markPrices[order.symbol]) ? markPrices[order.symbol] : market.lastPrice;
+        const currentPrice = new Decimal(priceStr);
+        if (currentPrice.lte(0)) continue;
         const limitPrice = new Decimal(order.price!);
 
         let shouldExecute = false;

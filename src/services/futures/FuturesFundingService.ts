@@ -206,6 +206,13 @@ export class FuturesFundingService {
      this.nextFundingTime = Date.now() - 1000;
      this.settleFunding(positions, markPrices);
   }
+
+  public reset() {
+     this.history = [];
+     this.resetNextFundingTime();
+     this.save();
+     this.notify();
+  }
 }
 
 // Ensure the ledger instance is shared. Assuming we pass demoLedger.

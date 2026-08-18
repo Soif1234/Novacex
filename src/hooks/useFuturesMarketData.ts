@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { FuturesMarket } from '../types/futures';
 import { futuresMarketService } from '../services/futures/FuturesMarketService';
-import { futuresOrderService } from '../services/futures/FuturesOrderService';
+import { futuresEngineService } from '../services/futures/FuturesEngineService';
 
 let globalData: FuturesMarket[] = [];
 let globalLastUpdated: Date | null = null;
@@ -24,8 +24,7 @@ const poll = async (intervalMs: number) => {
   try {
     const newData = await futuresMarketService.getMarkets();
     globalData = newData;
-    futuresOrderService.updateMarkPrices(newData);
-    // We also need to run risk check, we can do it via futuresOrderService if it's there, but actually futuresOrderService has access to positions.
+    await futuresEngineService.processMarketTick(newData);
     globalLastUpdated = new Date();
     globalError = null;
   } catch (err) {
@@ -48,8 +47,7 @@ export function updateMarketPriceLocally(symbol: string, newPrice: string) {
   if (market) {
     market.lastPrice = newPrice;
     market.markPrice = newPrice;
-    // We can also let the futuresOrderService know about the new mark prices for risk checks
-    futuresOrderService.updateMarkPrices(globalData);
+    futuresEngineService.processMarketTick(globalData);
     notify();
   }
 }
