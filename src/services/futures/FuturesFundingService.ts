@@ -161,17 +161,17 @@ export class FuturesFundingService {
       if (alreadySettled) continue;
       
       if (isPaying) {
-          const avail = new Decimal(this.ledger.getBalance('FUTURES_USDT'));
+          const avail = new Decimal(this.ledger.getBalance('FUTURES_USDT', pos.accountId));
           let debitAmount = absAmount;
           if (avail.lt(absAmount)) {
               debitAmount = avail;
               // If we wanted to trigger liquidation here, we could. For now just take max avail.
           }
           if (debitAmount.gt(0)) {
-              this.ledger.debit('FUTURES_USDT', debitAmount.toString(), `FUNDING_PAYMENT for ${pos.symbol} ${pos.side}`, 'FUNDING', `funding_${eventId}_${pos.positionId}`);
+              this.ledger.debit('FUTURES_USDT', debitAmount.toString(), `FUNDING_PAYMENT for ${pos.symbol} ${pos.side}`, 'FUNDING', `funding_${eventId}_${pos.positionId}`, pos.accountId);
           }
       } else {
-          this.ledger.credit('FUTURES_USDT', absAmount.toString(), `FUNDING_RECEIPT for ${pos.symbol} ${pos.side}`, 'FUNDING', `funding_${eventId}_${pos.positionId}`);
+          this.ledger.credit('FUTURES_USDT', absAmount.toString(), `FUNDING_RECEIPT for ${pos.symbol} ${pos.side}`, 'FUNDING', `funding_${eventId}_${pos.positionId}`, pos.accountId);
       }
       
       this.history.push({

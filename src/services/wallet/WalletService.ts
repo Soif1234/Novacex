@@ -8,7 +8,7 @@ import { Asset, WalletBalances } from './types';
 
 export class WalletService {
   public async getAssets(accountId: string = 'demo-user-1'): Promise<Asset[]> {
-    const balances = demoLedger.getAllBalances();
+    const balances = demoLedger.getAllBalances(accountId);
     const spotOrders = orderService.getPendingOrders().filter(o => o.accountId === accountId);
     
     let markets: any[] = [];

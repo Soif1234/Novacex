@@ -28,7 +28,7 @@ import { PriceAlertModal } from '../components/alerts/PriceAlertModal';
 export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: string) => void }) {
   const { user } = useAuth();
   const { data: markets, loading } = useFuturesMarketData();
-  const { balances } = useLedger();
+  const { balances } = useLedger(user?.id || 'demo-user-1');
   
   const { selectedSymbol, setSelectedSymbol } = useSelectedSymbol();
   const ticker = useTicker(selectedSymbol) as any;

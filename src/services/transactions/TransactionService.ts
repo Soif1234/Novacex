@@ -28,6 +28,7 @@ export class TransactionService {
 
     public recordTransaction(tx: Omit<Transaction, 'id' | 'createdAt'>): Transaction {
         const ledgerEntry = ledgerService.addEntry({
+            userId: tx.userId || 'demo-user-1',
             type: tx.type as any,
             asset: tx.asset,
             amount: tx.amount,
@@ -44,10 +45,7 @@ export class TransactionService {
     }
 
     public getTransactions(userId?: string): Transaction[] {
-        let entries = ledgerService.getEntries().map(e => this.mapToTransaction(e));
-        if (userId) {
-            entries = entries.filter(t => t.userId === userId);
-        }
+        const entries = ledgerService.getEntries(userId).map(e => this.mapToTransaction(e));
         return entries;
     }
 
@@ -68,8 +66,8 @@ export class TransactionService {
         return this.getTransactions(userId).filter(t => t.wallet === wallet);
     }
 
-    public getTransactionsByReference(referenceId: string): Transaction[] {
-        return ledgerService.getEntriesByReference(referenceId).map(e => this.mapToTransaction(e));
+    public getTransactionsByReference(referenceId: string, userId?: string): Transaction[] {
+        return ledgerService.getEntriesByReference(referenceId, userId).map(e => this.mapToTransaction(e));
     }
 }
 

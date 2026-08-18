@@ -7,6 +7,7 @@ export type TransactionType = 'DEPOSIT' | 'WITHDRAWAL';
 
 export interface DemoTransaction {
   id: string;
+  accountId?: string;
   type: TransactionType;
   asset: string;
   amount: string;
@@ -37,7 +38,10 @@ export class DemoTransactionService {
           t && typeof t.id === 'string' && typeof t.asset === 'string' && isValidFinancialString(t.amount)
         ));
         if (parsed.length > 0 || data.trim() === '[]') {
-          this.transactions = parsed;
+          this.transactions = parsed.map(t => ({
+            ...t,
+            accountId: t.accountId || 'demo-user-1'
+          }));
         }
       }
     } catch (e) {}
@@ -59,8 +63,12 @@ export class DemoTransactionService {
     this.subscribers.forEach(cb => cb());
   }
 
-  public getTransactions(): DemoTransaction[] {
-    return [...this.transactions].reverse();
+  public getTransactions(accountId?: string): DemoTransaction[] {
+    const list = [...this.transactions].reverse();
+    if (accountId) {
+      return list.filter(t => t.accountId === accountId || (!t.accountId && accountId === 'demo-user-1'));
+    }
+    return list;
   }
 
   public validateAmount(amount: string): { valid: boolean; error?: string } {
@@ -78,12 +86,13 @@ export class DemoTransactionService {
     }
   }
 
-  public async createDeposit(asset: string, amount: string): Promise<DemoTransaction> {
+  public async createDeposit(asset: string, amount: string, accountId: string = 'demo-user-1'): Promise<DemoTransaction> {
     const val = this.validateAmount(amount);
     if (!val.valid) throw new Error(val.error);
 
     const tx: DemoTransaction = {
       id: Math.random().toString(36).substring(2, 11),
+      accountId,
       type: 'DEPOSIT',
       asset,
       amount,
@@ -104,8 +113,9 @@ export class DemoTransactionService {
     const tx = this.transactions.find(t => t.id === id);
     if (!tx || tx.type !== 'DEPOSIT') throw new Error('Deposit not found');
     
+    const accountId = tx.accountId || 'demo-user-1';
     try {
-      demoLedger.credit(tx.asset, tx.amount, 'Demo Deposit', 'DEPOSIT', tx.id);
+      demoLedger.credit(tx.asset, tx.amount, 'Demo Deposit', 'DEPOSIT', tx.id, accountId);
       tx.status = 'COMPLETED';
       tx.completedAt = Date.now();
     } catch (e: any) {
@@ -118,7 +128,7 @@ export class DemoTransactionService {
     return tx;
   }
 
-  public async createWithdrawal(asset: string, amount: string, destinationLabel: string, availableBalance: string): Promise<DemoTransaction> {
+  public async createWithdrawal(asset: string, amount: string, destinationLabel: string, availableBalance: string, accountId: string = 'demo-user-1'): Promise<DemoTransaction> {
     const val = this.validateAmount(amount);
     if (!val.valid) throw new Error(val.error);
 
@@ -128,6 +138,7 @@ export class DemoTransactionService {
 
     const tx: DemoTransaction = {
       id: Math.random().toString(36).substring(2, 11),
+      accountId,
       type: 'WITHDRAWAL',
       asset,
       amount,
@@ -149,8 +160,9 @@ export class DemoTransactionService {
     const tx = this.transactions.find(t => t.id === id);
     if (!tx || tx.type !== 'WITHDRAWAL') throw new Error('Withdrawal not found');
 
+    const accountId = tx.accountId || 'demo-user-1';
     try {
-      demoLedger.debit(tx.asset, tx.amount, 'Demo Withdrawal', 'WITHDRAWAL', tx.id);
+      demoLedger.debit(tx.asset, tx.amount, 'Demo Withdrawal', 'WITHDRAWAL', tx.id, accountId);
       tx.status = 'COMPLETED';
       tx.completedAt = Date.now();
     } catch (e: any) {

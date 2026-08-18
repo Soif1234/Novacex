@@ -170,14 +170,14 @@ export class FuturesOrderService {
 
     if (orderPayload.type === 'LIMIT' && isOpening) {
         const requiredMargin = futuresRiskService.calculateInitialMargin(orderPayload.quantity, orderPayload.price!, orderPayload.leverage);
-        const availableMargin = this.ledger.getBalance('FUTURES_USDT');
+        const availableMargin = this.ledger.getBalance('FUTURES_USDT', orderPayload.accountId);
         
         if (!futuresRiskService.hasSufficientMargin(availableMargin, requiredMargin)) {
             throw new Error(`Insufficient margin. Required: ${requiredMargin} USDT, Available: ${availableMargin} USDT`);
         }
         
         // Debit immediately to reserve
-        this.ledger.debit('FUTURES_USDT', requiredMargin, `Lock for ${orderPayload.symbol} LIMIT order ${orderId}`, 'MARGIN', `margin_lock_${orderId}`);
+        this.ledger.debit('FUTURES_USDT', requiredMargin, `Lock for ${orderPayload.symbol} LIMIT order ${orderId}`, 'MARGIN', `margin_lock_${orderId}`, orderPayload.accountId);
     }
 
     const now = Date.now();
@@ -232,7 +232,7 @@ export class FuturesOrderService {
       // refund reserved margin if limit
       if (order.type === 'LIMIT' && isOpening) {
         const requiredMargin = futuresRiskService.calculateInitialMargin(order.quantity, order.price!, order.leverage);
-        this.ledger.credit('FUTURES_USDT', requiredMargin, `Refund for rejected ${order.symbol} LIMIT order ${order.id}`, 'MARGIN', `margin_refund_${order.id}`);
+        this.ledger.credit('FUTURES_USDT', requiredMargin, `Refund for rejected ${order.symbol} LIMIT order ${order.id}`, 'MARGIN', `margin_refund_${order.id}`, order.accountId);
       }
       
       this.save();
@@ -254,7 +254,7 @@ export class FuturesOrderService {
     const isOpening = (order.side === 'BUY' && order.positionSide === 'LONG') || (order.side === 'SELL' && order.positionSide === 'SHORT');
     if ((order.type === 'LIMIT' || (order.type === 'STOP_LIMIT' && order.isTriggered)) && isOpening) {
         const requiredMargin = futuresRiskService.calculateInitialMargin(order.quantity, order.price!, order.leverage);
-        this.ledger.credit('FUTURES_USDT', requiredMargin, `Unlock for cancelled order ${order.id}`, 'MARGIN', `margin_unlock_${order.id}`);
+        this.ledger.credit('FUTURES_USDT', requiredMargin, `Unlock for cancelled order ${order.id}`, 'MARGIN', `margin_unlock_${order.id}`, order.accountId);
     }
 
     this.save();
@@ -303,10 +303,10 @@ export class FuturesOrderService {
                 const isOpening = (order.side === 'BUY' && order.positionSide === 'LONG') || (order.side === 'SELL' && order.positionSide === 'SHORT');
                 if (isOpening) {
                     const requiredMargin = futuresRiskService.calculateInitialMargin(order.quantity, order.price!, order.leverage);
-                    const availableMargin = this.ledger.getBalance('FUTURES_USDT');
+                    const availableMargin = this.ledger.getBalance('FUTURES_USDT', order.accountId);
                     
                     if (futuresRiskService.hasSufficientMargin(availableMargin, requiredMargin)) {
-                        this.ledger.debit('FUTURES_USDT', requiredMargin, `Lock for ${order.symbol} STOP_LIMIT order`, 'OTHER', `lock_stop_${order.id}`);
+                        this.ledger.debit('FUTURES_USDT', requiredMargin, `Lock for ${order.symbol} STOP_LIMIT order`, 'OTHER', `lock_stop_${order.id}`, order.accountId);
                         order.updatedAt = Date.now();
                         this.save();
                         this.notify();
@@ -365,7 +365,7 @@ export class FuturesOrderService {
                 const isOpening = (order.side === 'BUY' && order.positionSide === 'LONG') || (order.side === 'SELL' && order.positionSide === 'SHORT');
                 if (isOpening) {
                     const requiredMargin = futuresRiskService.calculateInitialMargin(order.quantity, order.price!, order.leverage);
-                    this.ledger.credit('FUTURES_USDT', requiredMargin, `Refund for rejected ${order.symbol} LIMIT order ${order.id}`, 'MARGIN', `margin_refund_${order.id}`);
+                    this.ledger.credit('FUTURES_USDT', requiredMargin, `Refund for rejected ${order.symbol} LIMIT order ${order.id}`, 'MARGIN', `margin_refund_${order.id}`, order.accountId);
                 }
                 this.save();
                 this.notify();
@@ -401,11 +401,11 @@ export class FuturesOrderService {
 
         if (!isLimitReserved) {
             // MARKET opening order: debit required margin once at execution
-            const availableMargin = this.ledger.getBalance('FUTURES_USDT');
+            const availableMargin = this.ledger.getBalance('FUTURES_USDT', order.accountId);
             if (!futuresRiskService.hasSufficientMargin(availableMargin, requiredMargin)) {
                 throw new Error(`Insufficient margin. Required: ${requiredMargin} USDT, Available: ${availableMargin} USDT`);
             }
-            this.ledger.debit('FUTURES_USDT', requiredMargin, `Margin for ${order.symbol} ${order.positionSide} order ${order.id}`, 'MARGIN', `margin_${order.id}`);
+            this.ledger.debit('FUTURES_USDT', requiredMargin, `Margin for ${order.symbol} ${order.positionSide} order ${order.id}`, 'MARGIN', `margin_${order.id}`, order.accountId);
         } else {
             // LIMIT opening order: margin was already reserved at placement via margin_lock_${order.id}.
             // Consumes existing reservation without debiting again.
@@ -449,14 +449,14 @@ export class FuturesOrderService {
         let totalCredit = freedMargin.plus(new Decimal(realizedPnl));
         
         if (totalCredit.gt(0)) {
-            this.ledger.credit('FUTURES_USDT', totalCredit.toString(), `Closed ${order.symbol} ${order.positionSide} order ${order.id}`, 'REALIZED_PNL', order.id);
+            this.ledger.credit('FUTURES_USDT', totalCredit.toString(), `Closed ${order.symbol} ${order.positionSide} order ${order.id}`, 'REALIZED_PNL', order.id, order.accountId);
         } else if (totalCredit.lt(0)) {
             const loss = totalCredit.abs();
-            const avail = new Decimal(this.ledger.getBalance('FUTURES_USDT'));
+            const avail = new Decimal(this.ledger.getBalance('FUTURES_USDT', order.accountId));
             if (avail.gte(loss)) {
-                this.ledger.debit('FUTURES_USDT', loss.toString(), `Realized loss for ${order.symbol} ${order.positionSide} order ${order.id}`, 'REALIZED_PNL', order.id);
+                this.ledger.debit('FUTURES_USDT', loss.toString(), `Realized loss for ${order.symbol} ${order.positionSide} order ${order.id}`, 'REALIZED_PNL', order.id, order.accountId);
             } else {
-                this.ledger.debit('FUTURES_USDT', avail.toString(), `Bankruptcy loss for ${order.symbol} order ${order.id}`, 'REALIZED_PNL', order.id);
+                this.ledger.debit('FUTURES_USDT', avail.toString(), `Bankruptcy loss for ${order.symbol} order ${order.id}`, 'REALIZED_PNL', order.id, order.accountId);
             }
         }
         
@@ -486,9 +486,9 @@ export class FuturesOrderService {
     
     const tradeId = Math.random().toString(36).substring(2, 11);
 
-    const availMargin = new Decimal(this.ledger.getBalance('FUTURES_USDT'));
+    const availMargin = new Decimal(this.ledger.getBalance('FUTURES_USDT', order.accountId));
     if (availMargin.gte(fee)) {
-        this.ledger.debit('FUTURES_USDT', feeResult.feeAmount, `TRADING_FEE (${feeResult.feeType}) for ${order.symbol} order ${order.id}`, 'TRADING_FEE', tradeId);
+        this.ledger.debit('FUTURES_USDT', feeResult.feeAmount, `TRADING_FEE (${feeResult.feeType}) for ${order.symbol} order ${order.id}`, 'TRADING_FEE', tradeId, order.accountId);
     }
 
     // Update cumulative fee on the position
@@ -541,7 +541,7 @@ export class FuturesOrderService {
         const liqPrice = futuresRiskService.calculateLiquidationPrice(
             position, 
             market.maintenanceMarginRate, 
-            this.ledger.getBalance('FUTURES_USDT')
+            this.ledger.getBalance('FUTURES_USDT', position.accountId)
         );
         position.liquidationPrice = liqPrice;
         
@@ -553,7 +553,7 @@ export class FuturesOrderService {
           changed = true;
           
           // Check liquidation
-          if (futuresRiskService.checkLiquidation(position, this.ledger.getBalance('FUTURES_USDT'))) {
+          if (futuresRiskService.checkLiquidation(position, this.ledger.getBalance('FUTURES_USDT', position.accountId))) {
              const liqPos = liquidationService.liquidatePosition(position);
              if (liqPos) {
                  // update position
@@ -588,10 +588,10 @@ export class FuturesOrderService {
       const amt = new Decimal(amount);
       if (amt.lte(0)) throw new Error('Amount must be greater than 0');
       
-      const availableMargin = new Decimal(this.ledger.getBalance('FUTURES_USDT'));
+      const availableMargin = new Decimal(this.ledger.getBalance('FUTURES_USDT', accountId));
       if (availableMargin.lt(amt)) throw new Error(`Insufficient available margin. Available: ${availableMargin.toString()} USDT`);
       
-      this.ledger.debit('FUTURES_USDT', amt.toString(), `MARGIN_ADDED for ${position.symbol} ${position.side}`, 'MARGIN', position.positionId);
+      this.ledger.debit('FUTURES_USDT', amt.toString(), `MARGIN_ADDED for ${position.symbol} ${position.side}`, 'MARGIN', position.positionId, accountId);
       
       position.initialMargin = new Decimal(position.initialMargin).plus(amt).toString();
       
@@ -631,7 +631,7 @@ export class FuturesOrderService {
            if (remainingIm.lt(0)) throw new Error('Cannot remove more margin than currently allocated to the position');
       }
       
-      this.ledger.credit('FUTURES_USDT', amt.toString(), `MARGIN_REMOVED for ${position.symbol} ${position.side}`, 'MARGIN', position.positionId);
+      this.ledger.credit('FUTURES_USDT', amt.toString(), `MARGIN_REMOVED for ${position.symbol} ${position.side}`, 'MARGIN', position.positionId, accountId);
       position.initialMargin = remainingIm.toString();
       
       const market = await futuresMarketService.getMarket(position.symbol);

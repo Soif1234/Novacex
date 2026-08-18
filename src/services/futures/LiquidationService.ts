@@ -66,15 +66,15 @@ export class LiquidationService {
     // In FuturesPnl, margin was already taken from the ledger.
     // We just credit back the remaining equity.
     if (totalReturn.gt(0)) {
-      demoLedger.credit('FUTURES_USDT', totalReturn.toString(), `Liquidation return for ${position.symbol} ${position.side} order ${position.positionId}`, 'OTHER', `liq_ret_${position.positionId}`);
+      demoLedger.credit('FUTURES_USDT', totalReturn.toString(), `Liquidation return for ${position.symbol} ${position.side} order ${position.positionId}`, 'OTHER', `liq_ret_${position.positionId}`, position.accountId);
     }
     
     // If CROSS margin and there's a deficit, we deduct from available balance
     if (position.marginMode === 'CROSS' && deficit.gt(0)) {
-       const available = new Decimal(demoLedger.getBalance('FUTURES_USDT'));
+       const available = new Decimal(demoLedger.getBalance('FUTURES_USDT', position.accountId));
        const deduct = Decimal.min(available, deficit);
        if (deduct.gt(0)) {
-         demoLedger.debit('FUTURES_USDT', deduct.toString(), `Liquidation deficit cross-margin deduction for ${position.symbol} ${position.side}`, 'MARGIN', `liq_deduct_${position.positionId}`);
+         demoLedger.debit('FUTURES_USDT', deduct.toString(), `Liquidation deficit cross-margin deduction for ${position.symbol} ${position.side}`, 'MARGIN', `liq_deduct_${position.positionId}`, position.accountId);
        }
     }
     

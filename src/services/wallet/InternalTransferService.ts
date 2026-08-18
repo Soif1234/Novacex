@@ -8,6 +8,7 @@ export type TransferStatus = 'PENDING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 
 export interface InternalTransfer {
   id: string;
+  accountId?: string;
   asset: string;
   amount: string;
   fromWallet: WalletType;
@@ -37,7 +38,10 @@ export class InternalTransferService {
           t && typeof t.id === 'string' && typeof t.asset === 'string' && isValidFinancialString(t.amount)
         ));
         if (parsed.length > 0 || data.trim() === '[]') {
-          this.transfers = parsed;
+          this.transfers = parsed.map(t => ({
+            ...t,
+            accountId: t.accountId || 'demo-user-1'
+          }));
         }
       }
     } catch (e) {}
@@ -59,8 +63,12 @@ export class InternalTransferService {
     this.subscribers.forEach(cb => cb());
   }
 
-  public getTransfers(): InternalTransfer[] {
-    return [...this.transfers].reverse();
+  public getTransfers(accountId?: string): InternalTransfer[] {
+    const list = [...this.transfers].reverse();
+    if (accountId) {
+      return list.filter(t => t.accountId === accountId || (!t.accountId && accountId === 'demo-user-1'));
+    }
+    return list;
   }
 
   public getTransfer(id: string): InternalTransfer | undefined {
@@ -71,7 +79,8 @@ export class InternalTransferService {
     asset: string,
     amount: string,
     fromWallet: WalletType,
-    toWallet: WalletType
+    toWallet: WalletType,
+    accountId: string = 'demo-user-1'
   ): Promise<{ valid: boolean; error?: string }> {
     if (fromWallet === toWallet) {
       return { valid: false, error: 'Cannot transfer to the same wallet' };
@@ -86,7 +95,7 @@ export class InternalTransferService {
       return { valid: false, error: 'Transfer amount must be greater than zero' };
     }
 
-    const balances = await walletService.getWalletBalances();
+    const balances = await walletService.getWalletBalances(accountId);
     const available = new Decimal(fromWallet === 'SPOT' ? balances.spotAvailable : balances.futuresAvailable);
 
     if (available.lt(amt)) {
@@ -100,9 +109,10 @@ export class InternalTransferService {
     asset: string,
     amount: string,
     fromWallet: WalletType,
-    toWallet: WalletType
+    toWallet: WalletType,
+    accountId: string = 'demo-user-1'
   ): Promise<InternalTransfer> {
-    const validation = await this.validateTransfer(asset, amount, fromWallet, toWallet);
+    const validation = await this.validateTransfer(asset, amount, fromWallet, toWallet, accountId);
 
     if (!validation.valid) {
       throw new Error(validation.error);
@@ -110,6 +120,7 @@ export class InternalTransferService {
 
     const transfer: InternalTransfer = {
       id: Math.random().toString(36).substring(2, 11),
+      accountId,
       asset,
       amount,
       fromWallet,
@@ -122,7 +133,7 @@ export class InternalTransferService {
     this.save();
     this.notify();
 
-    // In this demo, we can just execute immediately
+    // Execute immediately for demo
     await this.executeTransfer(transfer.id);
 
     return transfer;
@@ -134,7 +145,8 @@ export class InternalTransferService {
       throw new Error('Transfer not found or not in PENDING state');
     }
 
-    const validation = await this.validateTransfer(transfer.asset, transfer.amount, transfer.fromWallet, transfer.toWallet);
+    const accountId = transfer.accountId || 'demo-user-1';
+    const validation = await this.validateTransfer(transfer.asset, transfer.amount, transfer.fromWallet, transfer.toWallet, accountId);
     
     if (!validation.valid) {
       transfer.status = 'FAILED';
@@ -150,8 +162,8 @@ export class InternalTransferService {
       
       const reason = `Internal Transfer from ${transfer.fromWallet} to ${transfer.toWallet}`;
       
-      demoLedger.debit(fromAsset, transfer.amount, reason, 'TRANSFER', transfer.id);
-      demoLedger.credit(toAsset, transfer.amount, reason, 'TRANSFER', transfer.id);
+      demoLedger.debit(fromAsset, transfer.amount, reason, 'TRANSFER', transfer.id, accountId);
+      demoLedger.credit(toAsset, transfer.amount, reason, 'TRANSFER', transfer.id, accountId);
       
       transfer.status = 'COMPLETED';
       transfer.completedAt = Date.now();

@@ -18,7 +18,7 @@ export class PortfolioService {
   }
 
   public async getPortfolioStats(accountId: string): Promise<PortfolioStats> {
-    const balances = this.ledger.getAllBalances();
+    const balances = this.ledger.getAllBalances(accountId);
     const trades = this.tradeSvc.getTradesByAccount(accountId).slice().reverse();
     const pendingOrders = this.orderSvc.getPendingOrders().filter(o => o.accountId === accountId);
     let markets;

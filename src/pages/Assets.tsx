@@ -157,7 +157,7 @@ export function Assets() {
           </ErrorBoundary>
         )}
 
-        {showTransfer && <TransferModal onClose={() => setShowTransfer(false)} balances={balances} />}
+        {showTransfer && <TransferModal onClose={() => setShowTransfer(false)} balances={balances} userId={user?.id || "demo-user-1"} />}
         {showDeposit && <DepositModal onClose={() => setShowDeposit(false)} userId={user?.id || "demo-user-1"} />}
         {showWithdraw && <WithdrawModal onClose={() => setShowWithdraw(false)} balances={balances} assets={assets} userId={user?.id || "demo-user-1"} />}
       </div>
@@ -388,7 +388,7 @@ function AssetRow({ asset, details, showLocked = false }: { asset: Asset, detail
   );
 }
 
-function TransferModal({ onClose, balances }: { onClose: () => void, balances: any }) {
+function TransferModal({ onClose, balances, userId = 'demo-user-1' }: { onClose: () => void, balances: any, userId?: string }) {
   const [fromWallet, setFromWallet] = useState<WalletType>('SPOT');
   const [toWallet, setToWallet] = useState<WalletType>('FUTURES');
   const [amount, setAmount] = useState('');
@@ -411,7 +411,7 @@ function TransferModal({ onClose, balances }: { onClose: () => void, balances: a
     setIsSubmitting(true);
     setError('');
     try {
-      await internalTransferService.createTransfer('USDT', amount, fromWallet, toWallet);
+      await internalTransferService.createTransfer('USDT', amount, fromWallet, toWallet, userId);
       onClose();
     } catch (err: any) {
       setError(err.message);
@@ -522,7 +522,7 @@ function DepositModal({ onClose, userId }: { onClose: () => void; userId: string
     setIsSubmitting(true);
     setError('');
     try {
-      await demoTransactionService.createDeposit(asset, amount);
+      await demoTransactionService.createDeposit(asset, amount, userId);
       onClose();
     } catch (err: any) {
       setError(err.message);
@@ -622,7 +622,7 @@ function WithdrawModal({ onClose, balances, assets, userId }: { onClose: () => v
       if (!destination.trim()) {
         throw new Error('Destination label is required');
       }
-      await demoTransactionService.createWithdrawal(userId, asset, amount, destination);
+      await demoTransactionService.createWithdrawal(asset, amount, destination, available, userId);
       onClose();
     } catch (err: any) {
       setError(err.message);

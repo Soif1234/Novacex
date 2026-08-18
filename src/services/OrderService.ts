@@ -105,9 +105,9 @@ export class OrderService {
     if (order.side === 'BUY') {
       const price = new Decimal(order.price!);
       const cost = qty.mul(price);
-      this.ledger.debit(quoteAsset, cost.toString(), `Lock for limit order ${order.id}`, 'OTHER', `lock_${order.id}`);
+      this.ledger.debit(quoteAsset, cost.toString(), `Lock for limit order ${order.id}`, 'OTHER', `lock_${order.id}`, order.accountId);
     } else {
-      this.ledger.debit(baseAsset, qty.toString(), `Lock for limit order ${order.id}`, 'OTHER', `lock_${order.id}`);
+      this.ledger.debit(baseAsset, qty.toString(), `Lock for limit order ${order.id}`, 'OTHER', `lock_${order.id}`, order.accountId);
     }
   }
 
@@ -120,9 +120,9 @@ export class OrderService {
     if (order.side === 'BUY') {
       const price = new Decimal(order.price!);
       const cost = qty.mul(price);
-      this.ledger.credit(quoteAsset, cost.toString(), `Unlock for cancelled order ${order.id}`, 'OTHER', `unlock_${order.id}`);
+      this.ledger.credit(quoteAsset, cost.toString(), `Unlock for cancelled order ${order.id}`, 'OTHER', `unlock_${order.id}`, order.accountId);
     } else {
-      this.ledger.credit(baseAsset, qty.toString(), `Unlock for cancelled order ${order.id}`, 'OTHER', `unlock_${order.id}`);
+      this.ledger.credit(baseAsset, qty.toString(), `Unlock for cancelled order ${order.id}`, 'OTHER', `unlock_${order.id}`, order.accountId);
     }
   }
 
@@ -171,19 +171,19 @@ export class OrderService {
         fee = new Decimal(FeeService.calculateFee(qty));
         feeAsset = baseAsset;
         
-        this.ledger.debit(quoteAsset, cost.toString(), `Market BUY ${order.id}`, 'OTHER', `buy_${order.id}_debit`);
-        this.ledger.credit(baseAsset, qty.toString(), `Market BUY ${order.id}`, 'OTHER', `buy_${order.id}_credit`);
+        this.ledger.debit(quoteAsset, cost.toString(), `Market BUY ${order.id}`, 'OTHER', `buy_${order.id}_debit`, order.accountId);
+        this.ledger.credit(baseAsset, qty.toString(), `Market BUY ${order.id}`, 'OTHER', `buy_${order.id}_credit`, order.accountId);
         if (fee.gt(0)) {
-          this.ledger.debit(baseAsset, fee.toString(), `TRADING_FEE for ${order.symbol} order ${order.id}`, 'TRADING_FEE', `fee_${fillId}`);
+          this.ledger.debit(baseAsset, fee.toString(), `TRADING_FEE for ${order.symbol} order ${order.id}`, 'TRADING_FEE', `fee_${fillId}`, order.accountId);
         }
       } else {
         fee = new Decimal(FeeService.calculateFee(cost));
         feeAsset = quoteAsset;
         
-        this.ledger.debit(baseAsset, qty.toString(), `Market SELL ${order.id}`, 'OTHER', `sell_${order.id}_debit`);
-        this.ledger.credit(quoteAsset, cost.toString(), `Market SELL ${order.id}`, 'OTHER', `sell_${order.id}_credit`);
+        this.ledger.debit(baseAsset, qty.toString(), `Market SELL ${order.id}`, 'OTHER', `sell_${order.id}_debit`, order.accountId);
+        this.ledger.credit(quoteAsset, cost.toString(), `Market SELL ${order.id}`, 'OTHER', `sell_${order.id}_credit`, order.accountId);
         if (fee.gt(0)) {
-          this.ledger.debit(quoteAsset, fee.toString(), `TRADING_FEE for ${order.symbol} order ${order.id}`, 'TRADING_FEE', `fee_${fillId}`);
+          this.ledger.debit(quoteAsset, fee.toString(), `TRADING_FEE for ${order.symbol} order ${order.id}`, 'TRADING_FEE', `fee_${fillId}`, order.accountId);
         }
       }
 
@@ -260,12 +260,12 @@ export class OrderService {
       const netQty = qty.minus(fee);
 
       // Funds were locked, we now credit the base asset minus fee
-      this.ledger.credit(baseAsset, netQty.toString(), `Limit BUY execution ${order.id}`, 'OTHER', `exec_buy_${order.id}`);
+      this.ledger.credit(baseAsset, netQty.toString(), `Limit BUY execution ${order.id}`, 'OTHER', `exec_buy_${order.id}`, order.accountId);
       
       // If executed at a better price, refund the difference
       if (actualCost.lt(lockedCost)) {
         const refund = lockedCost.minus(actualCost);
-        this.ledger.credit(quoteAsset, refund.toString(), `Limit BUY price improvement refund ${order.id}`, 'OTHER', `refund_${order.id}`);
+        this.ledger.credit(quoteAsset, refund.toString(), `Limit BUY price improvement refund ${order.id}`, 'OTHER', `refund_${order.id}`, order.accountId);
       }
     } else {
       fee = new Decimal(FeeService.calculateFee(actualCost));
@@ -273,7 +273,7 @@ export class OrderService {
       const netCost = actualCost.minus(fee);
 
       // Base asset was locked, we now credit the quote asset minus fee
-      this.ledger.credit(quoteAsset, netCost.toString(), `Limit SELL execution ${order.id}`, 'OTHER', `exec_sell_${order.id}`);
+      this.ledger.credit(quoteAsset, netCost.toString(), `Limit SELL execution ${order.id}`, 'OTHER', `exec_sell_${order.id}`, order.accountId);
     }
 
     this.tradeSvc.recordTrade({

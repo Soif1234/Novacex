@@ -47,7 +47,7 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
   
   const { data: markets } = useMarketData();
   const ticker = useTicker(selectedSymbol) as any;
-  const { balances } = useLedger();
+  const { balances } = useLedger(accountId);
   const { orders, pendingOrders, orderService } = useOrders(accountId);
   const { trades } = useTrades(accountId);
   
