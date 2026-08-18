@@ -14,6 +14,7 @@ import { Admin } from './pages/Admin';
 import { useAuth } from './contexts/AuthContext';
 import { priceAlertService } from './services/alerts/PriceAlertService';
 import { notificationService } from './services/notifications/NotificationService';
+import { futuresEngineService } from './services/futures/FuturesEngineService';
 import { NotificationToaster } from './components/notifications/NotificationToaster';
 
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -26,6 +27,7 @@ export default function App() {
   useEffect(() => {
     priceAlertService.initialize();
     notificationService.initialize();
+    futuresEngineService.start();
   }, []);
 
   const handleNavigate = (tab: string, symbol?: string) => {
