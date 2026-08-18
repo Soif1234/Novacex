@@ -21,21 +21,21 @@ export function TradeHistory() {
   const [selectedTrade, setSelectedTrade] = useState<TradeFill | null>(null);
   const [associatedOrder, setAssociatedOrder] = useState<Order | null>(null);
 
+  const accountId = user?.id || 'demo-user-1';
+
   useEffect(() => {
-    if (!user) return;
-    
     const loadTrades = () => {
-      setTrades(tradeFillService.getTradeHistory(user.id));
+      setTrades(tradeFillService.getTradeHistory(accountId));
     };
 
     loadTrades();
     const unsubscribe = tradeFillService.subscribe(loadTrades);
     return () => unsubscribe();
-  }, [user]);
+  }, [user, accountId]);
 
   const handleTradeClick = (trade: TradeFill) => {
     setSelectedTrade(trade);
-    const order = orderCoreService.getOrders(user?.id).find(o => o.id === trade.orderId) || null;
+    const order = orderCoreService.getOrders(accountId).find(o => o.id === trade.orderId) || null;
     setAssociatedOrder(order);
   };
 

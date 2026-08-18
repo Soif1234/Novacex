@@ -7,18 +7,19 @@ import { Button } from "../ui/Button";
 
 export function OpenOrders({ symbol }: { symbol?: string }) {
   const { user } = useAuth();
-  const [orders, setOrders] = useState(orderCoreService.getOrders());
+  const accountId = user?.id || 'demo-user-1';
+  const [orders, setOrders] = useState(orderCoreService.getOrders(accountId));
   const [filterMarket, setFilterMarket] = useState<string>('ALL');
   const [filterSymbol, setFilterSymbol] = useState<string>('ALL');
   const [cancellingIds, setCancellingIds] = useState<Record<string, boolean>>({});
   const cancellingIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    const loadOrders = () => setOrders(orderCoreService.getOrders());
+    const loadOrders = () => setOrders(orderCoreService.getOrders(accountId));
     loadOrders();
     const unsubscribe = orderCoreService.subscribe(loadOrders);
     return () => unsubscribe();
-  }, [user]);
+  }, [user, accountId]);
 
   const handleCancel = async (o: { id: string; market?: string }) => {
     if (cancellingIdsRef.current.has(o.id)) return;
@@ -30,7 +31,7 @@ export function OpenOrders({ symbol }: { symbol?: string }) {
       } else {
         await spotOrderService.cancelOrder(o.id);
       }
-      setOrders(orderCoreService.getOrders());
+      setOrders(orderCoreService.getOrders(accountId));
     } catch (err) {
       console.error('Failed to cancel order', err);
     } finally {

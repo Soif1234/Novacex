@@ -1,4 +1,5 @@
 import { syncOrderToCore, syncFillToCore } from '../orders/integration';
+import { orderCoreService } from '../orders/OrderCoreService';
 import { Decimal } from 'decimal.js';
 import { 
   FuturesOrder, 
@@ -644,12 +645,19 @@ export class FuturesOrderService {
       return position;
   }
 
-  public reset() {
-    this.orders = [];
-    this.trades = [];
-    this.positions = [];
+  public reset(accountId?: string) {
+    if (accountId) {
+      this.orders = this.orders.filter(o => o.accountId !== accountId && (o.accountId || accountId !== 'demo-user-1'));
+      this.trades = this.trades.filter(t => t.accountId !== accountId && (t.accountId || accountId !== 'demo-user-1'));
+      this.positions = this.positions.filter(p => p.accountId !== accountId && (p.accountId || accountId !== 'demo-user-1'));
+    } else {
+      this.orders = [];
+      this.trades = [];
+      this.positions = [];
+    }
     this.save();
     this.notify();
+    orderCoreService.reset(accountId);
   }
 }
 

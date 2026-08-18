@@ -14,8 +14,28 @@ export class TradeFillService {
 
     private load() {
         try {
-            if (typeof window === 'undefined' && typeof localStorage === 'undefined') return;
-            const data = localStorage.getItem(this.persistKey);
+            if (typeof window === 'undefined' && typeof sessionStorage === 'undefined' && typeof localStorage === 'undefined') return;
+
+            let data: string | null = null;
+            if (typeof sessionStorage !== 'undefined') {
+                data = sessionStorage.getItem(this.persistKey);
+            }
+
+            // Safe fallback migration from localStorage if sessionStorage is not populated
+            if (!data && typeof localStorage !== 'undefined') {
+                const legacyData = localStorage.getItem(this.persistKey);
+                if (legacyData) {
+                    const parsedLegacy = safeParseArray<TradeFill>(legacyData, item => (
+                        item && typeof item.id === 'string' && typeof item.symbol === 'string' && isValidFinancialString(item.quantity)
+                    ));
+                    if (parsedLegacy.length > 0) {
+                        this.fills = parsedLegacy;
+                        this.save();
+                        return;
+                    }
+                }
+            }
+
             if (data) {
                 const parsed = safeParseArray<TradeFill>(data, item => (
                     item && typeof item.id === 'string' && typeof item.symbol === 'string' && isValidFinancialString(item.quantity)
@@ -32,7 +52,9 @@ export class TradeFillService {
     private save() {
         if (!this.persist) return;
         try {
-            localStorage.setItem(this.persistKey, JSON.stringify(this.fills));
+            if (typeof sessionStorage !== 'undefined') {
+                sessionStorage.setItem(this.persistKey, JSON.stringify(this.fills));
+            }
         } catch (e) {
             console.error('Failed to save trade fills', e);
         }
@@ -62,24 +84,30 @@ export class TradeFillService {
         return this.fills.find(f => f.id === id);
     }
 
-    public getFills(): TradeFill[] {
-        return [...this.fills];
+    public getFills(userId?: string): TradeFill[] {
+        return userId
+            ? this.fills.filter(f => f.userId === userId || (!f.userId && userId === 'demo-user-1'))
+            : [...this.fills];
     }
 
-    public getFillsByOrder(orderId: string): TradeFill[] {
-        return this.fills.filter(f => f.orderId === orderId);
+    public getFillsByOrder(orderId: string, userId?: string): TradeFill[] {
+        return this.getFills(userId).filter(f => f.orderId === orderId);
     }
 
-    public getFillsBySymbol(symbol: string): TradeFill[] {
-        return this.fills.filter(f => f.symbol === symbol);
+    public getFillsBySymbol(symbol: string, userId?: string): TradeFill[] {
+        return this.getFills(userId).filter(f => f.symbol === symbol);
     }
     
     public getTradeHistory(userId: string): TradeFill[] {
-        return this.fills.filter(f => f.userId === userId);
+        return this.getFills(userId);
     }
 
-    public reset() {
-        this.fills = [];
+    public reset(userId?: string) {
+        if (userId) {
+            this.fills = this.fills.filter(f => f.userId !== userId && (f.userId || userId !== 'demo-user-1'));
+        } else {
+            this.fills = [];
+        }
         this.save();
         this.notify();
     }

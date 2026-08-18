@@ -1,5 +1,4 @@
 import { Order, MarketType, NormalizedOrderStatus } from '../../types/orderCore';
-import { tradeFillService } from './TradeFillService';
 import { Decimal } from 'decimal.js';
 import { safeParseArray, isValidFinancialString } from '../storageUtil';
 
@@ -16,8 +15,28 @@ export class OrderCoreService {
 
     private load() {
         try {
-            if (typeof window === 'undefined' && typeof localStorage === 'undefined') return;
-            const data = localStorage.getItem(this.persistKey);
+            if (typeof window === 'undefined' && typeof sessionStorage === 'undefined' && typeof localStorage === 'undefined') return;
+
+            let data: string | null = null;
+            if (typeof sessionStorage !== 'undefined') {
+                data = sessionStorage.getItem(this.persistKey);
+            }
+
+            // Safe fallback migration from localStorage if sessionStorage is not populated
+            if (!data && typeof localStorage !== 'undefined') {
+                const legacyData = localStorage.getItem(this.persistKey);
+                if (legacyData) {
+                    const parsedLegacy = safeParseArray<Order>(legacyData, item => (
+                        item && typeof item.id === 'string' && typeof item.symbol === 'string' && isValidFinancialString(item.quantity) && (item.type !== 'LIMIT' || isValidFinancialString(item.price))
+                    ));
+                    if (parsedLegacy.length > 0) {
+                        this.orders = parsedLegacy;
+                        this.save();
+                        return;
+                    }
+                }
+            }
+
             if (data) {
                 const parsed = safeParseArray<Order>(data, item => (
                     item && typeof item.id === 'string' && typeof item.symbol === 'string' && isValidFinancialString(item.quantity) && (item.type !== 'LIMIT' || isValidFinancialString(item.price))
@@ -34,7 +53,9 @@ export class OrderCoreService {
     private save() {
         if (!this.persist) return;
         try {
-            localStorage.setItem(this.persistKey, JSON.stringify(this.orders));
+            if (typeof sessionStorage !== 'undefined') {
+                sessionStorage.setItem(this.persistKey, JSON.stringify(this.orders));
+            }
         } catch (e) {
             console.error('Failed to save core orders', e);
         }
@@ -80,29 +101,31 @@ export class OrderCoreService {
     }
 
     public getOrders(userId?: string): Order[] {
-        return userId ? this.orders.filter(o => o.userId === userId || o.userId === undefined) : [...this.orders];
+        return userId
+            ? this.orders.filter(o => o.userId === userId || (!o.userId && userId === 'demo-user-1'))
+            : [...this.orders];
     }
 
     public getOpenOrders(userId?: string): Order[] {
         const openStatuses: NormalizedOrderStatus[] = ['NEW', 'OPEN', 'PARTIALLY_FILLED'];
-        return this.orders.filter(o => openStatuses.includes(o.status) && (!userId || o.userId === userId));
+        return this.getOrders(userId).filter(o => openStatuses.includes(o.status));
     }
 
     public getOrderHistory(userId?: string): Order[] {
         const historyStatuses: NormalizedOrderStatus[] = ['FILLED', 'CANCELLED', 'REJECTED', 'EXPIRED'];
-        return this.orders.filter(o => historyStatuses.includes(o.status) && (!userId || o.userId === userId));
+        return this.getOrders(userId).filter(o => historyStatuses.includes(o.status));
     }
 
-    public getOrdersBySymbol(symbol: string): Order[] {
-        return this.orders.filter(o => o.symbol === symbol);
+    public getOrdersBySymbol(symbol: string, userId?: string): Order[] {
+        return this.getOrders(userId).filter(o => o.symbol === symbol);
     }
 
-    public getOrdersByMarket(market: MarketType): Order[] {
-        return this.orders.filter(o => o.market === market);
+    public getOrdersByMarket(market: MarketType, userId?: string): Order[] {
+        return this.getOrders(userId).filter(o => o.market === market);
     }
 
-    public getOrdersByStatus(status: NormalizedOrderStatus): Order[] {
-        return this.orders.filter(o => o.status === status);
+    public getOrdersByStatus(status: NormalizedOrderStatus, userId?: string): Order[] {
+        return this.getOrders(userId).filter(o => o.status === status);
     }
 
     public recordExecution(orderId: string, executedQty: string, executedPrice: string) {
@@ -140,8 +163,12 @@ export class OrderCoreService {
         });
     }
 
-    public reset() {
-        this.orders = [];
+    public reset(userId?: string) {
+        if (userId) {
+            this.orders = this.orders.filter(o => o.userId !== userId && (o.userId || userId !== 'demo-user-1'));
+        } else {
+            this.orders = [];
+        }
         this.save();
         this.notify();
     }

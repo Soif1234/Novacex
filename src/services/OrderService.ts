@@ -1,4 +1,5 @@
 import { syncOrderToCore, syncFillToCore } from './orders/integration';
+import { orderCoreService } from './orders/OrderCoreService';
 import { DemoOrder, OrderStatus } from '../types/orders';
 import { validateDemoOrder } from './orderValidation';
 import { DemoLedger, demoLedger } from './ledger';
@@ -34,7 +35,8 @@ export class OrderService {
         if (parsed.length > 0 || data.trim() === '[]') {
           this.orders = parsed;
           this.orders.forEach(o => {
-            syncOrderToCore(o.id, o.accountId, o.symbol, 'SPOT', o.side, o.type as any, o.quantity, o.price, undefined, o.status as any);
+            const status = o.status === 'PENDING' ? 'OPEN' : o.status;
+            syncOrderToCore(o.id, o.accountId, o.symbol, 'SPOT', o.side, o.type as any, o.quantity, o.price, undefined, status as any);
           });
         }
       }
@@ -85,7 +87,8 @@ export class OrderService {
     this.orders.unshift(order);
     this.save();
     this.notify();
-    syncOrderToCore(order.id, order.accountId, order.symbol, 'SPOT', order.side, order.type as any, order.quantity, order.price, undefined, order.status as any);
+    const coreStatus = order.status === 'PENDING' ? 'OPEN' : order.status;
+    syncOrderToCore(order.id, order.accountId, order.symbol, 'SPOT', order.side, order.type as any, order.quantity, order.price, undefined, coreStatus as any);
 
     if (order.type === 'MARKET') {
       await this.executeMarketOrder(order);
@@ -298,14 +301,20 @@ export class OrderService {
       order.updatedAt = Date.now();
       this.save();
       this.notify();
-      syncOrderToCore(order.id, order.accountId, order.symbol, 'SPOT', order.side, order.type as any, order.quantity, order.price, undefined, status as any);
+      const coreStatus = status === 'PENDING' ? 'OPEN' : status;
+      syncOrderToCore(order.id, order.accountId, order.symbol, 'SPOT', order.side, order.type as any, order.quantity, order.price, undefined, coreStatus as any);
     }
   }
 
-  public reset() {
-    this.orders = [];
+  public reset(accountId?: string) {
+    if (accountId) {
+      this.orders = this.orders.filter(o => o.accountId !== accountId && (o.accountId || accountId !== 'demo-user-1'));
+    } else {
+      this.orders = [];
+    }
     this.save();
     this.notify();
+    orderCoreService.reset(accountId);
   }
 }
 

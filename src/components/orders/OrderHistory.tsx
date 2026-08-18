@@ -21,11 +21,11 @@ export function OrderHistory() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [orderFills, setOrderFills] = useState<TradeFill[]>([]);
 
+  const accountId = user?.id || 'demo-user-1';
+
   useEffect(() => {
-    if (!user) return;
-    
     const loadOrders = () => {
-      const allOrders = orderCoreService.getOrders(user.id);
+      const allOrders = orderCoreService.getOrders(accountId);
       const completed = allOrders.filter(
         (o) => o.status === "FILLED" || o.status === "CANCELLED" || o.status === "REJECTED" || o.status === "EXPIRED"
       );
@@ -35,11 +35,11 @@ export function OrderHistory() {
     loadOrders();
     const unsubscribe = orderCoreService.subscribe(loadOrders);
     return () => unsubscribe();
-  }, [user]);
+  }, [user, accountId]);
 
   const handleOrderClick = (order: Order) => {
     setSelectedOrder(order);
-    const fills = tradeFillService.getFillsByOrder(order.id);
+    const fills = tradeFillService.getFillsByOrder(order.id, accountId);
     setOrderFills(fills);
   };
 

@@ -1,4 +1,5 @@
 import { syncFillToCore } from './orders/integration';
+import { tradeFillService } from './orders/TradeFillService';
 import { DemoTrade } from '../types/trades';
 import { safeParseArray, isValidFinancialString } from './storageUtil';
 
@@ -72,10 +73,15 @@ export class TradeService {
     return this.trades.filter(t => t.orderId === orderId);
   }
 
-  public reset() {
-    this.trades = [];
+  public reset(accountId?: string) {
+    if (accountId) {
+      this.trades = this.trades.filter(t => t.accountId !== accountId && (t.accountId || accountId !== 'demo-user-1'));
+    } else {
+      this.trades = [];
+    }
     this.save();
     this.notify();
+    tradeFillService.reset(accountId);
   }
 }
 
