@@ -70,20 +70,20 @@ describe('DemoTransactionService', () => {
   });
 
   it('16. Portfolio value updates', async () => {
-    const balancesBefore = await walletService.getWalletBalances('demo-account');
+    const balancesBefore = await walletService.getWalletBalances('demo-user-1');
     const initialTotal = new Decimal(balancesBefore.total);
     
     await service.createDeposit('USDT', '1000');
     
-    const balancesAfter = await walletService.getWalletBalances('demo-account');
+    const balancesAfter = await walletService.getWalletBalances('demo-user-1');
     expect(new Decimal(balancesAfter.total).minus(initialTotal).toString()).toBe('1000');
   });
 
   it('20. No trading side effects', async () => {
     // Orders should remain unchanged
-    const initialOrders = futuresOrderService.getOrders('demo-account');
+    const initialOrders = futuresOrderService.getOrders('demo-user-1');
     await service.createDeposit('USDT', '500');
-    const finalOrders = futuresOrderService.getOrders('demo-account');
+    const finalOrders = futuresOrderService.getOrders('demo-user-1');
     expect(initialOrders.length).toBe(finalOrders.length);
   });
 });

@@ -16,7 +16,8 @@ export class FuturesTpSlService {
          if (typeof localStorage !== 'undefined') {
              const stored = localStorage.getItem('futures_tpsl');
              if (stored) {
-                 this.configs = JSON.parse(stored);
+                 const parsed = JSON.parse(stored);
+                 if (Array.isArray(parsed)) this.configs = parsed.filter(item => item && typeof item === "object");
              }
          }
      } catch (e) {

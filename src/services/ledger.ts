@@ -1,4 +1,8 @@
 import { Decimal } from 'decimal.js';
+import { ledgerService, LedgerEntryType } from './wallet/LedgerService';
+import { transactionService } from './transactions/TransactionService';
+import { WalletType } from './wallet/types';
+import { TransactionType } from './transactions/types';
 
 export interface LedgerEntry {
   id: string;
@@ -86,7 +90,9 @@ export class DemoLedger {
     amount: Decimal,
     balanceBefore: Decimal,
     balanceAfter: Decimal,
-    reason: string
+    reason: string,
+    ledgerType: string = 'OTHER',
+    referenceId?: string
   ) {
     const entry: LedgerEntry = {
       id: Math.random().toString(36).substring(2, 11),
@@ -102,9 +108,27 @@ export class DemoLedger {
     this.balances[asset] = balanceAfter.toString();
     this.save();
     this.notify();
+
+    // Wire up to LedgerService for F19D
+    const walletType: WalletType = asset === 'FUTURES_USDT' ? 'FUTURES' : 'SPOT';
+    const displayAsset = asset === 'FUTURES_USDT' ? 'USDT' : asset;
+    
+    // De-duplicate in ledgerService itself
+    ledgerService.addEntry({
+      type: ledgerType as LedgerEntryType,
+      asset: displayAsset,
+      amount: amount.toString(),
+      balanceBefore: balanceBefore.toString(),
+      balanceAfter: balanceAfter.toString(),
+      wallet: walletType,
+      direction: type === 'credit' ? 'CREDIT' : 'DEBIT',
+      status: 'COMPLETED',
+      referenceId: referenceId,
+      description: reason
+    });
   }
 
-  public credit(asset: string, amount: string | number, reason: string): void {
+  public credit(asset: string, amount: string | number, reason: string, ledgerType: string = 'OTHER', referenceId?: string): void {
     const amt = new Decimal(amount);
     if (amt.lte(0)) {
       throw new Error('Credit amount must be positive');
@@ -113,10 +137,10 @@ export class DemoLedger {
     const currentBalance = new Decimal(this.getBalance(asset));
     const newBalance = currentBalance.plus(amt);
 
-    this.record(asset, 'credit', amt, currentBalance, newBalance, reason);
+    this.record(asset, 'credit', amt, currentBalance, newBalance, reason, ledgerType, referenceId);
   }
 
-  public debit(asset: string, amount: string | number, reason: string): void {
+  public debit(asset: string, amount: string | number, reason: string, ledgerType: string = 'OTHER', referenceId?: string): void {
     const amt = new Decimal(amount);
     if (amt.lte(0)) {
       throw new Error('Debit amount must be positive');
@@ -129,7 +153,7 @@ export class DemoLedger {
       throw new Error(`Insufficient balance for ${asset}`);
     }
 
-    this.record(asset, 'debit', amt, currentBalance, newBalance, reason);
+    this.record(asset, 'debit', amt, currentBalance, newBalance, reason, ledgerType, referenceId);
   }
 
   public reset() {

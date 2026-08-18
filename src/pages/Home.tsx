@@ -25,7 +25,7 @@ export function Home({ onNavigate }: { onNavigate: (tab: string, symbol?: string
     <div className="pb-6">
       {/* Header Banner */}
       <div className="px-4 pt-2 pb-6">
-        <h1 className="text-2xl font-bold text-white mb-1">NovaCEX</h1>
+        <h1 className="text-2xl font-bold text-white mb-1">Mallick Exchange</h1>
         <p className="text-gray-400 text-sm">Demo Trading Environment</p>
       </div>
 

@@ -12,7 +12,7 @@ export class PortfolioService {
     private tradeSvc: TradeService
   ) {}
 
-  public async getPortfolioValueUSDT(accountId: string = 'demo-account'): Promise<string> {
+  public async getPortfolioValueUSDT(accountId: string = 'demo-user-1'): Promise<string> {
     const stats = await this.getPortfolioStats(accountId);
     return stats.totalValue;
   }

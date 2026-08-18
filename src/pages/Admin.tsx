@@ -8,7 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 
 export function Admin({ onNavigate }: { onNavigate: (tab: string) => void }) {
   const { user } = useAuth();
-  const accountId = user?.id || 'demo-account';
+  const accountId = user?.id || 'demo-user-1';
   const [activeTab, setActiveTab] = useState('system');
 
   const tabs = [
@@ -119,7 +119,7 @@ function UsersAdmin() {
           <tbody className="divide-y divide-gray-800 text-gray-300">
             <tr>
               <td className="p-3 font-mono text-xs">{user?.id || 'sys-admin'}</td>
-              <td className="p-3">{user?.name || 'Admin User'}</td>
+              <td className="p-3">{user?.displayName || 'Admin User'}</td>
               <td className="p-3"><span className="bg-emerald-500/10 text-emerald-500 px-2 py-1 rounded text-xs">Active</span></td>
             </tr>
             <tr>
@@ -140,7 +140,7 @@ function BalancesAdmin() {
   useEffect(() => {
     setBalances(demoLedger.getAllBalances());
     const unsub = demoLedger.subscribe(() => setBalances(demoLedger.getAllBalances()));
-    return unsub;
+    return () => { unsub(); };
   }, []);
 
   return (
@@ -164,7 +164,7 @@ function BalancesAdmin() {
 
 function OrdersAdmin() {
   const { user } = useAuth();
-  const accountId = user?.id || 'demo-account';
+  const accountId = user?.id || 'demo-user-1';
   const [pending, setPending] = useState(orderService.getPendingOrders());
   const [history, setHistory] = useState(orderService.getOrdersByAccount(accountId).filter(o => o.status !== 'PENDING'));
   
@@ -173,7 +173,7 @@ function OrdersAdmin() {
       setPending(orderService.getPendingOrders());
       setHistory(orderService.getOrdersByAccount(accountId).filter(o => o.status !== 'PENDING'));
     });
-    return unsub;
+    return () => { unsub(); };
   }, []);
 
   return (
@@ -190,7 +190,7 @@ function OrdersAdmin() {
               <div key={o.id} className="bg-gray-900 border border-gray-800 rounded p-3 text-xs flex justify-between items-center">
                 <div>
                   <div className="font-bold text-white mb-1">{o.symbol} <span className={o.side === 'BUY' ? 'text-emerald-500' : 'text-red-500'}>{o.side} {o.type}</span></div>
-                  <div className="text-gray-500">Price: {o.price} | Qty: {o.amount}</div>
+                  <div className="text-gray-500">Price: {o.price} | Qty: {o.quantity}</div>
                 </div>
                 <div className="text-amber-500">{o.status}</div>
               </div>
@@ -211,7 +211,7 @@ function OrdersAdmin() {
               <div key={o.id} className="bg-gray-900 border border-gray-800 rounded p-3 text-xs flex justify-between items-center">
                 <div>
                   <div className="font-bold text-white mb-1">{o.symbol} <span className={o.side === 'BUY' ? 'text-emerald-500' : 'text-red-500'}>{o.side} {o.type}</span></div>
-                  <div className="text-gray-500">Qty: {o.amount}</div>
+                  <div className="text-gray-500">Qty: {o.quantity}</div>
                 </div>
                 <div className={o.status === 'FILLED' ? 'text-emerald-500' : 'text-gray-500'}>{o.status}</div>
               </div>
@@ -225,7 +225,7 @@ function OrdersAdmin() {
 
 function TradesAdmin() {
   const { user } = useAuth();
-  const accountId = user?.id || 'demo-account';
+  const accountId = user?.id || 'demo-user-1';
   const [trades, setTrades] = useState(tradeService.getTradesByAccount(accountId));
   
   useEffect(() => {
@@ -249,7 +249,7 @@ function TradesAdmin() {
                 <span className="text-gray-500">{new Date(t.timestamp).toLocaleTimeString()}</span>
               </div>
               <div className="flex justify-between items-center text-gray-400">
-                <span><span className={t.side === 'BUY' ? 'text-emerald-500' : 'text-red-500'}>{t.side}</span> {t.amount}</span>
+                <span><span className={t.side === 'BUY' ? 'text-emerald-500' : 'text-red-500'}>{t.side}</span> {t.quantity}</span>
                 <span>@ {t.price}</span>
               </div>
             </div>

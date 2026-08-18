@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { User, Bell, Search } from 'lucide-react';
 import { NotificationPanel } from './notifications/NotificationPanel';
 import { notificationService } from '../services/notifications/NotificationService';
+import { useAuth } from '../contexts/AuthContext';
 
 interface TopNavProps {
   onAccountClick: () => void;
@@ -10,6 +11,7 @@ interface TopNavProps {
 export function TopNav({ onAccountClick }: TopNavProps) {
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const { user } = useAuth();
 
   useEffect(() => {
     setUnreadCount(notificationService.getUnreadCount());
@@ -24,9 +26,15 @@ export function TopNav({ onAccountClick }: TopNavProps) {
       <div className="flex items-center gap-3">
         <button 
           onClick={onAccountClick}
-          className="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-gray-300 hover:text-white transition-colors"
+          className="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-gray-300 hover:text-white transition-colors overflow-hidden"
         >
-          <User size={18} />
+          {user?.avatar ? (
+            <img src={user.avatar} alt="Avatar" className="w-full h-full object-cover" />
+          ) : user ? (
+            <span className="text-xs font-bold uppercase">{user.displayName.substring(0, 2)}</span>
+          ) : (
+            <User size={18} />
+          )}
         </button>
         <Search size={20} className="text-gray-500" />
       </div>
@@ -44,6 +52,7 @@ export function TopNav({ onAccountClick }: TopNavProps) {
           )}
         </button>
       </div>
+
       <NotificationPanel isOpen={showNotifications} onClose={() => setShowNotifications(false)} />
     </div>
   );

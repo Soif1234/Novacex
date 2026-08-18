@@ -31,7 +31,10 @@ export class InternalTransferService {
     try {
       const data = sessionStorage.getItem(this.persistKey);
       if (data) {
-        this.transfers = JSON.parse(data);
+        const parsed = JSON.parse(data);
+        if (Array.isArray(parsed)) {
+          this.transfers = parsed.filter(t => t && typeof t === 'object' && typeof t.id === 'string');
+        }
       }
     } catch (e) {}
   }
@@ -143,8 +146,8 @@ export class InternalTransferService {
       
       const reason = `Internal Transfer from ${transfer.fromWallet} to ${transfer.toWallet}`;
       
-      demoLedger.debit(fromAsset, transfer.amount, reason);
-      demoLedger.credit(toAsset, transfer.amount, reason);
+      demoLedger.debit(fromAsset, transfer.amount, reason, 'TRANSFER', transfer.id);
+      demoLedger.credit(toAsset, transfer.amount, reason, 'TRANSFER', transfer.id);
       
       transfer.status = 'COMPLETED';
       transfer.completedAt = Date.now();

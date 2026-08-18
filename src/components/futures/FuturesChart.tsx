@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createChart, IChartApi, ISeriesApi, CandlestickData, Time, ColorType } from 'lightweight-charts';
 import { FuturesMarket } from '../../types/futures';
 import { updateMarketPriceLocally } from '../../hooks/useFuturesMarketData';
+import { preferencesService } from '../../services/user/PreferencesService';
 
 interface FuturesChartProps {
   market: FuturesMarket;
@@ -16,12 +17,17 @@ const INTERVAL_MAP: Record<string, string> = {
   '1D': '1d',
 };
 
+import { tradingPairRegistry } from '../../services/market/TradingPairRegistry';
+
 export function FuturesChart({ market }: FuturesChartProps) {
+  const pair = tradingPairRegistry.getPair(market.symbol || (market as any).id);
+  const apiSym = pair ? pair.apiSymbol || pair.symbol : (market.symbol || (market as any).id);
+  const marketType = pair ? pair.marketType : 'FUTURES';
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   
-  const [timeframe, setTimeframe] = useState('15m');
+  const [timeframe, setTimeframe] = useState(preferencesService.getPreferences().defaultTimeframe || '15m');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
@@ -111,7 +117,7 @@ export function FuturesChart({ market }: FuturesChartProps) {
       
       try {
         // 1. Fetch historical data
-        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${binanceInterval}&limit=500`);
+        const res = await fetch(marketType === 'SPOT' ? `https://api.binance.com/api/v3/klines?symbol=${apiSym}&interval=${binanceInterval}&limit=500` : `https://fapi.binance.com/fapi/v1/klines?symbol=${apiSym}&interval=${binanceInterval}&limit=500`);
         if (!res.ok) throw new Error('Failed to fetch historical klines');
         
         const data = await res.json();
@@ -189,7 +195,7 @@ export function FuturesChart({ market }: FuturesChartProps) {
           };
 
           ws.onerror = (err) => {
-            console.error('Binance WS Error:', err);
+            console.warn('Binance WS connection warning - will auto-reconnect');
             ws?.close();
           };
         };

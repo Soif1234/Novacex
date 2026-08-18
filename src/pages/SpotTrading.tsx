@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Menu, ChevronDown, MoreHorizontal, Info, ArrowUpRight, ArrowDownRight, Trash2, Activity, Bell } from 'lucide-react';
 import { Button } from '../components/ui/Button';
+import { OrderHistory } from '../components/orders/OrderHistory';
+import { TradeHistory } from '../components/orders/TradeHistory';
+import { OpenOrders } from '../components/orders/OpenOrders';
 import { useMarketData } from '../hooks/useMarketData';
 import { useTicker } from '../hooks/useTicker';
 import { useLedger } from '../hooks/useLedger';
@@ -9,17 +12,18 @@ import { useTrades } from '../hooks/useTrades';
 import { OrderBookService } from '../services/OrderBookService';
 import { useAuth } from '../contexts/AuthContext';
 import { Decimal } from 'decimal.js';
-import { ResponsiveContainer, AreaChart, Area, YAxis, Tooltip } from 'recharts';
+
 import { FeeService } from '../services/FeeService';
 
 import { useSelectedSymbol } from '../hooks/useSelectedSymbol';
 import { MarketSelector } from '../components/MarketSelector';
 import { tradingPairRegistry } from '../services/market/TradingPairRegistry';
 import { PriceAlertModal } from '../components/alerts/PriceAlertModal';
+import { FuturesChart } from '../components/futures/FuturesChart';
 
 export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavigate }: { selectedSymbol?: string, onNavigate?: (tab: string, symbol?: string) => void }) {
   const { user } = useAuth();
-  const accountId = user?.id || 'demo-account';
+  const accountId = user?.id || 'demo-user-1';
   const { selectedSymbol, setSelectedSymbol } = useSelectedSymbol();
   const [internalSymbol, setInternalSymbol] = useState(selectedSymbol.replace('USDT', ''));
 
@@ -220,32 +224,8 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
       </div>
 
       {/* Chart Section */}
-      <div className="w-full h-[180px] bg-gray-950 border-b border-gray-900 p-2">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={chartData}>
-            <defs>
-              <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={isPositive ? '#10b981' : '#ef4444'} stopOpacity={0.3}/>
-                <stop offset="95%" stopColor={isPositive ? '#10b981' : '#ef4444'} stopOpacity={0}/>
-              </linearGradient>
-            </defs>
-            <Tooltip 
-              contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-              itemStyle={{ color: '#e5e7eb' }}
-              labelStyle={{ display: 'none' }}
-              formatter={(value: any) => [`$${value.toLocaleString(undefined, {minimumFractionDigits:2})}`, 'Price']}
-            />
-            <YAxis domain={['auto', 'auto']} hide />
-            <Area 
-              type="monotone" 
-              dataKey="price" 
-              stroke={isPositive ? '#10b981' : '#ef4444'} 
-              fillOpacity={1} 
-              fill="url(#colorPrice)" 
-              strokeWidth={2}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
+      <div className="w-full h-[250px] bg-gray-950 border-b border-gray-900 flex-shrink-0">
+        <FuturesChart market={market!} />
       </div>
 
       {/* Main Trading Area */}
@@ -436,101 +416,11 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
           </div>
         </div>
         
-        {historyTab === 'open' && (
-          pendingOrders.length === 0 ? (
-            <div className="py-12 flex flex-col items-center justify-center text-gray-500">
-              <div className="w-12 h-12 bg-gray-900 rounded-full flex items-center justify-center mb-3">
-                <Menu size={20} className="text-gray-600" />
-              </div>
-              <p className="text-sm">No open orders</p>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {pendingOrders.map(order => (
-                <div key={order.id} className="bg-gray-900/50 p-3 rounded-lg border border-gray-800 flex justify-between items-center">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`text-xs font-bold ${order.side === 'BUY' ? 'text-emerald-500' : 'text-red-500'}`}>{order.side}</span>
-                      <span className="font-bold text-sm text-gray-200">{order.symbol}</span>
-                      <span className="text-xs text-gray-500 bg-gray-800 px-1 rounded">{order.type}</span>
-                    </div>
-                    <div className="text-xs text-gray-400 grid grid-cols-2 gap-x-4 gap-y-1">
-                      <div>Price: <span className="text-gray-200">{order.price}</span></div>
-                      <div>Amount: <span className="text-gray-200">{order.quantity}</span></div>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={() => orderService.cancelOrder(order.id)}
-                    className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500/20 transition-colors"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )
-        )}
+        {historyTab === 'open' && <OpenOrders symbol={selectedSymbol} />}
+        
+        {historyTab === 'orders' && <OrderHistory />}
 
-        {historyTab === 'orders' && (
-          orders.filter(o => o.status !== 'PENDING').length === 0 ? (
-            <div className="py-12 flex flex-col items-center justify-center text-gray-500">
-              <p className="text-sm">No order history</p>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {orders.filter(o => o.status !== 'PENDING').map(order => (
-                <div key={order.id} className="bg-gray-900/50 p-3 rounded-lg border border-gray-800">
-                  <div className="flex justify-between items-center mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-xs font-bold ${order.side === 'BUY' ? 'text-emerald-500' : 'text-red-500'}`}>{order.side}</span>
-                      <span className="font-bold text-sm text-gray-200">{order.symbol}</span>
-                      <span className="text-xs text-gray-500 bg-gray-800 px-1 rounded">{order.type}</span>
-                    </div>
-                    <span className={`text-xs font-bold ${
-                      order.status === 'FILLED' ? 'text-emerald-500' : 
-                      order.status === 'CANCELLED' ? 'text-gray-400' : 'text-red-500'
-                    }`}>
-                      {order.status}
-                    </span>
-                  </div>
-                  <div className="text-xs text-gray-400 grid grid-cols-2 gap-x-4 gap-y-1">
-                    <div>Price: <span className="text-gray-200">{order.price || 'Market'}</span></div>
-                    <div>Amount: <span className="text-gray-200">{order.quantity}</span></div>
-                    <div>Date: <span className="text-gray-200">{new Date(order.createdAt).toLocaleString()}</span></div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )
-        )}
-
-        {historyTab === 'trades' && (
-          trades.length === 0 ? (
-            <div className="py-12 flex flex-col items-center justify-center text-gray-500">
-              <p className="text-sm">No trade history</p>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {trades.map(trade => (
-                <div key={trade.id} className="bg-gray-900/50 p-3 rounded-lg border border-gray-800">
-                  <div className="flex justify-between items-center mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-xs font-bold ${trade.side === 'BUY' ? 'text-emerald-500' : 'text-red-500'}`}>{trade.side}</span>
-                      <span className="font-bold text-sm text-gray-200">{trade.symbol}</span>
-                    </div>
-                    <span className="text-xs text-gray-400">{new Date(trade.timestamp).toLocaleString()}</span>
-                  </div>
-                  <div className="text-xs text-gray-400 grid grid-cols-2 gap-x-4 gap-y-1">
-                    <div>Price: <span className="text-gray-200">{trade.price}</span></div>
-                    <div>Amount: <span className="text-gray-200">{trade.quantity}</span></div>
-                    <div>Fee: <span className="text-gray-200">{trade.fee ? `${parseFloat(trade.fee).toLocaleString()} ${trade.feeAsset}` : '--'}</span></div>
-                    <div>Total: <span className="text-gray-200">{(parseFloat(trade.price) * parseFloat(trade.quantity)).toLocaleString()}</span></div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )
-        )}
+        {historyTab === 'trades' && <TradeHistory />}
       </div>
       <PriceAlertModal isOpen={showAlerts} onClose={() => setShowAlerts(false)} defaultSymbol={selectedSymbol} />
     </div>

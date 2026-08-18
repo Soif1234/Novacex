@@ -1,3 +1,4 @@
+import { syncOrderToCore, syncFillToCore } from '../orders/integration';
 import { Decimal } from 'decimal.js';
 import { 
   FuturesOrder, 
@@ -35,19 +36,47 @@ export class FuturesOrderService {
   private load() {
     try {
       const o = sessionStorage.getItem(this.persistKeyOrders);
-      if (o) this.orders = JSON.parse(o);
+      if (o) {
+        const parsed = JSON.parse(o);
+        if (Array.isArray(parsed)) {
+          this.orders = parsed.filter(ord => ord && typeof ord === 'object' && typeof ord.id === 'string');
+          this.orders.forEach(ord => {
+            let status: any = ord.status;
+            if (status === 'PENDING' || status === 'TRIGGERED' || status === 'PROCESSING') status = 'OPEN';
+            syncOrderToCore(ord.id, ord.accountId, ord.symbol, 'FUTURES', ord.side as any, ord.type as any, ord.quantity, ord.price, ord.stopPrice, status as any);
+          });
+        }
+      }
       
       const t = sessionStorage.getItem(this.persistKeyTrades);
-      if (t) this.trades = JSON.parse(t);
+      if (t) {
+        const parsed = JSON.parse(t);
+        if (Array.isArray(parsed)) {
+          this.trades = parsed.filter(tr => tr && typeof tr === 'object' && typeof tr.id === 'string');
+        }
+      }
       
       const p = sessionStorage.getItem(this.persistKeyPositions);
-      if (p) this.positions = JSON.parse(p);
+      if (p) {
+        const parsed = JSON.parse(p);
+        if (Array.isArray(parsed)) {
+          this.positions = parsed.filter(pos => pos && typeof pos === 'object');
+        }
+      }
     } catch (e) {
     }
   }
 
   private save() {
     if (!this.persist) return;
+    
+    // Sync to core
+    this.orders.forEach(o => {
+      let status: any = o.status;
+      if (status === 'PENDING' || status === 'TRIGGERED' || status === 'PROCESSING') status = 'OPEN';
+      syncOrderToCore(o.id, o.accountId, o.symbol, 'FUTURES', o.side as any, o.type as any, o.quantity, o.price, o.stopPrice, status as any);
+    });
+
     try {
       sessionStorage.setItem(this.persistKeyOrders, JSON.stringify(this.orders));
       sessionStorage.setItem(this.persistKeyTrades, JSON.stringify(this.trades));
@@ -138,7 +167,7 @@ export class FuturesOrderService {
         }
         
         // Debit immediately to reserve
-        this.ledger.debit('FUTURES_USDT', requiredMargin, `Lock for ${orderPayload.symbol} LIMIT order`);
+        this.ledger.debit('FUTURES_USDT', requiredMargin, `Lock for ${orderPayload.symbol} LIMIT order`, 'OTHER', `lock_${Date.now()}`);
     }
 
     const now = Date.now();
@@ -193,7 +222,7 @@ export class FuturesOrderService {
       // refund reserved margin if limit
       if (order.type === 'LIMIT' && isOpening) {
         const requiredMargin = futuresRiskService.calculateInitialMargin(order.quantity, order.price!, order.leverage);
-        this.ledger.credit('FUTURES_USDT', requiredMargin, `Refund for rejected ${order.symbol} LIMIT order`);
+        this.ledger.credit('FUTURES_USDT', requiredMargin, `Refund for rejected ${order.symbol} LIMIT order`, 'OTHER', `refund_${order.id}`);
       }
       
       this.save();
@@ -215,7 +244,7 @@ export class FuturesOrderService {
     const isOpening = (order.side === 'BUY' && order.positionSide === 'LONG') || (order.side === 'SELL' && order.positionSide === 'SHORT');
     if ((order.type === 'LIMIT' || (order.type === 'STOP_LIMIT' && order.isTriggered)) && isOpening) {
         const requiredMargin = futuresRiskService.calculateInitialMargin(order.quantity, order.price!, order.leverage);
-        this.ledger.credit('FUTURES_USDT', requiredMargin, `Unlock for cancelled order ${order.id}`);
+        this.ledger.credit('FUTURES_USDT', requiredMargin, `Unlock for cancelled order ${order.id}`, 'OTHER', `unlock_${order.id}`);
     }
 
     this.save();
@@ -267,7 +296,7 @@ export class FuturesOrderService {
                     const availableMargin = this.ledger.getBalance('FUTURES_USDT');
                     
                     if (futuresRiskService.hasSufficientMargin(availableMargin, requiredMargin)) {
-                        this.ledger.debit('FUTURES_USDT', requiredMargin, `Lock for ${order.symbol} STOP_LIMIT order`);
+                        this.ledger.debit('FUTURES_USDT', requiredMargin, `Lock for ${order.symbol} STOP_LIMIT order`, 'OTHER', `lock_stop_${order.id}`);
                         order.updatedAt = Date.now();
                         this.save();
                         this.notify();
@@ -320,7 +349,7 @@ export class FuturesOrderService {
                 const isOpening = (order.side === 'BUY' && order.positionSide === 'LONG') || (order.side === 'SELL' && order.positionSide === 'SHORT');
                 if (isOpening) {
                     const requiredMargin = futuresRiskService.calculateInitialMargin(order.quantity, order.price!, order.leverage);
-                    this.ledger.credit('FUTURES_USDT', requiredMargin, `Release lock for limit execution ${order.id}`);
+                    this.ledger.credit('FUTURES_USDT', requiredMargin, `Release lock for limit execution ${order.id}`, 'OTHER', `release_${order.id}`);
                 }
                 
                 // For LIMIT orders, execution price is typically the limit price or better.
@@ -366,7 +395,7 @@ export class FuturesOrderService {
         }
 
         // Debit margin
-        this.ledger.debit('FUTURES_USDT', requiredMargin, `Margin for ${order.symbol} ${order.positionSide} order ${order.id}`);
+        this.ledger.debit('FUTURES_USDT', requiredMargin, `Margin for ${order.symbol} ${order.positionSide} order ${order.id}`, 'MARGIN', order.id);
 
         if (existingPosition) {
             if (existingPosition.leverage !== order.leverage) {
@@ -406,14 +435,14 @@ export class FuturesOrderService {
         let totalCredit = freedMargin.plus(new Decimal(realizedPnl));
         
         if (totalCredit.gt(0)) {
-            this.ledger.credit('FUTURES_USDT', totalCredit.toString(), `Closed ${order.symbol} ${order.positionSide} order ${order.id}`);
+            this.ledger.credit('FUTURES_USDT', totalCredit.toString(), `Closed ${order.symbol} ${order.positionSide} order ${order.id}`, 'REALIZED_PNL', order.id);
         } else if (totalCredit.lt(0)) {
             const loss = totalCredit.abs();
             const avail = new Decimal(this.ledger.getBalance('FUTURES_USDT'));
             if (avail.gte(loss)) {
-                this.ledger.debit('FUTURES_USDT', loss.toString(), `Realized loss for ${order.symbol} ${order.positionSide} order ${order.id}`);
+                this.ledger.debit('FUTURES_USDT', loss.toString(), `Realized loss for ${order.symbol} ${order.positionSide} order ${order.id}`, 'REALIZED_PNL', order.id);
             } else {
-                this.ledger.debit('FUTURES_USDT', avail.toString(), `Bankruptcy loss for ${order.symbol} order ${order.id}`);
+                this.ledger.debit('FUTURES_USDT', avail.toString(), `Bankruptcy loss for ${order.symbol} order ${order.id}`, 'REALIZED_PNL', order.id);
             }
         }
         
@@ -441,9 +470,11 @@ export class FuturesOrderService {
     const feeResult = futuresFeeService.calculateExecutionFee(executedQty.toString(), execPrice.toString(), isMaker);
     const fee = new Decimal(feeResult.feeAmount);
     
+    const tradeId = Math.random().toString(36).substring(2, 11);
+
     const availMargin = new Decimal(this.ledger.getBalance('FUTURES_USDT'));
     if (availMargin.gte(fee)) {
-        this.ledger.debit('FUTURES_USDT', feeResult.feeAmount, `TRADING_FEE (${feeResult.feeType}) for ${order.symbol} order ${order.id}`);
+        this.ledger.debit('FUTURES_USDT', feeResult.feeAmount, `TRADING_FEE (${feeResult.feeType}) for ${order.symbol} order ${order.id}`, 'TRADING_FEE', tradeId);
     }
 
     // Update cumulative fee on the position
@@ -460,7 +491,7 @@ export class FuturesOrderService {
     }
 
     const trade: FuturesTrade = {
-        id: Math.random().toString(36).substring(2, 11),
+        id: tradeId,
         orderId: order.id,
         accountId: order.accountId,
         symbol: order.symbol,
@@ -475,6 +506,7 @@ export class FuturesOrderService {
     };
     
     this.trades.unshift(trade);
+    syncFillToCore(trade.id, trade.orderId, trade.accountId, trade.symbol, 'FUTURES', trade.side, trade.quantity, trade.price, trade.fee, trade.feeAsset, trade.realizedPnl);
     
     order.status = 'FILLED';
     order.filledQuantity = order.quantity;
@@ -545,7 +577,7 @@ export class FuturesOrderService {
       const availableMargin = new Decimal(this.ledger.getBalance('FUTURES_USDT'));
       if (availableMargin.lt(amt)) throw new Error(`Insufficient available margin. Available: ${availableMargin.toString()} USDT`);
       
-      this.ledger.debit('FUTURES_USDT', amt.toString(), `MARGIN_ADDED for ${position.symbol} ${position.side}`);
+      this.ledger.debit('FUTURES_USDT', amt.toString(), `MARGIN_ADDED for ${position.symbol} ${position.side}`, 'MARGIN', position.positionId);
       
       position.initialMargin = new Decimal(position.initialMargin).plus(amt).toString();
       
@@ -585,7 +617,7 @@ export class FuturesOrderService {
            if (remainingIm.lt(0)) throw new Error('Cannot remove more margin than currently allocated to the position');
       }
       
-      this.ledger.credit('FUTURES_USDT', amt.toString(), `MARGIN_REMOVED for ${position.symbol} ${position.side}`);
+      this.ledger.credit('FUTURES_USDT', amt.toString(), `MARGIN_REMOVED for ${position.symbol} ${position.side}`, 'MARGIN', position.positionId);
       position.initialMargin = remainingIm.toString();
       
       const market = await futuresMarketService.getMarket(position.symbol);

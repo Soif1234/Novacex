@@ -12,9 +12,13 @@ import { MarginMode, FuturesOrderType } from '../types/futures';
 import { futuresTpSlService } from '../services/futures/FuturesTpSlService';
 import { futuresFeeService } from '../services/futures/FuturesFeeService';
 import { FuturesChart } from '../components/futures/FuturesChart';
+import { OpenOrders } from '../components/orders/OpenOrders';
+import { OrderHistory } from '../components/orders/OrderHistory';
+import { TradeHistory } from '../components/orders/TradeHistory';
 import { MarketSelector } from '../components/MarketSelector';
 import { useSelectedSymbol } from '../hooks/useSelectedSymbol';
 import { useTicker } from '../hooks/useTicker';
+import { useAuth } from '../contexts/AuthContext';
 
 const LEVERAGE_OPTIONS = [1, 2, 3, 5, 10, 20];
 
@@ -22,6 +26,7 @@ import { tradingPairRegistry } from '../services/market/TradingPairRegistry';
 import { PriceAlertModal } from '../components/alerts/PriceAlertModal';
 
 export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: string) => void }) {
+  const { user } = useAuth();
   const { data: markets, loading } = useFuturesMarketData();
   const { balances } = useLedger();
   
@@ -35,7 +40,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
       const timeUntil = futuresFundingService.getTimeUntilNextFunding();
       if (timeUntil <= 0) {
          setNextFundingStr('00:00:00');
-         futuresFundingService.settleFunding(futuresOrderService.getPositions('test-acc'), {});
+         futuresFundingService.settleFunding(futuresOrderService.getPositions(user?.id || 'demo-user-1'), {});
       } else {
          const h = Math.floor(timeUntil / (1000 * 60 * 60)).toString().padStart(2, '0');
          const m = Math.floor((timeUntil % (1000 * 60 * 60)) / (1000 * 60)).toString().padStart(2, '0');
@@ -71,7 +76,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
   const [closePrice, setClosePrice] = useState('');
   const [closeQuantity, setCloseQuantity] = useState('');
   const [marginAmount, setMarginAmount] = useState('');
-  const [historyTab, setHistoryTab] = useState<'positions' | 'open' | 'history' | 'funding' | 'fees'>('positions');
+  const [historyTab, setHistoryTab] = useState<'positions' | 'open' | 'history' | 'trades' | 'funding' | 'fees'>('positions');
   const [positions, setPositions] = useState<any[]>([]);
   const [orders, setOrders] = useState<any[]>([]);
   const [trades, setTrades] = useState<any[]>([]);
@@ -93,7 +98,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
             markPrices,
             async (order, price) => {
                 await futuresOrderService.placeOrder(order);
-                const updatedPositions = futuresOrderService.getPositions('test-acc');
+                const updatedPositions = futuresOrderService.getPositions(user?.id || 'demo-user-1');
                 setPositions(updatedPositions);
             }
         );
@@ -107,20 +112,20 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
 
   useEffect(() => {
     const updateData = () => {
-      setPositions(futuresOrderService.getPositions('test-acc'));
-      setOrders(futuresOrderService.getOrders('test-acc'));
-      setTrades(futuresOrderService.getTrades('test-acc'));
+      setPositions(futuresOrderService.getPositions(user?.id || 'demo-user-1'));
+      setOrders(futuresOrderService.getOrders(user?.id || 'demo-user-1'));
+      setTrades(futuresOrderService.getTrades(user?.id || 'demo-user-1'));
     };
     updateData();
     const unsub = futuresOrderService.subscribe(updateData);
-    return unsub;
+    return () => { unsub(); };
   }, []);
   
   const handleClosePosition = async (pos: any, quantity: string) => {
     try {
       setModalError(null);
       await futuresOrderService.placeOrder({
-        accountId: 'test-acc',
+        accountId: user?.id || 'demo-user-1',
         symbol: pos.symbol,
         side: pos.side === 'LONG' ? 'SELL' : 'BUY',
         positionSide: pos.side,
@@ -230,7 +235,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
     try {
       setOrderFeedback(null);
       await futuresOrderService.placeOrder({
-        accountId: 'test-acc',
+        accountId: user?.id || 'demo-user-1',
         symbol: selectedSymbol,
         side: orderSide === 'LONG' ? 'BUY' : 'SELL',
         positionSide: orderSide,
@@ -528,6 +533,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
             <button className={`pb-2 text-xs font-bold ${historyTab === 'positions' ? 'text-white border-b-2 border-emerald-500' : 'text-gray-500'}`} onClick={() => setHistoryTab('positions')}>Positions</button>
             <button className={`pb-2 text-xs font-bold ${historyTab === 'open' ? 'text-white border-b-2 border-emerald-500' : 'text-gray-500'}`} onClick={() => setHistoryTab('open')}>Open Orders</button>
             <button className={`pb-2 text-xs font-bold ${historyTab === 'history' ? 'text-white border-b-2 border-emerald-500' : 'text-gray-500'}`} onClick={() => setHistoryTab('history')}>Order History</button>
+            <button className={`pb-2 text-xs font-bold ${historyTab === 'trades' ? 'text-white border-b-2 border-emerald-500' : 'text-gray-500'}`} onClick={() => setHistoryTab('trades')}>Trade History</button>
             <button className={`pb-2 text-xs font-bold ${historyTab === 'funding' ? 'text-white border-b-2 border-emerald-500' : 'text-gray-500'}`} onClick={() => setHistoryTab('funding')}>Funding</button>
             <button className={`pb-2 text-xs font-bold ${historyTab === 'fees' ? 'text-white border-b-2 border-emerald-500' : 'text-gray-500'}`} onClick={() => setHistoryTab('fees')}>Fees</button>
           </div>
@@ -605,29 +611,16 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
                   </div>
                   <div className="flex justify-between">
                      <span>Status: {o.status}</span>
-                     <Button size="sm" variant="outline" className="text-[10px] py-0 h-5" onClick={() => futuresOrderService.cancelOrder(o.id).then(() => setOrders(futuresOrderService.getOrders('test-acc')))}>Cancel</Button>
+                     <Button size="sm" variant="outline" className="text-[10px] py-0 h-5" onClick={() => futuresOrderService.cancelOrder(o.id).then(() => setOrders(futuresOrderService.getOrders(user?.id || 'demo-user-1')))}>Cancel</Button>
                   </div>
                </div>
             ))}
 
-            {historyTab === 'history' && orders.filter(o => o.status !== 'NEW' && o.status !== 'PENDING' && o.symbol === selectedSymbol).map(o => (
-               <div key={o.id} className="bg-gray-900 p-3 rounded-lg flex flex-col gap-2 border border-gray-800 text-xs text-gray-300">
-                  <div className="flex justify-between">
-                     <span className="font-bold text-white">{o.symbol}</span>
-                     <span>{o.side} {o.type}</span>
-                  </div>
-                  <div className="flex justify-between">
-                     <span>Price: {o.price || 'Market'}</span>
-                     <span>Qty: {o.quantity}</span>
-                  </div>
-                  <div className="flex justify-between">
-                     <span>Status: {o.status}</span>
-                     <span>{new Date(o.createdAt).toLocaleString()}</span>
-                  </div>
-               </div>
-            ))}
+            {historyTab === 'history' && <OrderHistory />}
 
-            {historyTab === 'funding' && futuresFundingService.getHistory('test-acc').filter(f => f.symbol === selectedSymbol).map(f => (
+            {historyTab === 'trades' && <TradeHistory />}
+
+            {historyTab === 'funding' && futuresFundingService.getHistory(user?.id || 'demo-user-1').filter(f => f.symbol === selectedSymbol).map(f => (
                <div key={f.id} className="bg-gray-900 p-3 rounded-lg flex flex-col gap-2 border border-gray-800 text-xs text-gray-300">
                   <div className="flex justify-between">
                      <span className="font-bold text-white">{f.symbol} {f.side}</span>
@@ -707,7 +700,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
                          try {
                             setModalError(null);
                             await futuresOrderService.placeOrder({
-                              accountId: 'test-acc',
+                              accountId: user?.id || 'demo-user-1',
                               symbol: pos.symbol,
                               side: pos.side === 'LONG' ? 'SELL' : 'BUY',
                               positionSide: pos.side,
@@ -722,7 +715,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
                       }
                       setActionPositionId(null);
                       setModalError(null);
-                      setPositions(futuresOrderService.getPositions('test-acc'));
+                      setPositions(futuresOrderService.getPositions(user?.id || 'demo-user-1'));
                    }
                 }}
               >
@@ -763,13 +756,13 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
                       try {
                           setModalError(null);
                           if (positionAction === 'ADD_MARGIN') {
-                              await futuresOrderService.addIsolatedMargin('test-acc', pos.positionId, marginAmount);
+                              await futuresOrderService.addIsolatedMargin(user?.id || 'demo-user-1', pos.positionId, marginAmount);
                           } else {
-                              await futuresOrderService.removeIsolatedMargin('test-acc', pos.positionId, marginAmount);
+                              await futuresOrderService.removeIsolatedMargin(user?.id || 'demo-user-1', pos.positionId, marginAmount);
                           }
                           setActionPositionId(null);
                           setModalError(null);
-                          setPositions(futuresOrderService.getPositions('test-acc'));
+                          setPositions(futuresOrderService.getPositions(user?.id || 'demo-user-1'));
                       } catch (e: any) {
                           setModalError(e.message || 'Margin update failed');
                       }

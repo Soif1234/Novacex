@@ -7,7 +7,7 @@ import { fetchMarketData } from '../marketData';
 import { Asset, WalletBalances } from './types';
 
 export class WalletService {
-  public async getAssets(accountId: string = 'demo-account'): Promise<Asset[]> {
+  public async getAssets(accountId: string = 'demo-user-1'): Promise<Asset[]> {
     const balances = demoLedger.getAllBalances();
     const spotOrders = orderService.getPendingOrders().filter(o => o.accountId === accountId);
     
@@ -90,7 +90,7 @@ export class WalletService {
     return Array.from(assetsMap.values()).filter(a => new Decimal(a.totalBalance).gt(0) || new Decimal(a.availableBalance).gt(0));
   }
 
-  public async getWalletBalances(accountId: string = 'demo-account'): Promise<WalletBalances> {
+  public async getWalletBalances(accountId: string = 'demo-user-1'): Promise<WalletBalances> {
     const assets = await this.getAssets(accountId);
     const spotUsdtAsset = assets.find(a => a.asset === 'USDT') || this.createEmptyAsset('USDT');
     const futuresUsdtAsset = assets.find(a => a.asset === 'FUTURES_USDT') || this.createEmptyAsset('FUTURES_USDT');

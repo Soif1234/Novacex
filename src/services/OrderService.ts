@@ -1,3 +1,4 @@
+import { syncOrderToCore, syncFillToCore } from './orders/integration';
 import { DemoOrder, OrderStatus } from '../types/orders';
 import { validateDemoOrder } from './orderValidation';
 import { DemoLedger, demoLedger } from './ledger';
@@ -25,7 +26,11 @@ export class OrderService {
     try {
       const data = sessionStorage.getItem(this.persistKey);
       if (data) {
-        this.orders = JSON.parse(data);
+        const parsed = JSON.parse(data);
+        if (Array.isArray(parsed)) this.orders = parsed.filter(item => item && typeof item === "object");
+        this.orders.forEach(o => {
+          syncOrderToCore(o.id, o.accountId, o.symbol, 'SPOT', o.side, o.type as any, o.quantity, o.price, undefined, o.status as any);
+        });
       }
     } catch (e) {
       
@@ -74,6 +79,7 @@ export class OrderService {
     this.orders.unshift(order);
     this.save();
     this.notify();
+    syncOrderToCore(order.id, order.accountId, order.symbol, 'SPOT', order.side, order.type as any, order.quantity, order.price, undefined, order.status as any);
 
     if (order.type === 'MARKET') {
       await this.executeMarketOrder(order);
@@ -93,9 +99,9 @@ export class OrderService {
     if (order.side === 'BUY') {
       const price = new Decimal(order.price!);
       const cost = qty.mul(price);
-      this.ledger.debit(quoteAsset, cost.toString(), `Lock for limit order ${order.id}`);
+      this.ledger.debit(quoteAsset, cost.toString(), `Lock for limit order ${order.id}`, 'OTHER', `lock_${order.id}`);
     } else {
-      this.ledger.debit(baseAsset, qty.toString(), `Lock for limit order ${order.id}`);
+      this.ledger.debit(baseAsset, qty.toString(), `Lock for limit order ${order.id}`, 'OTHER', `lock_${order.id}`);
     }
   }
 
@@ -108,9 +114,9 @@ export class OrderService {
     if (order.side === 'BUY') {
       const price = new Decimal(order.price!);
       const cost = qty.mul(price);
-      this.ledger.credit(quoteAsset, cost.toString(), `Unlock for cancelled order ${order.id}`);
+      this.ledger.credit(quoteAsset, cost.toString(), `Unlock for cancelled order ${order.id}`, 'OTHER', `unlock_${order.id}`);
     } else {
-      this.ledger.credit(baseAsset, qty.toString(), `Unlock for cancelled order ${order.id}`);
+      this.ledger.credit(baseAsset, qty.toString(), `Unlock for cancelled order ${order.id}`, 'OTHER', `unlock_${order.id}`);
     }
   }
 
@@ -127,6 +133,7 @@ export class OrderService {
     order.updatedAt = Date.now();
     this.save();
     this.notify();
+    syncOrderToCore(order.id, order.accountId, order.symbol, 'SPOT', order.side, order.type as any, order.quantity, order.price, undefined, 'CANCELLED');
   }
 
   private async executeMarketOrder(order: DemoOrder) {
@@ -152,20 +159,26 @@ export class OrderService {
       let fee = new Decimal(0);
       let feeAsset = '';
 
+      const fillId = Date.now().toString() + Math.random().toString().substring(2,8);
+
       if (order.side === 'BUY') {
         fee = new Decimal(FeeService.calculateFee(qty));
         feeAsset = baseAsset;
-        const netQty = qty.minus(fee);
         
-        this.ledger.debit(quoteAsset, cost.toString(), `Market BUY ${order.id}`);
-        this.ledger.credit(baseAsset, netQty.toString(), `Market BUY ${order.id}`);
+        this.ledger.debit(quoteAsset, cost.toString(), `Market BUY ${order.id}`, 'OTHER', `buy_${order.id}_debit`);
+        this.ledger.credit(baseAsset, qty.toString(), `Market BUY ${order.id}`, 'OTHER', `buy_${order.id}_credit`);
+        if (fee.gt(0)) {
+          this.ledger.debit(baseAsset, fee.toString(), `TRADING_FEE for ${order.symbol} order ${order.id}`, 'TRADING_FEE', `fee_${fillId}`);
+        }
       } else {
         fee = new Decimal(FeeService.calculateFee(cost));
         feeAsset = quoteAsset;
-        const netCost = cost.minus(fee);
         
-        this.ledger.debit(baseAsset, qty.toString(), `Market SELL ${order.id}`);
-        this.ledger.credit(quoteAsset, netCost.toString(), `Market SELL ${order.id}`);
+        this.ledger.debit(baseAsset, qty.toString(), `Market SELL ${order.id}`, 'OTHER', `sell_${order.id}_debit`);
+        this.ledger.credit(quoteAsset, cost.toString(), `Market SELL ${order.id}`, 'OTHER', `sell_${order.id}_credit`);
+        if (fee.gt(0)) {
+          this.ledger.debit(quoteAsset, fee.toString(), `TRADING_FEE for ${order.symbol} order ${order.id}`, 'TRADING_FEE', `fee_${fillId}`);
+        }
       }
 
       // Record Trade
@@ -179,6 +192,7 @@ export class OrderService {
         fee: fee.toString(),
         feeAsset,
       });
+      syncFillToCore(Date.now().toString() + Math.random().toString(), order.id, order.accountId, order.symbol, 'SPOT', order.side, qty.toString(), price.toString(), fee.toString(), feeAsset);
 
       this.updateOrderStatus(order.id, 'FILLED');
     } catch (err: any) {
@@ -240,12 +254,12 @@ export class OrderService {
       const netQty = qty.minus(fee);
 
       // Funds were locked, we now credit the base asset minus fee
-      this.ledger.credit(baseAsset, netQty.toString(), `Limit BUY execution ${order.id}`);
+      this.ledger.credit(baseAsset, netQty.toString(), `Limit BUY execution ${order.id}`, 'OTHER', `exec_buy_${order.id}`);
       
       // If executed at a better price, refund the difference
       if (actualCost.lt(lockedCost)) {
         const refund = lockedCost.minus(actualCost);
-        this.ledger.credit(quoteAsset, refund.toString(), `Limit BUY price improvement refund ${order.id}`);
+        this.ledger.credit(quoteAsset, refund.toString(), `Limit BUY price improvement refund ${order.id}`, 'OTHER', `refund_${order.id}`);
       }
     } else {
       fee = new Decimal(FeeService.calculateFee(actualCost));
@@ -253,7 +267,7 @@ export class OrderService {
       const netCost = actualCost.minus(fee);
 
       // Base asset was locked, we now credit the quote asset minus fee
-      this.ledger.credit(quoteAsset, netCost.toString(), `Limit SELL execution ${order.id}`);
+      this.ledger.credit(quoteAsset, netCost.toString(), `Limit SELL execution ${order.id}`, 'OTHER', `exec_sell_${order.id}`);
     }
 
     this.tradeSvc.recordTrade({
@@ -266,6 +280,7 @@ export class OrderService {
       fee: fee.toString(),
       feeAsset,
     });
+    syncFillToCore(Date.now().toString() + Math.random().toString(), order.id, order.accountId, order.symbol, 'SPOT', order.side, qty.toString(), executionPrice.toString(), fee.toString(), feeAsset);
 
     this.updateOrderStatus(order.id, 'FILLED');
   }
@@ -277,6 +292,7 @@ export class OrderService {
       order.updatedAt = Date.now();
       this.save();
       this.notify();
+      syncOrderToCore(order.id, order.accountId, order.symbol, 'SPOT', order.side, order.type as any, order.quantity, order.price, undefined, status as any);
     }
   }
 

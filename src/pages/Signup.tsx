@@ -19,7 +19,10 @@ export function Signup({ onNavigate, returnTab = 'home' }: { onNavigate: (tab: s
     <div className="min-h-[80vh] flex flex-col items-center justify-center px-6">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold text-white mb-2">Create Demo Account</h1>
+          <div className="inline-block bg-blue-900/40 text-blue-400 text-xs font-bold px-3 py-1 rounded-full mb-3 uppercase tracking-wider border border-blue-500/20">
+            DEMO ACCOUNT
+          </div>
+          <h1 className="text-2xl font-bold text-white mb-2">Create Demo Profile</h1>
           <p className="text-gray-400 text-sm">Start trading in our simulated environment</p>
         </div>
         
@@ -51,13 +54,13 @@ export function Signup({ onNavigate, returnTab = 'home' }: { onNavigate: (tab: s
             />
           </div>
           
-          <Button variant="primary" type="submit" className="w-full py-3 mt-2">
-            Create Account (Demo)
+          <Button variant="primary" type="submit" className="w-full py-4 font-bold mt-2 text-lg">
+            Create Profile (Demo)
           </Button>
         </form>
 
         <div className="mt-6 text-center text-sm text-gray-500">
-          Already have an account?{' '}
+          Already have a profile?{' '}
           <button onClick={() => onNavigate('login')} className="text-blue-500 hover:text-blue-400 font-medium">
             Log In
           </button>

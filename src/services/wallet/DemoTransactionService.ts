@@ -31,7 +31,10 @@ export class DemoTransactionService {
     try {
       const data = sessionStorage.getItem(this.persistKey);
       if (data) {
-        this.transactions = JSON.parse(data);
+        const parsed = JSON.parse(data);
+        if (Array.isArray(parsed)) {
+          this.transactions = parsed.filter(t => t && typeof t === 'object' && typeof t.id === 'string');
+        }
       }
     } catch (e) {}
   }
@@ -98,7 +101,7 @@ export class DemoTransactionService {
     if (!tx || tx.type !== 'DEPOSIT') throw new Error('Deposit not found');
     
     try {
-      demoLedger.credit(tx.asset, tx.amount, 'Demo Deposit');
+      demoLedger.credit(tx.asset, tx.amount, 'Demo Deposit', 'DEPOSIT', tx.id);
       tx.status = 'COMPLETED';
       tx.completedAt = Date.now();
     } catch (e: any) {
@@ -143,7 +146,7 @@ export class DemoTransactionService {
     if (!tx || tx.type !== 'WITHDRAWAL') throw new Error('Withdrawal not found');
 
     try {
-      demoLedger.debit(tx.asset, tx.amount, 'Demo Withdrawal');
+      demoLedger.debit(tx.asset, tx.amount, 'Demo Withdrawal', 'WITHDRAWAL', tx.id);
       tx.status = 'COMPLETED';
       tx.completedAt = Date.now();
     } catch (e: any) {

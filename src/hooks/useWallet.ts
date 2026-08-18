@@ -5,7 +5,7 @@ import { orderService } from '../services/OrderService';
 import { futuresOrderService } from '../services/futures/FuturesOrderService';
 import { tradeService } from '../services/TradeService';
 
-export function useWallet(accountId: string = 'demo-account') {
+export function useWallet(accountId: string = 'demo-user-1') {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [balances, setBalances] = useState<WalletBalances | null>(null);
   const [isLoading, setIsLoading] = useState(true);

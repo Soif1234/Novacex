@@ -35,7 +35,8 @@ class NotificationService {
       if (typeof localStorage !== 'undefined') {
         const stored = localStorage.getItem('nova_notifications');
         if (stored) {
-          this.notifications = JSON.parse(stored);
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) this.notifications = parsed.filter(item => item && typeof item === "object");
         }
       }
     } catch (e) {

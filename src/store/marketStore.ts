@@ -1,4 +1,5 @@
 import { tradingPairRegistry } from '../services/market/TradingPairRegistry';
+import { preferencesService } from '../services/user/PreferencesService';
 
 type Listener = (symbol: string) => void;
 
@@ -10,6 +11,11 @@ class MarketStore {
     const saved = localStorage.getItem('selectedSymbol');
     if (saved && tradingPairRegistry.isSupported(saved)) {
       this.selectedSymbol = saved;
+    } else {
+      const prefs = preferencesService.getPreferences();
+      if (prefs && prefs.defaultMarket && tradingPairRegistry.isSupported(prefs.defaultMarket)) {
+        this.selectedSymbol = prefs.defaultMarket;
+      }
     }
   }
 

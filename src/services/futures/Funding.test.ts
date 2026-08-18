@@ -164,12 +164,12 @@ describe('Futures Funding Service', () => {
           liquidationPrice: '0', status: 'OPEN', createdAt: 0, updatedAt: 0
       };
       
-      const transactionsBefore = ledger.getHistory().filter(t => t.asset === 'USDT').length;
+      const transactionsBefore = ledger.getHistory().filter(t => t.asset === 'FUTURES_USDT').length;
       service.forceSettleForTesting([posLong], {});
-      const transactionsAfter = ledger.getHistory().filter(t => t.asset === 'USDT').length;
+      const transactionsAfter = ledger.getHistory().filter(t => t.asset === 'FUTURES_USDT').length;
       
       expect(transactionsAfter).toBe(transactionsBefore + 1);
-      const tx = ledger.getHistory().filter(t => t.asset === 'USDT')[0]; // It's prepended
+      const tx = ledger.getHistory().filter(t => t.asset === 'FUTURES_USDT')[0]; // It's prepended
       expect(tx.reason).toContain('FUNDING_PAYMENT');
       expect(tx.amount).toBe('1'); // Debit 1
   });

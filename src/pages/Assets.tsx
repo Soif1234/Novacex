@@ -5,11 +5,13 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useWallet } from '../hooks/useWallet';
-import { useLedgerHistory } from '../hooks/useLedgerHistory';
+import { useTransactionHistory } from '../hooks/useTransactionHistory';
 import { 
-  Asset, internalTransferService, WalletType, demoTransactionService, 
-  LedgerEntryType, LedgerEntry 
+  Asset, internalTransferService, WalletType, demoTransactionService
 } from '../services/wallet';
+import { TransactionType, Transaction } from '../services/transactions';
+
+import { ErrorBoundary } from '../components/ErrorBoundary';
 
 const ASSET_DETAILS: Record<string, { name: string, color: string }> = {
   USDT: { name: 'Tether US', color: 'bg-[#26A17B]' },
@@ -21,12 +23,13 @@ const ASSET_DETAILS: Record<string, { name: string, color: string }> = {
 };
 
 export function Assets() {
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<'overview' | 'spot' | 'futures' | 'history'>('overview');
   const [showTransfer, setShowTransfer] = useState(false);
   const [showDeposit, setShowDeposit] = useState(false);
   const [showWithdraw, setShowWithdraw] = useState(false);
-  const { user } = useAuth();
-  const { assets, balances, isLoading } = useWallet(user?.id || 'demo-account');
+  
+  const { assets, balances, isLoading } = useWallet(user?.id || 'demo-user-1');
 
   if (isLoading || !balances) {
     return (
@@ -147,21 +150,27 @@ export function Assets() {
         {activeTab === 'overview' && renderOverview()}
         {activeTab === 'spot' && renderSpot()}
         {activeTab === 'futures' && renderFutures()}
-        {activeTab === 'history' && <HistoryTab />}
+        {activeTab === 'history' && (
+          <ErrorBoundary fallback={<div className="text-gray-500 text-center py-4">Transaction history unavailable.</div>}>
+            <HistoryTab />
+          </ErrorBoundary>
+        )}
 
         {showTransfer && <TransferModal onClose={() => setShowTransfer(false)} balances={balances} />}
-        {showDeposit && <DepositModal onClose={() => setShowDeposit(false)} />}
-        {showWithdraw && <WithdrawModal onClose={() => setShowWithdraw(false)} balances={balances} assets={assets} />}
+        {showDeposit && <DepositModal onClose={() => setShowDeposit(false)} userId={user?.id || "demo-user-1"} />}
+        {showWithdraw && <WithdrawModal onClose={() => setShowWithdraw(false)} balances={balances} assets={assets} userId={user?.id || "demo-user-1"} />}
       </div>
     </div>
   );
 }
 
 function HistoryTab() {
-  const { entries } = useLedgerHistory();
+  const { user } = useAuth();
+  const { transactions: entries } = useTransactionHistory(user?.id || 'demo-user-1');
   const [walletFilter, setWalletFilter] = useState<string>('ALL');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
   const [assetFilter, setAssetFilter] = useState<string>('ALL');
+  const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
 
   const assetsList = useMemo(() => {
     return Array.from(new Set(entries.map(e => e.asset)));
@@ -238,7 +247,7 @@ function HistoryTab() {
       {/* Entries List */}
       <div className="flex flex-col gap-2.5">
         {filteredEntries.map((entry) => (
-          <HistoryRow key={entry.id} entry={entry} />
+          <HistoryRow key={entry.id} entry={entry} onClick={() => setSelectedTx(entry)} />
         ))}
         {filteredEntries.length === 0 && (
           <div className="flex flex-col items-center justify-center py-12 text-center bg-gray-900/20 rounded-xl border border-gray-800/40">
@@ -248,14 +257,15 @@ function HistoryTab() {
           </div>
         )}
       </div>
+      {selectedTx && <TransactionDetailModal tx={selectedTx} onClose={() => setSelectedTx(null)} />}
     </div>
   );
 }
 
-function HistoryRow({ entry }: { entry: LedgerEntry; key?: React.Key }) {
+function HistoryRow({ entry, onClick }: { entry: Transaction; key?: React.Key; onClick?: () => void }) {
   const isCredit = entry.direction === 'CREDIT';
   
-  const typeBadgeColors: Record<LedgerEntryType, string> = {
+  const typeBadgeColors: Record<TransactionType, string> = {
     DEPOSIT: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
     WITHDRAWAL: 'bg-red-500/10 text-red-400 border-red-500/20',
     TRANSFER: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
@@ -266,27 +276,40 @@ function HistoryRow({ entry }: { entry: LedgerEntry; key?: React.Key }) {
     OTHER: 'bg-gray-500/10 text-gray-400 border-gray-500/20'
   };
 
-  const dateStr = new Date(entry.createdAt).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  });
+  let dateStr = 'Unknown date';
+  try {
+    const d = new Date(entry.createdAt);
+    if (!isNaN(d.getTime())) {
+      dateStr = d.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+    }
+  } catch (e) {
+    // Ignore date parsing errors
+  }
+
+  const safeAmount = (entry.amount && entry.amount !== 'NaN') ? entry.amount : '0';
 
   return (
-    <div className="p-3 bg-gray-900/40 border border-gray-800/60 rounded-xl flex flex-col gap-2 hover:border-gray-700 transition-colors">
+    <div 
+      className="p-3 bg-gray-900/40 border border-gray-800/60 rounded-xl flex flex-col gap-2 hover:border-gray-700 hover:bg-gray-800/40 transition-colors cursor-pointer"
+      onClick={onClick}
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${typeBadgeColors[entry.type] || typeBadgeColors.OTHER}`}>
-            {entry.type}
+            {entry.type.replace('_', ' ')}
           </span>
           <span className="text-[10px] font-medium bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded">
             {entry.wallet}
           </span>
         </div>
         <div className={`font-bold text-sm ${isCredit ? 'text-emerald-400' : 'text-red-400'}`}>
-          {isCredit ? '+' : '-'}{entry.amount} {entry.asset}
+          {isCredit ? '+' : '-'}{safeAmount} {entry.asset}
         </div>
       </div>
 
@@ -477,7 +500,7 @@ function TransferModal({ onClose, balances }: { onClose: () => void, balances: a
   );
 }
 
-function DepositModal({ onClose }: { onClose: () => void }) {
+function DepositModal({ onClose, userId }: { onClose: () => void; userId: string }) {
   const [asset, setAsset] = useState('USDT');
   const [amount, setAmount] = useState('');
   const [error, setError] = useState('');
@@ -566,7 +589,7 @@ function DepositModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function WithdrawModal({ onClose, balances, assets }: { onClose: () => void, balances: any, assets: Asset[] }) {
+function WithdrawModal({ onClose, balances, assets, userId }: { onClose: () => void, balances: any, assets: Asset[], userId: string }) {
   const [asset, setAsset] = useState('USDT');
   const [amount, setAmount] = useState('');
   const [destination, setDestination] = useState('');
@@ -583,7 +606,7 @@ function WithdrawModal({ onClose, balances, assets }: { onClose: () => void, bal
       if (!destination.trim()) {
         throw new Error('Destination label is required');
       }
-      await demoTransactionService.createWithdrawal(asset, amount, destination, available);
+      await demoTransactionService.createWithdrawal(userId, asset, amount, destination);
       onClose();
     } catch (err: any) {
       setError(err.message);
@@ -673,6 +696,104 @@ function WithdrawModal({ onClose, balances, assets }: { onClose: () => void, bal
           >
             {isSubmitting ? 'Confirming...' : 'Confirm Withdrawal'}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TransactionDetailModal({ tx, onClose }: { tx: Transaction; onClose: () => void }) {
+  let dateStr = 'Unknown date';
+  try {
+    const d = new Date(tx.createdAt);
+    if (!isNaN(d.getTime())) {
+      dateStr = d.toLocaleString();
+    }
+  } catch (e) {}
+
+  let completedStr = '-';
+  if (tx.completedAt) {
+    try {
+      const d = new Date(tx.completedAt);
+      if (!isNaN(d.getTime())) {
+        completedStr = d.toLocaleString();
+      }
+    } catch (e) {}
+  }
+
+  const isCredit = tx.direction === 'CREDIT';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-sm overflow-hidden flex flex-col shadow-2xl">
+        <div className="flex justify-between items-center p-4 border-b border-gray-800">
+          <h3 className="text-gray-100 font-bold">Transaction Details</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-300 transition-colors">
+            <X size={20} />
+          </button>
+        </div>
+        
+        <div className="p-5 flex flex-col gap-4">
+          <div className="text-center pb-2 border-b border-gray-800/50">
+            <div className={`text-2xl font-bold ${isCredit ? 'text-emerald-400' : 'text-red-400'}`}>
+              {isCredit ? '+' : '-'}{tx.amount} {tx.asset}
+            </div>
+            <div className="text-xs text-gray-500 mt-1 uppercase font-semibold">
+              {tx.type.replace('_', ' ')} • {tx.wallet}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 text-sm">
+            <div className="flex justify-between">
+              <span className="text-gray-500">Status</span>
+              <span className={`font-bold ${
+                tx.status === 'COMPLETED' ? 'text-emerald-400' :
+                tx.status === 'FAILED' ? 'text-red-400' :
+                tx.status === 'CANCELLED' ? 'text-gray-400' :
+                'text-amber-400'
+              }`}>{tx.status}</span>
+            </div>
+            
+            <div className="flex justify-between">
+              <span className="text-gray-500">Transaction ID</span>
+              <span className="text-gray-300 font-mono text-xs">{tx.id}</span>
+            </div>
+
+            {tx.referenceId && (
+              <div className="flex justify-between">
+                <span className="text-gray-500">Reference ID</span>
+                <span className="text-gray-300 font-mono text-xs">{tx.referenceId}</span>
+              </div>
+            )}
+
+            <div className="flex justify-between">
+              <span className="text-gray-500">Description</span>
+              <span className="text-gray-300 text-right max-w-[180px]">{tx.description}</span>
+            </div>
+
+            <div className="flex justify-between">
+              <span className="text-gray-500">Created</span>
+              <span className="text-gray-400 text-xs">{dateStr}</span>
+            </div>
+
+            {(tx.status === 'COMPLETED' || tx.status === 'FAILED') && (
+              <div className="flex justify-between">
+                <span className="text-gray-500">Completed</span>
+                <span className="text-gray-400 text-xs">{completedStr !== '-' ? completedStr : dateStr}</span>
+              </div>
+            )}
+          </div>
+          
+          <div className="mt-2 bg-amber-900/20 border border-amber-500/20 rounded-lg p-3 text-center">
+            <span className="text-amber-500/80 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center justify-center gap-1">
+              <AlertCircle size={12} />
+              Demo Environment
+            </span>
+            <span className="text-amber-400/60 text-[10px] leading-tight block">
+              DEMO ONLY — NO REAL FUNDS.<br/>
+              This is a paper-trading simulation record.
+            </span>
+          </div>
         </div>
       </div>
     </div>

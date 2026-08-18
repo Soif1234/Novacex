@@ -34,7 +34,8 @@ class PriceAlertService {
       if (typeof localStorage !== 'undefined') {
         const stored = localStorage.getItem('nova_price_alerts');
         if (stored) {
-          this.alerts = JSON.parse(stored);
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) this.alerts = parsed.filter(item => item && typeof item === "object");
         }
       }
     } catch (e) {

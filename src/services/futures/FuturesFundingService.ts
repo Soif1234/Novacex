@@ -42,7 +42,10 @@ export class FuturesFundingService {
   private load() {
     try {
       const h = sessionStorage.getItem(this.persistKey);
-      if (h) this.history = JSON.parse(h);
+      if (h) {
+        const parsed = JSON.parse(h);
+        if (Array.isArray(parsed)) this.history = parsed.filter(item => item && typeof item === "object");
+      }
 
       const t = sessionStorage.getItem(this.persistKeyTime);
       if (t) this.nextFundingTime = parseInt(t, 10);
@@ -158,17 +161,17 @@ export class FuturesFundingService {
       if (alreadySettled) continue;
       
       if (isPaying) {
-          const avail = new Decimal(this.ledger.getBalance('USDT'));
+          const avail = new Decimal(this.ledger.getBalance('FUTURES_USDT'));
           let debitAmount = absAmount;
           if (avail.lt(absAmount)) {
               debitAmount = avail;
               // If we wanted to trigger liquidation here, we could. For now just take max avail.
           }
           if (debitAmount.gt(0)) {
-              this.ledger.debit('USDT', debitAmount.toString(), `FUNDING_PAYMENT for ${pos.symbol} ${pos.side}`);
+              this.ledger.debit('FUTURES_USDT', debitAmount.toString(), `FUNDING_PAYMENT for ${pos.symbol} ${pos.side}`, 'FUNDING', `funding_${eventId}_${pos.positionId}`);
           }
       } else {
-          this.ledger.credit('USDT', absAmount.toString(), `FUNDING_RECEIPT for ${pos.symbol} ${pos.side}`);
+          this.ledger.credit('FUTURES_USDT', absAmount.toString(), `FUNDING_RECEIPT for ${pos.symbol} ${pos.side}`, 'FUNDING', `funding_${eventId}_${pos.positionId}`);
       }
       
       this.history.push({

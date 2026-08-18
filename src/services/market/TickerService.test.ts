@@ -16,7 +16,7 @@ describe('TickerService', () => {
 
   it('1. ticker normalization & 2. valid BTC ticker & 3. valid ETH ticker', () => {
     // @ts-ignore
-    tickerService.updateTickerFromRest({
+    tickerService.updateTickerFromRest('BTCUSDT', {
       symbol: 'BTCUSDT',
       lastPrice: '60000',
       priceChange: '1000',
@@ -29,7 +29,7 @@ describe('TickerService', () => {
     });
     
     // @ts-ignore
-    tickerService.updateTickerFromRest({
+    tickerService.updateTickerFromRest('ETHUSDT', {
       symbol: 'ETHUSDT',
       lastPrice: '3000',
       priceChange: '-50',
@@ -59,7 +59,7 @@ describe('TickerService', () => {
 
   it('5. 24h change & 6. 24h high & 7. 24h low & 8. volume', () => {
     // @ts-ignore
-    tickerService.updateTickerFromRest({
+    tickerService.updateTickerFromRest('SOLUSDT', {
       symbol: 'SOLUSDT',
       lastPrice: '150',
       priceChange: '5',
@@ -81,7 +81,7 @@ describe('TickerService', () => {
   it('16. ticker update & 18. WebSocket cleanup', () => {
     // test websocket message processing
     // @ts-ignore
-    tickerService.updateTickerFromRest({
+    tickerService.updateTickerFromRest('BNBUSDT', {
       symbol: 'BNBUSDT',
       lastPrice: '500',
       priceChange: '0',
@@ -104,7 +104,7 @@ describe('TickerService', () => {
     });
 
     // @ts-ignore
-    tickerService.connectWs('api', 'dummy_url', ['BNBUSDT']);
+    tickerService.connectWs('api', 'dummy_url', ['BNBUSDT'], [{symbol: 'BNBUSDT', apiSymbol: 'BNBUSDT'}]);
     
     // Simulate WS update
     wsInstance.onmessage({

@@ -13,7 +13,7 @@ describe('Markets Page', () => {
     tickerService.tickers.clear();
     
     // @ts-ignore
-    tickerService.updateTickerFromRest({
+    tickerService.updateTickerFromRest('BTCUSDT', {
       symbol: 'BTCUSDT',
       lastPrice: '60000',
       priceChangePercent: '5.0',
@@ -23,7 +23,7 @@ describe('Markets Page', () => {
     });
     
     // @ts-ignore
-    tickerService.updateTickerFromRest({
+    tickerService.updateTickerFromRest('ETHUSDT', {
       symbol: 'ETHUSDT',
       lastPrice: '3000',
       priceChangePercent: '-2.0',
@@ -33,7 +33,7 @@ describe('Markets Page', () => {
     });
     
     // @ts-ignore
-    tickerService.updateTickerFromRest({
+    tickerService.updateTickerFromRest('SOLUSDT', {
       symbol: 'SOLUSDT',
       lastPrice: '100',
       priceChangePercent: '10.0',
@@ -83,7 +83,7 @@ describe('Markets Page', () => {
   it('20. NaN prevention & 21. Infinity prevention', () => {
     // Add corrupted ticker
     // @ts-ignore
-    tickerService.updateTickerFromRest({
+    tickerService.updateTickerFromRest('DOGEUSDT', {
       symbol: 'DOGEUSDT',
       lastPrice: 'NaN',
       priceChangePercent: 'Infinity',

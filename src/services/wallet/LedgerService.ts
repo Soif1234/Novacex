@@ -7,6 +7,7 @@ export type LedgerEntryStatus = 'COMPLETED' | 'PENDING' | 'FAILED' | 'CANCELLED'
 
 export interface LedgerEntry {
   id: string;
+  userId?: string;
   type: LedgerEntryType;
   asset: string;
   amount: string;
@@ -36,7 +37,10 @@ export class LedgerService {
     try {
       const data = sessionStorage.getItem(this.persistKey);
       if (data) {
-        this.entries = JSON.parse(data);
+        const parsed = JSON.parse(data);
+        if (Array.isArray(parsed)) {
+          this.entries = parsed.filter(e => e && typeof e === 'object' && typeof e.id === 'string');
+        }
       }
     } catch (e) {}
   }

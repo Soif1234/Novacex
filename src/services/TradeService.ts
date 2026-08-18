@@ -1,3 +1,4 @@
+import { syncFillToCore } from './orders/integration';
 import { DemoTrade } from '../types/trades';
 
 export class TradeService {
@@ -24,7 +25,11 @@ export class TradeService {
     try {
       const data = sessionStorage.getItem(this.persistKey);
       if (data) {
-        this.trades = JSON.parse(data);
+        const parsed = JSON.parse(data);
+        if (Array.isArray(parsed)) this.trades = parsed.filter(item => item && typeof item === "object");
+        this.trades.forEach(t => {
+          syncFillToCore(t.id, t.orderId, t.accountId, t.symbol, 'SPOT', t.side, t.quantity, t.price, t.fee || '0', t.feeAsset || '', '0');
+        });
       }
     } catch (e) {
       

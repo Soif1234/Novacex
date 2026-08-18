@@ -5,7 +5,7 @@ import { tradeService } from '../services/TradeService';
 import { orderService } from '../services/OrderService';
 import { demoLedger } from '../services/ledger';
 
-export function usePortfolio(accountId: string = 'demo-account') {
+export function usePortfolio(accountId: string = 'demo-user-1') {
   const [stats, setStats] = useState<PortfolioStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
