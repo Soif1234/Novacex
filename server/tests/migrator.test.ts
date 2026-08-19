@@ -18,6 +18,7 @@ describe('Database Schema Migrator (server/src/config/migrator.ts)', () => {
         }
         return { rows: [] as T[], rowCount: 0 };
       }),
+      transaction: vi.fn().mockImplementation(async (cb) => cb(mockDb)),
       healthCheck: vi.fn().mockResolvedValue({ healthy: true, latencyMs: 1 }),
       getStatus: vi.fn().mockReturnValue({ connected: true, poolSize: 2, activeConnections: 0, idleConnections: 2 })
     };
