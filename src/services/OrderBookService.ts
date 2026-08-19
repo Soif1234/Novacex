@@ -38,7 +38,6 @@ export class OrderBookService {
     }
 
     // Determine an appropriate base quantity so it looks realistic
-    // For example, target around $20,000 USD per level on average
     const targetValueUsd = 20000;
     const baseQuantity = targetValueUsd / currentPrice;
 
@@ -47,7 +46,6 @@ export class OrderBookService {
       const askPrice = currentPrice * (1 + (i * priceStepPct));
       const askSeed = baseSeed + i * 100 + Math.floor(askPrice * 10000);
       
-      // Multiplier between 0.1x and 2.0x
       const qtyMultiplier = 0.1 + seededRandom(askSeed) * 1.9;
       const quantity = baseQuantity * qtyMultiplier;
 
@@ -65,21 +63,19 @@ export class OrderBookService {
       bids.push({ price: bidPrice, quantity, total: 0 });
     }
 
-    // Sort Asks descending (highest at index 0, lowest at the end closest to center)
+    // Sort Asks descending
     asks.sort((a, b) => b.price - a.price);
     
-    // Sort Bids descending (highest at index 0 closest to center, lowest at the end)
+    // Sort Bids descending
     bids.sort((a, b) => b.price - a.price);
 
     // Calculate accumulating totals
-    // For asks, it accumulates from the bottom (closest to spread) up to the top
     let currentAskTotal = 0;
     for (let i = asks.length - 1; i >= 0; i--) {
       currentAskTotal += asks[i].quantity;
       asks[i].total = currentAskTotal;
     }
 
-    // For bids, it accumulates from the top (closest to spread) down to the bottom
     let currentBidTotal = 0;
     for (let i = 0; i < bids.length; i++) {
       currentBidTotal += bids[i].quantity;
@@ -87,5 +83,36 @@ export class OrderBookService {
     }
 
     return { asks, bids };
+  }
+
+  /**
+   * Parses and structures real or WebSocket orderbook depth snapshots.
+   */
+  public static fromBackendOrderBook(bids: Array<[string | number, string | number]>, asks: Array<[string | number, string | number]>): OrderBook {
+    const parsedAsks: OrderBookEntry[] = (asks || []).map(([price, qty]) => ({
+      price: typeof price === 'number' ? price : parseFloat(price),
+      quantity: typeof qty === 'number' ? qty : parseFloat(qty),
+      total: 0,
+    })).filter(a => !isNaN(a.price) && !isNaN(a.quantity)).sort((a, b) => b.price - a.price);
+
+    const parsedBids: OrderBookEntry[] = (bids || []).map(([price, qty]) => ({
+      price: typeof price === 'number' ? price : parseFloat(price),
+      quantity: typeof qty === 'number' ? qty : parseFloat(qty),
+      total: 0,
+    })).filter(b => !isNaN(b.price) && !isNaN(b.quantity)).sort((a, b) => b.price - a.price);
+
+    let currentAskTotal = 0;
+    for (let i = parsedAsks.length - 1; i >= 0; i--) {
+      currentAskTotal += parsedAsks[i].quantity;
+      parsedAsks[i].total = currentAskTotal;
+    }
+
+    let currentBidTotal = 0;
+    for (let i = 0; i < parsedBids.length; i++) {
+      currentBidTotal += parsedBids[i].quantity;
+      parsedBids[i].total = currentBidTotal;
+    }
+
+    return { asks: parsedAsks, bids: parsedBids };
   }
 }

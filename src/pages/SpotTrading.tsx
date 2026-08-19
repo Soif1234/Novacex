@@ -9,9 +9,10 @@ import { useTicker } from '../hooks/useTicker';
 import { useLedger } from '../hooks/useLedger';
 import { useOrders } from '../hooks/useOrders';
 import { useTrades } from '../hooks/useTrades';
-import { OrderBookService } from '../services/OrderBookService';
+import { OrderBookService, OrderBook } from '../services/OrderBookService';
 import { useAuth } from '../contexts/AuthContext';
 import { Decimal } from 'decimal.js';
+import { wsClient } from '../services/websocket/wsClient';
 
 import { FeeService } from '../services/FeeService';
 
@@ -58,10 +59,22 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
   const currentPrice = parseFloat(ticker?.lastPrice || market?.price?.toString() || '0');
   const currentChange = parseFloat(ticker?.priceChangePercent || market?.change24h?.toString() || '0');
   
+  const [liveOrderBook, setLiveOrderBook] = useState<OrderBook | null>(null);
+
+  useEffect(() => {
+    const unsub = wsClient.subscribe(`orderbook:${selectedSymbol}`, (data: any) => {
+      if (data && (data.bids || data.asks)) {
+        setLiveOrderBook(OrderBookService.fromBackendOrderBook(data.bids, data.asks));
+      }
+    });
+    return () => { unsub(); };
+  }, [selectedSymbol]);
+
   const orderBook = React.useMemo(() => {
+    if (liveOrderBook) return liveOrderBook;
     if (!market) return { asks: [], bids: [] };
     return OrderBookService.generateSimulatedBook(market.baseAsset, currentPrice, 8, 0.0005);
-  }, [market?.baseAsset, currentPrice]);
+  }, [liveOrderBook, market?.baseAsset, currentPrice]);
 
   const maxTotal = React.useMemo(() => {
     const maxAsk = orderBook.asks.length > 0 ? orderBook.asks[0].total : 0;

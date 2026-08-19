@@ -4,7 +4,7 @@ import { Button } from '../components/ui/Button';
 import { useFuturesMarketData } from '../hooks/useFuturesMarketData';
 import { useLedger } from '../hooks/useLedger';
 
-import { OrderBookService } from '../services/OrderBookService';
+import { OrderBookService, OrderBook } from '../services/OrderBookService';
 import { futuresOrderService } from '../services/futures/FuturesOrderService';
 import { futuresRiskService } from '../services/futures/FuturesRiskService';
 import { futuresFundingService } from '../services/futures/FuturesFundingService';
@@ -183,10 +183,22 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
 
 
 
+  const [liveOrderBook, setLiveOrderBook] = useState<OrderBook | null>(null);
+
+  useEffect(() => {
+    const unsub = wsClient.subscribe(`orderbook:${selectedSymbol}`, (data: any) => {
+      if (data && (data.bids || data.asks)) {
+        setLiveOrderBook(OrderBookService.fromBackendOrderBook(data.bids, data.asks));
+      }
+    });
+    return () => { unsub(); };
+  }, [selectedSymbol]);
+
   const orderBook = useMemo(() => {
+    if (liveOrderBook) return liveOrderBook;
     if (!market) return { bids: [], asks: [] };
     return OrderBookService.generateSimulatedBook(market.baseAsset, parseFloat(market.lastPrice || market.markPrice || '0'), 8, parseFloat(market.tickSize || '0.001'));
-  }, [market]);
+  }, [liveOrderBook, market]);
 
   const maxTotal = useMemo(() => {
     const maxAsk = orderBook.asks.length > 0 ? orderBook.asks[0].total : 0;
