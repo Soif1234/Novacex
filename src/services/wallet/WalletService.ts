@@ -6,9 +6,24 @@ import { tradingPairRegistry } from '../market/TradingPairRegistry';
 import { Decimal } from 'decimal.js';
 import { fetchMarketData } from '../marketData';
 import { Asset, WalletBalances } from './types';
+import { apiClient } from '../api/client';
+import { WalletBalancesMap } from '../api/types';
 
 export class WalletService {
   public async getAssets(accountId: string = 'demo-user-1'): Promise<Asset[]> {
+    // 1. Attempt authoritative backend query
+    try {
+      if (typeof window !== 'undefined') {
+        const backendBalances = await apiClient.get<WalletBalancesMap>('/wallet/balances', { accountId });
+        if (backendBalances && typeof backendBalances === 'object' && Object.keys(backendBalances).length > 0) {
+          return this.mapBackendBalancesToAssets(backendBalances);
+        }
+      }
+    } catch {
+      // Backend unavailable or unauthenticated, fallback to local calculation
+    }
+
+    // 2. Local fallback calculation for offline / in-memory tests
     const balances = demoLedger.getAllBalances(accountId);
     const spotOrders = orderService.getPendingOrders().filter(o => o.accountId === accountId);
     
@@ -125,6 +140,22 @@ export class WalletService {
       futuresLocked: futuresUsdtAsset.lockedBalance,
       unrealizedPnl: unrealizedPnl.toString()
     };
+  }
+
+  private mapBackendBalancesToAssets(balancesMap: WalletBalancesMap): Asset[] {
+    const assets: Asset[] = [];
+    for (const [symbol, b] of Object.entries(balancesMap)) {
+      assets.push({
+        asset: symbol,
+        name: this.getAssetName(symbol),
+        totalBalance: b.total,
+        availableBalance: b.available,
+        lockedBalance: b.locked,
+        marketValue: b.total, // baseline value in USD/USDT
+        status: 'ACTIVE'
+      });
+    }
+    return assets;
   }
 
   private createEmptyAsset(symbol: string): Asset {

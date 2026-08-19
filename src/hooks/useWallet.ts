@@ -4,6 +4,7 @@ import { demoLedger } from '../services/ledger';
 import { orderService } from '../services/OrderService';
 import { futuresOrderService } from '../services/futures/FuturesOrderService';
 import { tradeService } from '../services/TradeService';
+import { wsClient } from '../services/websocket/wsClient';
 
 export function useWallet(accountId: string = 'demo-user-1') {
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -36,6 +37,7 @@ export function useWallet(accountId: string = 'demo-user-1') {
     const unsubOrder = orderService.subscribe(fetchWallet);
     const unsubFutures = futuresOrderService.subscribe(fetchWallet);
     const unsubTrade = tradeService.subscribe(fetchWallet);
+    const unsubWs = wsClient.subscribe('user:balances', fetchWallet);
     
     const interval = setInterval(fetchWallet, 10000);
 
@@ -45,6 +47,7 @@ export function useWallet(accountId: string = 'demo-user-1') {
       unsubOrder();
       unsubFutures();
       unsubTrade();
+      unsubWs();
       clearInterval(interval);
     };
   }, [accountId]);
