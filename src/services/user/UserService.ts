@@ -1,4 +1,7 @@
-import { User } from './types';
+import { User, UserAccountInfo } from './types';
+import { apiClient } from '../api/client';
+import { wsClient } from '../websocket/wsClient';
+import { AuthSessionResponse } from '../api/types';
 
 export class UserService {
   private persistKey = 'novacex_demo_user';
@@ -9,6 +12,11 @@ export class UserService {
     if (this.persist) {
       this.load();
     }
+
+    // Auto-logout if backend responds with 401
+    apiClient.onUnauthorized(() => {
+      this.logout();
+    });
   }
 
   private load() {
@@ -33,7 +41,11 @@ export class UserService {
             role: role,
             accountStatus: parsed.accountStatus || 'ACTIVE',
             createdAt: parsed.createdAt || Date.now(),
-            lastActiveAt: Date.now()
+            lastActiveAt: Date.now(),
+            accounts: parsed.accounts,
+            spotAccountId: parsed.spotAccountId,
+            futuresAccountId: parsed.futuresAccountId,
+            fundingAccountId: parsed.fundingAccountId,
           };
         } else if (oldData) {
           const parsed = JSON.parse(oldData);
@@ -93,6 +105,22 @@ export class UserService {
     return this.currentUser?.accountStatus || 'UNAUTHENTICATED';
   }
 
+  public getAccounts(): UserAccountInfo[] {
+    return this.currentUser?.accounts || [];
+  }
+
+  public getSpotAccountId(): string {
+    return this.currentUser?.spotAccountId || this.currentUser?.accounts?.find(a => a.type === 'SPOT')?.id || this.currentUser?.id || 'demo-user-1';
+  }
+
+  public getFuturesAccountId(): string {
+    return this.currentUser?.futuresAccountId || this.currentUser?.accounts?.find(a => a.type === 'FUTURES')?.id || this.currentUser?.id || 'demo-user-1';
+  }
+
+  public getFundingAccountId(): string {
+    return this.currentUser?.fundingAccountId || this.currentUser?.accounts?.find(a => a.type === 'FUNDING')?.id || this.currentUser?.id || 'demo-user-1';
+  }
+
   public updateProfile(updates: Partial<Pick<User, 'displayName' | 'username' | 'avatar'>>): void {
     if (!this.currentUser) {
       throw new Error("Cannot update profile when unauthenticated");
@@ -121,28 +149,32 @@ export class UserService {
     this.notify();
   }
 
-  public logout() {
+  public logout(): void {
     this.currentUser = null;
+    apiClient.setSessionToken(null);
+    wsClient.setAuthToken(null);
     this.save();
     this.notify();
+
+    // Async backend logout call (fire and forget / catch error)
+    if (typeof window !== 'undefined') {
+      apiClient.post('/auth/logout').catch(() => {});
+    }
   }
 
-  public reset() {
-    this.currentUser = null;
-    this.save();
-    this.notify();
+  public reset(): void {
+    this.logout();
   }
   
-  public login(email: string) {
-     const safeEmail = email.toLowerCase().trim();
-     const namePrefix = safeEmail.split('@')[0];
-     const isAdmin = safeEmail === 'admin@mallickexchange.com';
-     
-     // Generate a stable ID based on email so that if they logout and login with the same email, they get the same ID
-     const b64 = typeof btoa !== 'undefined' ? btoa(safeEmail) : Buffer.from(safeEmail).toString('base64');
-     const stableId = 'demo-' + b64.replace(/=/g, '');
+  public login(email: string): void {
+    const safeEmail = email.toLowerCase().trim();
+    const namePrefix = safeEmail.split('@')[0];
+    const isAdmin = safeEmail === 'admin@mallickexchange.com';
+    
+    const b64 = typeof btoa !== 'undefined' ? btoa(safeEmail) : Buffer.from(safeEmail).toString('base64');
+    const stableId = 'demo-' + b64.replace(/=/g, '');
 
-     this.currentUser = {
+    this.currentUser = {
       id: stableId,
       username: namePrefix,
       displayName: namePrefix,
@@ -155,6 +187,120 @@ export class UserService {
     };
     this.save();
     this.notify();
+
+    // Asynchronously authenticate against real backend
+    if (typeof window !== 'undefined') {
+      this.loginWithBackend(safeEmail).catch(() => {});
+    }
+  }
+
+  /**
+   * Authoritative backend authentication
+   */
+  public async loginWithBackend(email: string, password = 'DemoPassword123!'): Promise<User> {
+    const safeEmail = email.toLowerCase().trim();
+    const namePrefix = safeEmail.split('@')[0];
+
+    try {
+      // 1. Attempt login
+      const res = await apiClient.post<AuthSessionResponse>('/auth/login', {
+        email: safeEmail,
+        password,
+      });
+
+      return this.handleAuthSuccess(res, safeEmail, namePrefix);
+    } catch (err: any) {
+      // 2. If user doesn't exist on backend, automatically signup then login
+      if (err.statusCode === 401 || err.errorCode === 'INVALID_CREDENTIALS') {
+        try {
+          const signupRes = await apiClient.post<AuthSessionResponse>('/auth/signup', {
+            email: safeEmail,
+            password,
+            username: namePrefix,
+            displayName: namePrefix,
+          });
+
+          // Login to establish session cookie
+          const loginRes = await apiClient.post<AuthSessionResponse>('/auth/login', {
+            email: safeEmail,
+            password,
+          });
+
+          return this.handleAuthSuccess(loginRes || signupRes, safeEmail, namePrefix);
+        } catch {
+          // If signup also fails, fallback to local user state
+        }
+      }
+
+      // Return current user state if already set
+      if (this.currentUser) return this.currentUser;
+      throw err;
+    }
+  }
+
+  public async signupWithBackend(email: string, name: string, password = 'DemoPassword123!'): Promise<User> {
+    const safeEmail = email.toLowerCase().trim();
+    const displayName = name.trim() || safeEmail.split('@')[0];
+
+    const signupRes = await apiClient.post<AuthSessionResponse>('/auth/signup', {
+      email: safeEmail,
+      password,
+      username: displayName,
+      displayName: displayName,
+    });
+
+    const loginRes = await apiClient.post<AuthSessionResponse>('/auth/login', {
+      email: safeEmail,
+      password,
+    });
+
+    return this.handleAuthSuccess(loginRes || signupRes, safeEmail, displayName);
+  }
+
+  public async bootstrapFromBackend(): Promise<User | null> {
+    try {
+      const res = await apiClient.get<AuthSessionResponse>('/auth/me');
+      if (res && res.user) {
+        return this.handleAuthSuccess(res, res.user.email, res.user.displayName || res.user.username || 'Trader');
+      }
+    } catch {
+      // Unauthenticated or backend unavailable
+    }
+    return this.currentUser;
+  }
+
+  private handleAuthSuccess(res: AuthSessionResponse, email: string, defaultName: string): User {
+    const user = res.user;
+    const accounts = res.accounts || user.accounts || [];
+
+    const spotAcc = accounts.find(a => a.type === 'SPOT');
+    const futuresAcc = accounts.find(a => a.type === 'FUTURES');
+    const fundingAcc = accounts.find(a => a.type === 'FUNDING');
+
+    if (res.sessionToken) {
+      apiClient.setSessionToken(res.sessionToken);
+      wsClient.setAuthToken(res.sessionToken);
+    }
+
+    this.currentUser = {
+      id: user.id,
+      username: user.username || defaultName,
+      displayName: user.displayName || user.username || defaultName,
+      email: user.email || email,
+      avatar: '',
+      role: (user.role as any) || 'USER',
+      accountStatus: (user.accountStatus as any) || 'ACTIVE',
+      createdAt: user.createdAt ? new Date(user.createdAt).getTime() : Date.now(),
+      lastActiveAt: Date.now(),
+      accounts: accounts.map(a => ({ id: a.id, type: a.type })),
+      spotAccountId: spotAcc?.id,
+      futuresAccountId: futuresAcc?.id,
+      fundingAccountId: fundingAcc?.id,
+    };
+
+    this.save();
+    this.notify();
+    return this.currentUser;
   }
 }
 

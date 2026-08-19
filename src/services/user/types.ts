@@ -21,6 +21,11 @@ export interface LoginSession {
   status: SessionStatus;
 }
 
+export interface UserAccountInfo {
+  id: string;
+  type: 'SPOT' | 'FUTURES' | 'FUNDING';
+}
+
 export interface User {
   id: string;
   username: string;
@@ -31,4 +36,9 @@ export interface User {
   accountStatus: AccountStatus;
   createdAt: number;
   lastActiveAt: number;
+  accounts?: UserAccountInfo[];
+  spotAccountId?: string;
+  futuresAccountId?: string;
+  fundingAccountId?: string;
 }
+

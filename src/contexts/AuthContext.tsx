@@ -8,8 +8,8 @@ interface AuthContextType {
   user: User | null;
   status: AuthStatus;
   isAuthenticated: boolean;
-  login: (email: string) => void;
-  signup: (email: string, name: string) => void;
+  login: (email: string, password?: string) => Promise<void> | void;
+  signup: (email: string, name: string, password?: string) => Promise<void> | void;
   logout: () => void;
 }
 
@@ -22,15 +22,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let mounted = true;
     
-    // Simulate async restoration for loading state demonstration
     const restoreSession = async () => {
       try {
-        // Wait a tiny bit to show the initializing state as requested
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // Attempt backend session recovery (/api/v1/auth/me)
+        const currentUser = await userService.bootstrapFromBackend();
         
         if (!mounted) return;
 
-        const currentUser = userService.getCurrentUser();
         if (currentUser) {
           setUser(currentUser);
           setStatus('AUTHENTICATED');
@@ -41,8 +39,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch (error) {
         console.warn('Failed to restore session:', error);
         if (mounted) {
-          setUser(null);
-          setStatus('UNAUTHENTICATED');
+          const fallbackUser = userService.getCurrentUser();
+          if (fallbackUser) {
+            setUser(fallbackUser);
+            setStatus('AUTHENTICATED');
+          } else {
+            setUser(null);
+            setStatus('UNAUTHENTICATED');
+          }
         }
       }
     };
@@ -66,13 +70,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const login = (email: string) => {
-    userService.login(email);
+  const login = async (email: string, password = 'DemoPassword123!') => {
+    try {
+      await userService.loginWithBackend(email, password);
+    } catch {
+      userService.login(email);
+    }
   };
 
-  const signup = (email: string, name: string) => {
-    userService.login(email);
-    userService.updateProfile({ displayName: name, username: name });
+  const signup = async (email: string, name: string, password = 'DemoPassword123!') => {
+    try {
+      await userService.signupWithBackend(email, name, password);
+    } catch {
+      userService.login(email);
+      userService.updateProfile({ displayName: name, username: name });
+    }
   };
 
   const logout = () => {
