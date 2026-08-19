@@ -4,6 +4,7 @@ import { env } from './config/env';
 import { logger } from './config/logger';
 import { db } from './config/database';
 import { redis } from './config/redis';
+import { webSocketGateway } from './websocket';
 
 let server: http.Server | null = null;
 let isShuttingDown = false;
@@ -24,6 +25,7 @@ export async function startServer(): Promise<http.Server> {
       logger.info(`Server successfully bound and listening on http://${env.HOST}:${env.PORT}`);
       logger.info(`Healthcheck available at http://${env.HOST}:${env.PORT}${env.API_PREFIX}/health`);
       logger.info(`Readiness available at http://${env.HOST}:${env.PORT}${env.API_PREFIX}/ready`);
+      webSocketGateway.attachToServer(server!, '/ws');
       resolve(server!);
     });
   });
@@ -40,6 +42,9 @@ export async function stopServer(): Promise<void> {
   }, env.SHUTDOWN_TIMEOUT_MS);
 
   try {
+    // 0. Close WebSocket Gateway
+    webSocketGateway.close();
+
     // 1. Stop accepting new HTTP connections
     if (server) {
       await new Promise<void>((resolve, reject) => {
@@ -56,6 +61,7 @@ export async function stopServer(): Promise<void> {
 
     // 3. Close Redis connections
     await redis.close();
+
 
     clearTimeout(shutdownTimer);
     logger.info('Graceful shutdown completed cleanly');

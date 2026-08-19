@@ -21,6 +21,8 @@ import {
   decimalZero,
   decimalNormalize,
 } from './decimal';
+import { eventBus } from '../market/event-bus';
+
 
 // ─── Result Types ────────────────────────────────────────────────────────────
 
@@ -338,9 +340,10 @@ export class LedgerService {
 
     const transactionId = crypto.randomUUID();
 
-    return this.database.transaction(async (txClient) => {
+    const txResult = await this.database.transaction(async (txClient) => {
 
       // ── 1. Idempotency Check ──────────────────────────────────────────
+
       const existingTx = await txClient.query<any>(
         `SELECT id, transaction_type, description
          FROM ledger_transactions
@@ -534,10 +537,71 @@ export class LedgerService {
         transactionType,
         referenceId,
         entries: resultEntries,
+        appliedBalances: Array.from(appliedBalances.entries()),
         createdAt: new Date(),
       };
     });
+
+    // ── 7. Emit Domain Events strictly after successful commit ─────────────
+    try {
+      eventBus.publish({
+        id: crypto.randomUUID(),
+        type: 'ledger.transaction.posted',
+        timestamp: Date.now(),
+        version: '1.0.0',
+        payload: {
+          transactionId: txResult.transactionId,
+          accountId: txResult.accountId,
+          transactionType: txResult.transactionType,
+          referenceId: txResult.referenceId,
+          entries: txResult.entries,
+          createdAt: txResult.createdAt.getTime(),
+        },
+      });
+
+      for (const [key, bal] of (txResult as any).appliedBalances || []) {
+        const [accId, asset] = key.split(':');
+        const accRes = await this.database.query<any>('SELECT user_id AS "userId", type FROM accounts WHERE id = $1', [accId]);
+        const acc = accRes.rows[0];
+        const userId = acc ? (acc.userId || acc.user_id) : undefined;
+        const accType = acc ? acc.type : 'SPOT';
+
+        eventBus.publish({
+          id: crypto.randomUUID(),
+          type: 'wallet.balance.updated',
+          channel: 'user:balances',
+          userId,
+          timestamp: Date.now(),
+          version: '1.0.0',
+          payload: {
+            accountId: accId,
+            accountType: accType,
+            asset,
+            availableBalance: bal.available,
+            lockedBalance: bal.locked,
+            totalBalance: decimalAdd(bal.available, bal.locked),
+            transactionType: txResult.transactionType,
+            referenceId: txResult.referenceId,
+            timestamp: Date.now(),
+          },
+        });
+      }
+    } catch (evtErr: any) {
+      logger.warn('Failed to publish ledger/balance event', { error: evtErr.message });
+    }
+
+
+
+    return {
+      transactionId: txResult.transactionId,
+      accountId: txResult.accountId,
+      transactionType: txResult.transactionType,
+      referenceId: txResult.referenceId,
+      entries: txResult.entries,
+      createdAt: txResult.createdAt,
+    };
   }
+
 
   // ── Ledger History ──────────────────────────────────────────────────────
 

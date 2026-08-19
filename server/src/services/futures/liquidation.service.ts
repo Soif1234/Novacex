@@ -11,7 +11,9 @@ import {
   LiquidationNotEligibleError,
 } from './errors';
 import { decimalCompare, decimalNormalize, decimalZero } from '../ledger/decimal';
+import { eventBus } from '../market/event-bus';
 import { logger } from '../../config/logger';
+
 
 export class FuturesLiquidationService {
   constructor(
@@ -141,6 +143,63 @@ export class FuturesLiquidationService {
       ]
     );
 
+    // ── Emit Domain Events strictly after successful commit ──────────────
+    try {
+      const accRes = await this.database.query<any>('SELECT user_id AS "userId" FROM accounts WHERE id = $1', [position.accountId]);
+      const acc = accRes.rows[0];
+      const userId = acc ? (acc.userId || acc.user_id) : undefined;
+
+      eventBus.publish({
+        id: crypto.randomUUID(),
+        type: 'futures.liquidated',
+        channel: 'user:positions',
+        userId,
+        symbol: position.symbol,
+        timestamp: Date.now(),
+        version: '1.0.0',
+        payload: {
+          liquidationId: liquidation.id,
+          positionId: position.id,
+          symbol: position.symbol,
+          side: position.side,
+          quantity: position.quantity,
+          markPrice,
+          lossAmount: result.realizedPnl,
+          fee: result.fee,
+          totalReturn: result.totalReturn,
+          timestamp: Date.now(),
+        },
+      });
+
+      eventBus.publish({
+        id: crypto.randomUUID(),
+        type: 'futures.position.updated',
+        channel: 'user:positions',
+        userId,
+        symbol: position.symbol,
+        timestamp: Date.now(),
+        version: '1.0.0',
+        payload: {
+          positionId: position.id,
+          symbol: position.symbol,
+          side: position.side,
+          quantity: position.quantity,
+          entryPrice: position.entryPrice,
+          markPrice,
+          liquidationPrice: position.liquidationPrice,
+          leverage: position.leverage,
+          marginMode: position.marginMode,
+          initialMargin: '0',
+          maintenanceMargin: '0',
+          realizedPnl: result.realizedPnl,
+          status: 'LIQUIDATED',
+          timestamp: Date.now(),
+        },
+      });
+    } catch (evtErr: any) {
+      logger.warn('Failed to emit liquidation events', { error: evtErr.message });
+    }
+
     logger.warn('Futures position liquidated', {
       positionId: position.id,
       accountId: position.accountId,
@@ -152,6 +211,7 @@ export class FuturesLiquidationService {
 
     return liquidation;
   }
+
 
   public async getLiquidations(accountId: string): Promise<FuturesLiquidationEntity[]> {
     const res = await this.database.query<any>(

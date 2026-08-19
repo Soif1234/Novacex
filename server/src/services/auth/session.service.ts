@@ -114,6 +114,25 @@ export class SessionService {
     logger.info('Revoked session token', { tokenHash: tokenHash.substring(0, 8) + '...' });
     return result.rowCount > 0;
   }
+
+  public async authenticateSession(rawToken: string): Promise<{ id: string; email: string } | null> {
+    const session = await this.validateSession(rawToken);
+    if (!session) {
+      return null;
+    }
+
+    const userRes = await this.database.query<any>('SELECT id, email FROM users WHERE id = $1', [session.userId]);
+    const userRow = userRes.rows[0];
+    if (!userRow) {
+      return null;
+    }
+
+    return {
+      id: userRow.id,
+      email: userRow.email,
+    };
+  }
 }
+
 
 export const sessionService = new SessionService();

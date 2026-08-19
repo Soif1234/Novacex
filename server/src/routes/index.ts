@@ -5,6 +5,7 @@ import { ledgerRoutes } from './ledger.routes';
 import { walletRoutes } from './wallet.routes';
 import { spotRoutes } from './spot.routes';
 import { futuresRoutes } from './futures.routes';
+import { marketRoutes } from './market.routes';
 
 const router = Router();
 
@@ -26,10 +27,11 @@ router.use('/spot', spotRoutes);
 // Futures routes (order placement, positions, TP/SL, liquidation, trade history)
 router.use('/futures', futuresRoutes);
 
-// Domain route placeholders (to be populated in subsequent Phase 4 steps)
-// router.use('/market', marketRoutes);
+// Market data routes (tickers, orderbook snapshots, recent trades, mark prices)
+router.use('/market', marketRoutes);
 
 export const apiRouter = router;
+
 
 
 

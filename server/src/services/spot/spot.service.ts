@@ -12,7 +12,10 @@ import {
   decimalCompare,
   decimalMin,
 } from '../ledger/decimal';
+import { eventBus } from '../market/event-bus';
+import { marketDataService } from '../market/market.service';
 import { logger } from '../../config/logger';
+
 import {
   SpotError,
   SpotErrorCode,
@@ -355,6 +358,76 @@ export class SpotService {
       [order.status, order.filledQuantity, order.remainingQuantity, order.id]
     );
 
+    // ── Emit Market & Domain Events strictly after successful commit ──────
+    try {
+      marketDataService.emitOrderBookUpdate(cleanSymbol);
+
+      eventBus.publish({
+        id: crypto.randomUUID(),
+        type: order.status === 'NEW' ? 'spot.order.created' : 'spot.order.updated',
+        channel: 'user:orders',
+        userId: dto.userId,
+        symbol: cleanSymbol,
+        timestamp: Date.now(),
+        version: '1.0.0',
+        payload: {
+          orderId: order.id,
+          clientOrderId: order.clientOrderId,
+          market: 'SPOT',
+          symbol: order.symbol,
+          side: order.side,
+          type: order.type,
+          price: order.price,
+          quantity: order.quantity,
+          filledQuantity: order.filledQuantity,
+          remainingQuantity: order.remainingQuantity,
+          status: order.status,
+          timeInForce: order.timeInForce,
+          createdAt: order.createdAt.getTime(),
+          updatedAt: order.updatedAt.getTime(),
+        },
+      });
+
+      for (const trade of executedTrades) {
+        marketDataService.recordTrade({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          price: trade.price,
+          quantity: trade.quantity,
+          quoteQuantity: trade.quoteQuantity,
+          side: trade.side,
+          isMaker: trade.isMaker,
+          timestamp: trade.createdAt.getTime(),
+        });
+
+        eventBus.publish({
+          id: crypto.randomUUID(),
+          type: 'spot.trade.executed',
+          channel: 'user:trades',
+          userId: dto.userId,
+          symbol: trade.symbol,
+          timestamp: trade.createdAt.getTime(),
+          version: '1.0.0',
+          payload: {
+            tradeId: trade.id,
+            orderId: trade.orderId,
+            market: 'SPOT',
+            symbol: trade.symbol,
+            side: trade.side,
+            price: trade.price,
+            quantity: trade.quantity,
+            quoteQuantity: trade.quoteQuantity,
+            fee: trade.fee,
+            feeAsset: trade.feeAsset,
+            isMaker: trade.isMaker,
+            timestamp: trade.createdAt.getTime(),
+          },
+        });
+      }
+    } catch (evtErr: any) {
+      logger.warn('Failed to emit spot events', { error: evtErr.message });
+    }
+
     logger.info('Spot order processed', {
       orderId: order.id,
       symbol: cleanSymbol,
@@ -370,6 +443,7 @@ export class SpotService {
       trades: executedTrades,
     };
   }
+
 
   /**
    * Atomically settle a matched trade between Maker and Taker via LedgerService.
@@ -661,6 +735,39 @@ export class SpotService {
       order.id,
     ]);
 
+    // ── Emit Market & Domain Events strictly after successful commit ──────
+    try {
+      marketDataService.emitOrderBookUpdate(order.symbol);
+
+      eventBus.publish({
+        id: crypto.randomUUID(),
+        type: 'spot.order.updated',
+        channel: 'user:orders',
+        userId,
+        symbol: order.symbol,
+        timestamp: Date.now(),
+        version: '1.0.0',
+        payload: {
+          orderId: order.id,
+          clientOrderId: order.clientOrderId,
+          market: 'SPOT',
+          symbol: order.symbol,
+          side: order.side,
+          type: order.type,
+          price: order.price,
+          quantity: order.quantity,
+          filledQuantity: order.filledQuantity,
+          remainingQuantity: order.remainingQuantity,
+          status: 'CANCELLED',
+          timeInForce: order.timeInForce,
+          createdAt: order.createdAt.getTime(),
+          updatedAt: order.updatedAt.getTime(),
+        },
+      });
+    } catch (evtErr: any) {
+      logger.warn('Failed to emit spot cancel event', { error: evtErr.message });
+    }
+
     logger.info('Spot order cancelled', {
       orderId: order.id,
       symbol: order.symbol,
@@ -669,6 +776,7 @@ export class SpotService {
 
     return order;
   }
+
 
   /**
    * Get single order by ID with ownership verification.

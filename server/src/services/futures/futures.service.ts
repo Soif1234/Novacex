@@ -22,6 +22,8 @@ import {
   decimalMin,
   validateAmount,
 } from '../ledger/decimal';
+import { eventBus } from '../market/event-bus';
+
 import {
   FuturesError,
   FuturesErrorCode,
@@ -547,6 +549,93 @@ export class FuturesService {
       );
     }
 
+    // ── Emit Domain Events strictly after successful commit ──────────────
+    try {
+      eventBus.publish({
+        id: crypto.randomUUID(),
+        type: order.status === 'NEW' ? 'futures.order.created' : 'futures.order.updated',
+        channel: 'user:orders',
+        userId: dto.userId,
+        symbol: cleanSymbol,
+        timestamp: Date.now(),
+        version: '1.0.0',
+        payload: {
+          orderId: order.id,
+          clientOrderId: order.clientOrderId,
+          market: 'FUTURES',
+          symbol: order.symbol,
+          side: order.side,
+          positionSide: dto.positionSide,
+          type: order.type,
+          price: order.price,
+          quantity: order.quantity,
+          filledQuantity: order.filledQuantity,
+          remainingQuantity: order.remainingQuantity,
+          status: order.status,
+          timeInForce: order.timeInForce,
+          createdAt: order.createdAt.getTime(),
+          updatedAt: order.updatedAt.getTime(),
+        },
+      });
+
+      if (executedTrade) {
+        eventBus.publish({
+          id: crypto.randomUUID(),
+          type: 'futures.trade.executed',
+          channel: 'user:trades',
+          userId: dto.userId,
+          symbol: executedTrade.symbol,
+          timestamp: executedTrade.createdAt.getTime(),
+          version: '1.0.0',
+          payload: {
+            tradeId: executedTrade.id,
+            orderId: executedTrade.orderId,
+            market: 'FUTURES',
+            symbol: executedTrade.symbol,
+            side: executedTrade.side,
+            positionSide: dto.positionSide,
+            price: executedTrade.price,
+            quantity: executedTrade.quantity,
+            quoteQuantity: executedTrade.quoteQuantity,
+            fee: executedTrade.fee,
+            feeAsset: executedTrade.feeAsset,
+            isMaker: executedTrade.isMaker,
+            timestamp: executedTrade.createdAt.getTime(),
+          },
+        });
+      }
+
+      if (resultingPosition) {
+        eventBus.publish({
+          id: crypto.randomUUID(),
+          type: 'futures.position.updated',
+          channel: 'user:positions',
+          userId: dto.userId,
+          symbol: resultingPosition.symbol,
+          timestamp: Date.now(),
+          version: '1.0.0',
+          payload: {
+            positionId: resultingPosition.id,
+            symbol: resultingPosition.symbol,
+            side: resultingPosition.side,
+            quantity: resultingPosition.quantity,
+            entryPrice: resultingPosition.entryPrice,
+            markPrice: resultingPosition.markPrice,
+            liquidationPrice: resultingPosition.liquidationPrice,
+            leverage: resultingPosition.leverage,
+            marginMode: resultingPosition.marginMode,
+            initialMargin: resultingPosition.initialMargin,
+            maintenanceMargin: resultingPosition.maintenanceMargin,
+            realizedPnl: resultingPosition.realizedPnl,
+            status: resultingPosition.status,
+            timestamp: Date.now(),
+          },
+        });
+      }
+    } catch (evtErr: any) {
+      logger.warn('Failed to emit futures events', { error: evtErr.message });
+    }
+
     logger.info('Futures order processed', {
       orderId: order.id,
       symbol: cleanSymbol,
@@ -565,6 +654,7 @@ export class FuturesService {
       trade: executedTrade,
     };
   }
+
 
   /**
    * Cancel an open Futures order and release remaining reserved margin.
@@ -636,8 +726,40 @@ export class FuturesService {
       order.id,
     ]);
 
+    // ── Emit Domain Events strictly after successful commit ──────────────
+    try {
+      eventBus.publish({
+        id: crypto.randomUUID(),
+        type: 'futures.order.updated',
+        channel: 'user:orders',
+        userId,
+        symbol: order.symbol,
+        timestamp: Date.now(),
+        version: '1.0.0',
+        payload: {
+          orderId: order.id,
+          clientOrderId: order.clientOrderId,
+          market: 'FUTURES',
+          symbol: order.symbol,
+          side: order.side,
+          type: order.type,
+          price: order.price,
+          quantity: order.quantity,
+          filledQuantity: order.filledQuantity,
+          remainingQuantity: order.remainingQuantity,
+          status: 'CANCELLED',
+          timeInForce: order.timeInForce,
+          createdAt: order.createdAt.getTime(),
+          updatedAt: order.updatedAt.getTime(),
+        },
+      });
+    } catch (evtErr: any) {
+      logger.warn('Failed to emit futures cancel event', { error: evtErr.message });
+    }
+
     return order;
   }
+
 
   /**
    * Get single position for authenticated user.
