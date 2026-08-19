@@ -4,6 +4,7 @@ import { logger } from './logger';
 import { UserEntity, UserProfileEntity, UserAuthCredentialsEntity, UserSessionEntity } from '../models/user.model';
 import { AccountEntity, AssetEntity, WalletBalanceEntity } from '../models/account.model';
 import { LedgerTransactionEntity, LedgerEntryEntity } from '../models/ledger.model';
+import { TradingPairEntity, OrderEntity, TradeEntity } from '../models/order.model';
 
 export interface DatabaseStatus {
   connected: boolean;
@@ -52,9 +53,16 @@ export class DatabasePool implements IDatabaseConnection {
   private ledgerEntries: LedgerEntryEntity[] = []; // append-only journal
   private lockedWallets = new Set<string>(); // concurrency lock keys
 
+  // Spot Order & Trade tables
+  private tradingPairs = new Map<string, TradingPairEntity>(); // symbol -> pair
+  private orders = new Map<string, OrderEntity>(); // id -> order
+  private ordersByClientOrderId = new Map<string, string>(); // "accountId:clientOrderId" -> orderId
+  private trades: TradeEntity[] = [];
+
   constructor(private config = env) {
     this.totalPoolSize = config.DB_POOL_MIN;
     this.initDefaultAssets();
+    this.initDefaultTradingPairs();
   }
 
   private initDefaultAssets(): void {
@@ -72,6 +80,19 @@ export class DatabasePool implements IDatabaseConnection {
       this.assets.set(a.symbol, { ...a });
     }
   }
+
+  private initDefaultTradingPairs(): void {
+    const defaultPairs: TradingPairEntity[] = [
+      { symbol: 'BTCUSDT', baseAsset: 'BTC', quoteAsset: 'USDT', marketType: 'SPOT', tickSize: '0.01', lotSize: '0.0001', minNotional: '5.0', makerFeeRate: '0.001', takerFeeRate: '0.001', isActive: true, createdAt: new Date() },
+      { symbol: 'ETHUSDT', baseAsset: 'ETH', quoteAsset: 'USDT', marketType: 'SPOT', tickSize: '0.01', lotSize: '0.001', minNotional: '5.0', makerFeeRate: '0.001', takerFeeRate: '0.001', isActive: true, createdAt: new Date() },
+      { symbol: 'SOLUSDT', baseAsset: 'SOL', quoteAsset: 'USDT', marketType: 'SPOT', tickSize: '0.001', lotSize: '0.01', minNotional: '5.0', makerFeeRate: '0.001', takerFeeRate: '0.001', isActive: true, createdAt: new Date() },
+      { symbol: 'BTCUSDC', baseAsset: 'BTC', quoteAsset: 'USDC', marketType: 'SPOT', tickSize: '0.01', lotSize: '0.0001', minNotional: '5.0', makerFeeRate: '0.001', takerFeeRate: '0.001', isActive: true, createdAt: new Date() },
+    ];
+    for (const p of defaultPairs) {
+      this.tradingPairs.set(p.symbol, { ...p });
+    }
+  }
+
 
   public async connect(): Promise<void> {
     logger.info('Initializing PostgreSQL connection pool', {
@@ -102,6 +123,11 @@ export class DatabasePool implements IDatabaseConnection {
     this.accounts.clear();
     this.assets.clear();
     this.initDefaultAssets();
+    this.tradingPairs.clear();
+    this.initDefaultTradingPairs();
+    this.orders.clear();
+    this.ordersByClientOrderId.clear();
+    this.trades = [];
     this.schemaMigrations.clear();
     this.walletBalances.clear();
     this.ledgerTransactions.clear();
@@ -121,6 +147,10 @@ export class DatabasePool implements IDatabaseConnection {
     const snapSessions = new Map(this.userSessions);
     const snapAccounts = new Map(this.accounts);
     const snapAssets = new Map(this.assets);
+    const snapTradingPairs = new Map(this.tradingPairs);
+    const snapOrders = new Map(this.orders);
+    const snapOrdersByClientOrderId = new Map(this.ordersByClientOrderId);
+    const snapTrades = [...this.trades];
     const snapWalletBalances = new Map(this.walletBalances);
     const snapLedgerTransactions = new Map(this.ledgerTransactions);
     const snapLedgerTxByRef = new Map(this.ledgerTxByRef);
@@ -138,6 +168,10 @@ export class DatabasePool implements IDatabaseConnection {
       this.userSessions = snapSessions;
       this.accounts = snapAccounts;
       this.assets = snapAssets;
+      this.tradingPairs = snapTradingPairs;
+      this.orders = snapOrders;
+      this.ordersByClientOrderId = snapOrdersByClientOrderId;
+      this.trades = snapTrades;
       this.walletBalances = snapWalletBalances;
       this.ledgerTransactions = snapLedgerTransactions;
       this.ledgerTxByRef = snapLedgerTxByRef;
@@ -216,6 +250,90 @@ export class DatabasePool implements IDatabaseConnection {
       createdAt: a.createdAt
     };
   }
+
+  private mapTradingPair(tp: TradingPairEntity): any {
+    return {
+      ...tp,
+      base_asset: tp.baseAsset,
+      quote_asset: tp.quoteAsset,
+      market_type: tp.marketType,
+      tick_size: tp.tickSize,
+      lot_size: tp.lotSize,
+      min_notional: tp.minNotional,
+      maker_fee_rate: tp.makerFeeRate,
+      taker_fee_rate: tp.takerFeeRate,
+      is_active: tp.isActive,
+      created_at: tp.createdAt,
+      baseAsset: tp.baseAsset,
+      quoteAsset: tp.quoteAsset,
+      marketType: tp.marketType,
+      tickSize: tp.tickSize,
+      lotSize: tp.lotSize,
+      minNotional: tp.minNotional,
+      makerFeeRate: tp.makerFeeRate,
+      takerFeeRate: tp.takerFeeRate,
+      isActive: tp.isActive,
+      createdAt: tp.createdAt,
+    };
+  }
+
+  private mapOrder(o: OrderEntity): any {
+    return {
+      ...o,
+      client_order_id: o.clientOrderId,
+      account_id: o.accountId,
+      market: o.market,
+      symbol: o.symbol,
+      side: o.side,
+      type: o.type,
+      price: o.price,
+      quantity: o.quantity,
+      filled_quantity: o.filledQuantity,
+      remaining_quantity: o.remainingQuantity,
+      locked_amount: o.lockedAmount,
+      locked_asset: o.lockedAsset,
+      status: o.status,
+      time_in_force: o.timeInForce,
+      created_at: o.createdAt,
+      updated_at: o.updatedAt,
+      clientOrderId: o.clientOrderId,
+      accountId: o.accountId,
+      filledQuantity: o.filledQuantity,
+      remainingQuantity: o.remainingQuantity,
+      lockedAmount: o.lockedAmount,
+      lockedAsset: o.lockedAsset,
+      timeInForce: o.timeInForce,
+      createdAt: o.createdAt,
+      updatedAt: o.updatedAt,
+    };
+  }
+
+  private mapTrade(t: TradeEntity): any {
+    return {
+      ...t,
+      order_id: t.orderId,
+      account_id: t.accountId,
+      market: t.market,
+      symbol: t.symbol,
+      side: t.side,
+      price: t.price,
+      quantity: t.quantity,
+      quote_quantity: t.quoteQuantity,
+      fee: t.fee,
+      fee_asset: t.feeAsset,
+      is_maker: t.isMaker,
+      counterparty_order_id: t.counterpartyOrderId,
+      created_at: t.createdAt,
+      orderId: t.orderId,
+      accountId: t.accountId,
+      quoteQuantity: t.quoteQuantity,
+      feeAsset: t.feeAsset,
+      isMaker: t.isMaker,
+      counterpartyOrderId: t.counterpartyOrderId,
+      createdAt: t.createdAt,
+    };
+  }
+
 
   public async query<T = unknown>(sql: string, params: unknown[] = []): Promise<QueryResult<T>> {
     if (!this.isConnected) {
@@ -785,8 +903,264 @@ export class DatabasePool implements IDatabaseConnection {
       return { rows: rows as unknown as T[], rowCount: rows.length };
     }
 
+    // 26. SELECT ... FROM trading_pairs WHERE symbol = $1
+    if (/FROM\s+trading_pairs.*WHERE\s+symbol\s*=/i.test(trimmed)) {
+      const symbol = (params[0] as string)?.toUpperCase();
+      const pair = this.tradingPairs.get(symbol);
+      return { rows: pair ? [this.mapTradingPair(pair) as T] : [], rowCount: pair ? 1 : 0 };
+    }
+
+    // 27. SELECT ... FROM trading_pairs
+    if (/FROM\s+trading_pairs/i.test(trimmed)) {
+      let list = Array.from(this.tradingPairs.values());
+      if (/WHERE\s+is_active\s*=\s*true/i.test(trimmed)) {
+        list = list.filter(p => p.isActive);
+      }
+      return { rows: list.map(p => this.mapTradingPair(p)) as T[], rowCount: list.length };
+    }
+
+    // 28. INSERT INTO orders
+    if (/INSERT\s+INTO\s+orders/i.test(trimmed)) {
+      const id = (params[0] as string) || crypto.randomUUID();
+      const clientOrderId = params[1] as string | undefined;
+      const accountId = params[2] as string;
+      const market = (params[3] as 'SPOT' | 'FUTURES') || 'SPOT';
+      const symbol = (params[4] as string).toUpperCase();
+      const side = params[5] as 'BUY' | 'SELL';
+      const type = params[6] as 'LIMIT' | 'MARKET';
+      const price = params[7] ? String(params[7]) : undefined;
+      const quantity = String(params[8]);
+      const filledQuantity = params[9] ? String(params[9]) : '0';
+      const remainingQuantity = params[10] ? String(params[10]) : quantity;
+      const lockedAmount = params[11] ? String(params[11]) : '0';
+      const lockedAsset = (params[12] as string).toUpperCase();
+      const status = (params[13] as any) || 'NEW';
+      const timeInForce = (params[14] as string) || 'GTC';
+
+      if (clientOrderId) {
+        const uniqueKey = `${accountId}:${clientOrderId}`;
+        if (this.ordersByClientOrderId.has(uniqueKey)) {
+          const err = new Error(`duplicate key value violates unique constraint "orders_account_client_order_id_key"`);
+          (err as any).code = '23505';
+          throw err;
+        }
+        this.ordersByClientOrderId.set(uniqueKey, id);
+      }
+
+      const order: OrderEntity = {
+        id,
+        clientOrderId,
+        accountId,
+        market,
+        symbol,
+        side,
+        type,
+        price,
+        quantity,
+        filledQuantity,
+        remainingQuantity,
+        lockedAmount,
+        lockedAsset,
+        status,
+        timeInForce,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      this.orders.set(id, order);
+      return { rows: [this.mapOrder(order) as T], rowCount: 1 };
+    }
+
+    // 29. SELECT ... FROM orders WHERE id = $1 AND account_id = $2
+    if (/FROM\s+orders.*WHERE\s+id\s*=\s*\$1\s+AND\s+account_id\s*=\s*\$2/i.test(trimmed)) {
+      const id = params[0] as string;
+      const accountId = params[1] as string;
+      const order = this.orders.get(id);
+      if (order && order.accountId === accountId) {
+        return { rows: [this.mapOrder(order) as T], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+    // 30. SELECT ... FROM orders WHERE account_id = $1 AND client_order_id = $2
+    if (/FROM\s+orders.*WHERE\s+account_id\s*=\s*\$1\s+AND\s+client_order_id\s*=\s*\$2/i.test(trimmed)) {
+      const accountId = params[0] as string;
+      const clientOrderId = params[1] as string;
+      const orderId = this.ordersByClientOrderId.get(`${accountId}:${clientOrderId}`);
+      const order = orderId ? this.orders.get(orderId) : undefined;
+      return { rows: order ? [this.mapOrder(order) as T] : [], rowCount: order ? 1 : 0 };
+    }
+
+    // 31. SELECT ... FROM orders WHERE id = $1
+    if (/FROM\s+orders.*WHERE\s+id\s*=\s*\$1/i.test(trimmed)) {
+      const id = params[0] as string;
+      const order = this.orders.get(id);
+      return { rows: order ? [this.mapOrder(order) as T] : [], rowCount: order ? 1 : 0 };
+    }
+
+    // 32. SELECT ... FROM orders WHERE status IN ('NEW', 'PARTIALLY_FILLED') (Engine Recovery)
+    if (/FROM\s+orders.*WHERE\s+status\s+IN/i.test(trimmed) && !/account_id/i.test(trimmed)) {
+      const openOrders = Array.from(this.orders.values())
+        .filter(o => o.status === 'NEW' || o.status === 'PARTIALLY_FILLED')
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      return { rows: openOrders.map(o => this.mapOrder(o)) as T[], rowCount: openOrders.length };
+    }
+
+    // 33. SELECT ... FROM orders WHERE account_id = $1 (Open orders or all orders)
+    if (/FROM\s+orders.*WHERE\s+account_id\s*=/i.test(trimmed)) {
+      const accountId = params[0] as string;
+      let userOrders = Array.from(this.orders.values()).filter(o => o.accountId === accountId);
+
+      if (/status\s+IN\s*\('NEW',\s*'PARTIALLY_FILLED'\)/i.test(trimmed)) {
+        userOrders = userOrders.filter(o => o.status === 'NEW' || o.status === 'PARTIALLY_FILLED');
+      } else if (/status\s*=\s*\$/i.test(trimmed)) {
+        const statusVal = params[1] as string;
+        userOrders = userOrders.filter(o => o.status === statusVal);
+      }
+
+      if (/symbol\s*=\s*\$/i.test(trimmed)) {
+        const sym = (params.find(p => typeof p === 'string' && p !== accountId && this.tradingPairs.has(p as string)) as string)?.toUpperCase();
+        if (sym) {
+          userOrders = userOrders.filter(o => o.symbol === sym);
+        }
+      }
+
+      userOrders.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+      // Pagination
+      const limitIdx = params.findIndex(p => typeof p === 'number');
+      if (limitIdx !== -1 && params[limitIdx + 1] !== undefined) {
+        const limit = params[limitIdx] as number;
+        const offset = params[limitIdx + 1] as number;
+        userOrders = userOrders.slice(offset, offset + limit);
+      }
+
+      return { rows: userOrders.map(o => this.mapOrder(o)) as T[], rowCount: userOrders.length };
+    }
+
+    // 34. UPDATE orders SET ... WHERE id = ...
+    if (/UPDATE\s+orders\s+SET/i.test(trimmed)) {
+      if (/status\s*=\s*\$1\s*,\s*filled_quantity\s*=\s*\$2\s*,\s*remaining_quantity\s*=\s*\$3/i.test(trimmed)) {
+        const status = params[0] as any;
+        const filledQty = String(params[1]);
+        const remQty = String(params[2]);
+        const id = params[3] as string;
+        const order = this.orders.get(id);
+        if (order) {
+          order.status = status;
+          order.filledQuantity = filledQty;
+          order.remainingQuantity = remQty;
+          order.updatedAt = new Date();
+          return { rows: [this.mapOrder(order) as T], rowCount: 1 };
+        }
+      } else if (/filled_quantity\s*=\s*\$1\s*,\s*remaining_quantity\s*=\s*\$2\s*,\s*status\s*=\s*\$3/i.test(trimmed)) {
+        const filledQty = String(params[0]);
+        const remQty = String(params[1]);
+        const status = params[2] as any;
+        const id = params[3] as string;
+        const order = this.orders.get(id);
+        if (order) {
+          order.filledQuantity = filledQty;
+          order.remainingQuantity = remQty;
+          order.status = status;
+          order.updatedAt = new Date();
+          return { rows: [this.mapOrder(order) as T], rowCount: 1 };
+        }
+      } else if (/status\s*=\s*\$1/i.test(trimmed)) {
+        const status = params[0] as any;
+        const id = params[1] as string;
+        const order = this.orders.get(id);
+        if (order) {
+          order.status = status;
+          order.updatedAt = new Date();
+          return { rows: [this.mapOrder(order) as T], rowCount: 1 };
+        }
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+
+    // 35. INSERT INTO trades
+    if (/INSERT\s+INTO\s+trades/i.test(trimmed)) {
+      const id = (params[0] as string) || crypto.randomUUID();
+      const orderId = params[1] as string;
+      const accountId = params[2] as string;
+      const market = (params[3] as 'SPOT' | 'FUTURES') || 'SPOT';
+      const symbol = (params[4] as string).toUpperCase();
+      const side = params[5] as 'BUY' | 'SELL';
+      const price = String(params[6]);
+      const quantity = String(params[7]);
+      const quoteQuantity = String(params[8]);
+      const fee = params[9] ? String(params[9]) : '0';
+      const feeAsset = (params[10] as string).toUpperCase();
+      const isMaker = Boolean(params[11]);
+      const counterpartyOrderId = params[12] as string | undefined;
+
+      const trade: TradeEntity = {
+        id,
+        orderId,
+        accountId,
+        market,
+        symbol,
+        side,
+        price,
+        quantity,
+        quoteQuantity,
+        fee,
+        feeAsset,
+        isMaker,
+        counterpartyOrderId,
+        createdAt: new Date(),
+      };
+
+      this.trades.push(trade);
+      return { rows: [this.mapTrade(trade) as T], rowCount: 1 };
+    }
+
+    // 36. SELECT ... FROM trades WHERE account_id = $1
+    if (/FROM\s+trades.*WHERE\s+account_id\s*=/i.test(trimmed)) {
+      const accountId = params[0] as string;
+      let userTrades = this.trades.filter(t => t.accountId === accountId);
+
+      if (/symbol\s*=\s*\$/i.test(trimmed) && params[1]) {
+        const sym = (params[1] as string).toUpperCase();
+        userTrades = userTrades.filter(t => t.symbol === sym);
+      }
+
+      userTrades.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+      // Pagination
+      const limitIdx = params.findIndex(p => typeof p === 'number');
+      if (limitIdx !== -1 && params[limitIdx + 1] !== undefined) {
+        const limit = params[limitIdx] as number;
+        const offset = params[limitIdx + 1] as number;
+        userTrades = userTrades.slice(offset, offset + limit);
+      }
+
+      return { rows: userTrades.map(t => this.mapTrade(t)) as T[], rowCount: userTrades.length };
+    }
+
+    // 37. SELECT ... FROM trades WHERE order_id = $1
+    if (/FROM\s+trades.*WHERE\s+order_id\s*=/i.test(trimmed)) {
+      const orderId = params[0] as string;
+      const orderTrades = this.trades.filter(t => t.orderId === orderId);
+      return { rows: orderTrades.map(t => this.mapTrade(t)) as T[], rowCount: orderTrades.length };
+    }
+
+    // 38. SELECT ... FROM trades WHERE symbol = $1
+    if (/FROM\s+trades.*WHERE\s+symbol\s*=/i.test(trimmed)) {
+      const symbol = (params[0] as string).toUpperCase();
+      let pairTrades = this.trades.filter(t => t.symbol === symbol);
+      pairTrades.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      if (typeof params[1] === 'number') {
+        pairTrades = pairTrades.slice(0, params[1]);
+      }
+      return { rows: pairTrades.map(t => this.mapTrade(t)) as T[], rowCount: pairTrades.length };
+    }
+
     return { rows: [] as T[], rowCount: 0 };
   }
+
 
   /**
    * Simple fixed-point decimal addition for in-memory aggregation.

@@ -165,3 +165,31 @@ export function validateDecimalPrecision(amount: string, maxDecimals: number): v
     throw new InvalidAmountError(amount, `exceeds maximum allowed precision of ${maxDecimals} decimal places`);
   }
 }
+
+/**
+ * Multiply two decimal strings with exact precision.
+ */
+export function decimalMultiply(a: string, b: string): string {
+  const product = (toBigInt(a) * toBigInt(b)) / SCALE;
+  return fromBigInt(product);
+}
+
+/**
+ * Divide a by b with exact precision.
+ */
+export function decimalDivide(a: string, b: string): string {
+  const bBig = toBigInt(b);
+  if (bBig === 0n) {
+    throw new InvalidAmountError(b, 'division by zero');
+  }
+  const quotient = (toBigInt(a) * SCALE) / bBig;
+  return fromBigInt(quotient);
+}
+
+/**
+ * Return the minimum of two decimal strings.
+ */
+export function decimalMin(a: string, b: string): string {
+  return decimalCompare(a, b) <= 0 ? a : b;
+}
+
