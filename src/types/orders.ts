@@ -10,6 +10,7 @@ export interface DemoOrder {
   type: OrderType;
   price?: string;
   quantity: string;
+  filledQuantity?: string;
   status: OrderStatus;
   createdAt: number;
   updatedAt: number;

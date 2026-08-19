@@ -23,7 +23,7 @@ import { FuturesChart } from '../components/futures/FuturesChart';
 
 export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavigate }: { selectedSymbol?: string, onNavigate?: (tab: string, symbol?: string) => void }) {
   const { user } = useAuth();
-  const accountId = user?.id || 'demo-user-1';
+  const accountId = user?.spotAccountId || user?.id || 'demo-user-1';
   const { selectedSymbol, setSelectedSymbol } = useSelectedSymbol();
   
   const pair = tradingPairRegistry.getSpotPair(selectedSymbol) || tradingPairRegistry.getPair(selectedSymbol) || tradingPairRegistry.getSpotPairs()[0];

@@ -8,6 +8,8 @@ import { fetchMarketData } from './marketData';
 import { FeeService } from './FeeService';
 import { Decimal } from 'decimal.js';
 import { safeParseArray, isValidFinancialString } from './storageUtil';
+import { apiClient } from './api/client';
+import { OrderEntity, TradeEntity } from './api/types';
 
 export class OrderService {
   private orders: DemoOrder[] = [];
@@ -71,6 +73,41 @@ export class OrderService {
     return this.orders.filter(o => o.status === 'PENDING');
   }
 
+  public async fetchOrdersFromBackend(accountId?: string): Promise<DemoOrder[]> {
+    try {
+      if (typeof window !== 'undefined') {
+        const backendOrders = await apiClient.get<OrderEntity[]>('/spot/orders');
+        if (Array.isArray(backendOrders)) {
+          for (const bo of backendOrders) {
+            const existing = this.orders.find(o => o.id === bo.id);
+            const status: OrderStatus = bo.status === 'NEW' || bo.status === 'PARTIALLY_FILLED' ? 'PENDING' : (bo.status as OrderStatus);
+            if (existing) {
+              existing.status = status;
+              existing.filledQuantity = bo.filledQuantity;
+            } else {
+              this.orders.unshift({
+                id: bo.id,
+                accountId: bo.accountId,
+                symbol: bo.symbol,
+                side: bo.side,
+                type: bo.type,
+                price: bo.price,
+                quantity: bo.quantity,
+                filledQuantity: bo.filledQuantity,
+                status,
+                createdAt: new Date(bo.createdAt).getTime(),
+                updatedAt: new Date(bo.updatedAt).getTime(),
+              });
+            }
+          }
+          this.save();
+          this.notify();
+        }
+      }
+    } catch {}
+    return this.orders;
+  }
+
   public async placeOrder(orderPayload: Partial<DemoOrder>): Promise<DemoOrder> {
     const validation = validateDemoOrder(orderPayload);
     if (!validation.valid) {
@@ -78,8 +115,60 @@ export class OrderService {
     }
 
     const order = { ...orderPayload } as DemoOrder;
-    
-    // For LIMIT orders, lock funds immediately
+
+    // 1. Attempt backend order placement
+    try {
+      if (typeof window !== 'undefined') {
+        const backendRes = await apiClient.post<{ order: OrderEntity; trades: TradeEntity[] }>('/spot/orders', {
+          accountId: order.accountId,
+          symbol: order.symbol,
+          side: order.side,
+          type: order.type,
+          price: order.price,
+          quantity: order.quantity,
+          clientOrderId: order.id,
+        });
+
+        if (backendRes && backendRes.order) {
+          const bo = backendRes.order;
+          order.id = bo.id;
+          order.status = bo.status === 'NEW' || bo.status === 'PARTIALLY_FILLED' ? 'PENDING' : (bo.status as OrderStatus);
+          order.filledQuantity = bo.filledQuantity;
+          
+          this.orders.unshift(order);
+          this.save();
+          this.notify();
+
+          const coreStatus = order.status === 'PENDING' ? 'OPEN' : order.status;
+          syncOrderToCore(order.id, order.accountId, order.symbol, 'SPOT', order.side, order.type as any, order.quantity, order.price, undefined, coreStatus as any);
+
+          if (backendRes.trades && backendRes.trades.length > 0) {
+            for (const t of backendRes.trades) {
+              this.tradeSvc.recordTrade({
+                orderId: t.orderId,
+                accountId: t.accountId,
+                symbol: t.symbol,
+                side: t.side,
+                price: t.price,
+                quantity: t.quantity,
+                fee: t.fee,
+                feeAsset: t.feeAsset,
+              });
+              syncFillToCore(t.id, t.orderId, t.accountId, t.symbol, 'SPOT', t.side, t.quantity, t.price, t.fee, t.feeAsset);
+            }
+          }
+
+          return order;
+        }
+      }
+    } catch (err: any) {
+      // If error is a structured API validation/balance error from backend, re-throw it
+      if (err.statusCode && err.statusCode >= 400) {
+        throw new Error(err.message || 'Order rejected by server');
+      }
+    }
+
+    // 2. Local fallback for offline/test environments
     if (order.type === 'LIMIT') {
       this.lockFundsForOrder(order);
     }
@@ -101,7 +190,7 @@ export class OrderService {
 
   private lockFundsForOrder(order: DemoOrder) {
     const baseAsset = order.symbol.replace('USDT', '');
-    const quoteAsset = 'USDT'; // Simplified for this demo
+    const quoteAsset = 'USDT';
     
     const qty = new Decimal(order.quantity);
     
@@ -134,6 +223,10 @@ export class OrderService {
     if (!order) throw new Error('Order not found');
     if (order.status !== 'PENDING') throw new Error('Only PENDING orders can be cancelled');
 
+    if (typeof window !== 'undefined') {
+      apiClient.post(`/spot/orders/${orderId}/cancel`).catch(() => {});
+    }
+
     if (order.type === 'LIMIT') {
       this.unlockFundsForOrder(order);
     }
@@ -150,7 +243,7 @@ export class OrderService {
       const markets = await fetchMarketData();
       
       if (order.status !== 'PENDING') {
-        return; // Order was cancelled while waiting for market data
+        return;
       }
       
       const baseAsset = order.symbol.replace('USDT', '');
@@ -190,7 +283,6 @@ export class OrderService {
         }
       }
 
-      // Record Trade
       this.tradeSvc.recordTrade({
         orderId: order.id,
         accountId: order.accountId,
@@ -205,9 +297,7 @@ export class OrderService {
 
       this.updateOrderStatus(order.id, 'FILLED');
     } catch (err: any) {
-      
       this.updateOrderStatus(order.id, 'REJECTED');
-      // Let the caller handle or just leave it rejected
     }
   }
 
@@ -219,7 +309,7 @@ export class OrderService {
       const markets = await fetchMarketData();
       
       for (const order of pendingLimits) {
-        if (order.status !== 'PENDING') continue; // Prevent race conditions
+        if (order.status !== 'PENDING') continue;
         
         const baseAsset = order.symbol.replace('USDT', '');
         const market = markets.find(m => m.baseAsset === baseAsset);
@@ -236,7 +326,7 @@ export class OrderService {
         }
 
         if (shouldExecute) {
-          order.status = 'FILLED'; // Lock status immediately to prevent duplicate execution
+          order.status = 'FILLED';
           this.executeLimitOrder(order, currentPrice);
         }
       }
@@ -262,10 +352,8 @@ export class OrderService {
       feeAsset = baseAsset;
       const netQty = qty.minus(fee);
 
-      // Funds were locked, we now credit the base asset minus fee
       this.ledger.credit(baseAsset, netQty.toString(), `Limit BUY execution ${order.id}`, 'OTHER', `exec_buy_${order.id}`, order.accountId);
       
-      // If executed at a better price, refund the difference
       if (actualCost.lt(lockedCost)) {
         const refund = lockedCost.minus(actualCost);
         this.ledger.credit(quoteAsset, refund.toString(), `Limit BUY price improvement refund ${order.id}`, 'OTHER', `refund_${order.id}`, order.accountId);
@@ -275,7 +363,6 @@ export class OrderService {
       feeAsset = quoteAsset;
       const netCost = actualCost.minus(fee);
 
-      // Base asset was locked, we now credit the quote asset minus fee
       this.ledger.credit(quoteAsset, netCost.toString(), `Limit SELL execution ${order.id}`, 'OTHER', `exec_sell_${order.id}`, order.accountId);
     }
 
