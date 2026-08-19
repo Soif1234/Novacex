@@ -1,5 +1,6 @@
 export interface Notification {
   id: string;
+  accountId?: string;
   type: 'PRICE_ALERT';
   alertId: string;
   symbol: string;

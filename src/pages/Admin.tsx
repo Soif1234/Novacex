@@ -11,6 +11,19 @@ export function Admin({ onNavigate }: { onNavigate: (tab: string) => void }) {
   const accountId = user?.id || 'demo-user-1';
   const [activeTab, setActiveTab] = useState('system');
 
+  if (user?.role !== 'ADMIN') {
+    return (
+      <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+        <ShieldAlert size={48} className="text-red-500 mb-4" />
+        <h2 className="text-xl font-bold text-white mb-2">Access Denied</h2>
+        <p className="text-gray-400 text-sm mb-6">You do not have administrator permissions to view this page.</p>
+        <button onClick={() => onNavigate('home')} className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2 rounded-lg text-sm">
+          Return Home
+        </button>
+      </div>
+    );
+  }
+
   const tabs = [
     { id: 'system', label: 'System', icon: Server },
     { id: 'users', label: 'Users', icon: Users },
@@ -135,6 +148,7 @@ function UsersAdmin() {
 }
 
 function BalancesAdmin() {
+  const { user } = useAuth();
   const [balances, setBalances] = useState<Record<string, string>>({});
   
   useEffect(() => {
@@ -143,11 +157,18 @@ function BalancesAdmin() {
     return () => { unsub(); };
   }, []);
 
+  const handleResetAll = () => {
+    if (user?.role !== 'ADMIN') return;
+    demoLedger.reset();
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center mb-2">
         <h3 className="text-white font-bold">Global Ledger Balances</h3>
-        <button onClick={() => demoLedger.reset()} className="text-xs bg-red-500/10 text-red-500 border border-red-500/20 px-2 py-1 rounded hover:bg-red-500/20">Reset All</button>
+        {user?.role === 'ADMIN' && (
+          <button onClick={handleResetAll} className="text-xs bg-red-500/10 text-red-500 border border-red-500/20 px-2 py-1 rounded hover:bg-red-500/20">Reset All</button>
+        )}
       </div>
       
       <div className="space-y-2">

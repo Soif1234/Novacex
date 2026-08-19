@@ -21,24 +21,32 @@ export class UserService {
         
         if (data) {
           const parsed = JSON.parse(data);
+          const email = parsed.email || 'demo@mallickexchange.com';
+          const safeEmail = email.toLowerCase().trim();
+          const role = (parsed.role === 'ADMIN' || safeEmail === 'admin@mallickexchange.com') ? 'ADMIN' : 'USER';
           this.currentUser = {
             id: parsed.id || 'demo-user-1',
             username: parsed.username || parsed.name || 'DemoTrader',
             displayName: parsed.displayName || parsed.name || 'Demo Trader',
-            email: parsed.email || 'demo@mallickexchange.com',
+            email: email,
             avatar: parsed.avatar || '',
+            role: role,
             accountStatus: parsed.accountStatus || 'ACTIVE',
             createdAt: parsed.createdAt || Date.now(),
             lastActiveAt: Date.now()
           };
         } else if (oldData) {
           const parsed = JSON.parse(oldData);
+          const email = parsed.email || 'demo@mallickexchange.com';
+          const safeEmail = email.toLowerCase().trim();
+          const role = (parsed.role === 'ADMIN' || safeEmail === 'admin@mallickexchange.com') ? 'ADMIN' : 'USER';
           this.currentUser = {
             id: parsed.id || 'demo-user-1',
             username: parsed.name || 'DemoTrader',
             displayName: parsed.name || 'Demo Trader',
-            email: parsed.email || 'demo@mallickexchange.com',
+            email: email,
             avatar: '',
+            role: role,
             accountStatus: 'ACTIVE',
             createdAt: Date.now(),
             lastActiveAt: Date.now()
@@ -77,6 +85,10 @@ export class UserService {
     return this.currentUser;
   }
   
+  public isAdmin(): boolean {
+    return this.currentUser?.role === 'ADMIN';
+  }
+
   public getAccountStatus(): string {
     return this.currentUser?.accountStatus || 'UNAUTHENTICATED';
   }
@@ -114,10 +126,17 @@ export class UserService {
     this.save();
     this.notify();
   }
+
+  public reset() {
+    this.currentUser = null;
+    this.save();
+    this.notify();
+  }
   
   public login(email: string) {
      const safeEmail = email.toLowerCase().trim();
      const namePrefix = safeEmail.split('@')[0];
+     const isAdmin = safeEmail === 'admin@mallickexchange.com';
      
      // Generate a stable ID based on email so that if they logout and login with the same email, they get the same ID
      const b64 = typeof btoa !== 'undefined' ? btoa(safeEmail) : Buffer.from(safeEmail).toString('base64');
@@ -129,6 +148,7 @@ export class UserService {
       displayName: namePrefix,
       email: safeEmail,
       avatar: '',
+      role: isAdmin ? 'ADMIN' : 'USER',
       accountStatus: 'ACTIVE',
       createdAt: Date.now(),
       lastActiveAt: Date.now()

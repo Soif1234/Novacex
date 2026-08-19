@@ -1,5 +1,6 @@
 export interface PriceAlert {
   id: string;
+  accountId?: string;
   symbol: string;
   marketType: 'SPOT' | 'FUTURES';
   condition: 'ABOVE' | 'BELOW';
@@ -14,6 +15,7 @@ export interface PriceAlert {
 
 export interface AlertTriggeredEvent {
   alertId: string;
+  accountId?: string;
   symbol: string;
   condition: 'ABOVE' | 'BELOW';
   targetPrice: string;

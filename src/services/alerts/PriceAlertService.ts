@@ -1,6 +1,7 @@
 import { PriceAlert, AlertTriggeredEvent } from '../../types/alerts';
 import { tickerService } from '../market/TickerService';
 import { tradingPairRegistry } from '../market/TradingPairRegistry';
+import { userService } from '../user/UserService';
 import { Decimal } from 'decimal.js';
 import { safeParseArray, isValidFinancialString } from '../storageUtil';
 
@@ -28,6 +29,15 @@ class PriceAlertService {
       this.tickerUnsubscribe = null;
     }
     this.isInitialized = false;
+  }
+
+  public reset(accountId?: string) {
+    if (accountId) {
+      this.alerts = this.alerts.filter(a => a.accountId !== accountId && (a.accountId || accountId !== 'demo-user-1'));
+    } else {
+      this.alerts = [];
+    }
+    this.save();
   }
 
   private load() {
@@ -63,10 +73,11 @@ class PriceAlertService {
     marketType: 'SPOT' | 'FUTURES',
     condition: 'ABOVE' | 'BELOW',
     targetPrice: string,
-    repeat: 'ONCE' | 'REPEATING'
+    repeat: 'ONCE' | 'REPEATING',
+    accountId?: string
   ): PriceAlert {
     // Validate Symbol & MarketType
-    const pair = tradingPairRegistry.getPair(symbol);
+    const pair = tradingPairRegistry.getPair(symbol, marketType);
     if (!pair) {
       throw new Error(`Invalid symbol: ${symbol}`);
     }
@@ -94,8 +105,11 @@ class PriceAlertService {
       throw new Error('Target price must be greater than zero');
     }
 
+    const activeAccountId = accountId || (typeof window !== 'undefined' ? userService.getCurrentUser()?.id : undefined) || 'demo-user-1';
+
     const alert: PriceAlert = {
       id: `alert_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      accountId: activeAccountId,
       symbol,
       marketType,
       condition,
@@ -120,7 +134,11 @@ class PriceAlertService {
     return this.alerts.find((a) => a.id === id);
   }
 
-  public getAlerts(): PriceAlert[] {
+  public getAlerts(accountId?: string): PriceAlert[] {
+    const targetAccountId = accountId || (typeof window !== 'undefined' ? userService.getCurrentUser()?.id : undefined);
+    if (targetAccountId) {
+      return this.alerts.filter(a => a.accountId === targetAccountId || (!a.accountId && targetAccountId === 'demo-user-1'));
+    }
     return [...this.alerts];
   }
 
@@ -220,6 +238,7 @@ class PriceAlertService {
 
       this.notifyTrigger({
         alertId: alert.id,
+        accountId: alert.accountId,
         symbol: alert.symbol,
         condition: alert.condition,
         targetPrice: alert.targetPrice,

@@ -22,7 +22,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 export default function App() {
   const [activeTab, setActiveTab] = useState('home');
   
-  const { isAuthenticated } = useAuth();
+  const { user, isAuthenticated } = useAuth();
 
   useEffect(() => {
     priceAlertService.initialize();
@@ -52,7 +52,9 @@ export default function App() {
       case 'account':
         return isAuthenticated ? <Account onNavigate={handleNavigate} /> : <Login onNavigate={handleNavigate} returnTab="account" />;
       case 'admin':
-        return isAuthenticated ? <Admin onNavigate={handleNavigate} /> : <Login onNavigate={handleNavigate} returnTab="admin" />;
+        if (!isAuthenticated) return <Login onNavigate={handleNavigate} returnTab="admin" />;
+        if (user?.role !== 'ADMIN') return <Home onNavigate={handleNavigate} />;
+        return <Admin onNavigate={handleNavigate} />;
       case 'login':
         return <Login onNavigate={handleNavigate} />;
       case 'signup':

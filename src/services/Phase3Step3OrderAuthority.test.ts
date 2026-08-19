@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { orderService } from './OrderService';
 import { futuresOrderService } from './futures/FuturesOrderService';
 import { orderCoreService } from './orders/OrderCoreService';
@@ -12,6 +12,7 @@ describe('Phase 3 Step 3 — Order Authority Unification', () => {
   const userB = 'user-bob-step3';
 
   beforeEach(() => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, json: async () => [] } as any);
     sessionStorage.clear();
     localStorage.clear();
     demoLedger.reset();

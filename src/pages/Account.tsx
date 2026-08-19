@@ -110,7 +110,9 @@ export function Account({ onNavigate }: { onNavigate: (tab: string) => void }) {
         <SectionTitle>Account Details</SectionTitle>
         <MenuRow icon={FileText} label="Email" value={user.email || 'Not provided'} />
         <MenuRow icon={Shield} label="Member Since" value={new Date(user.createdAt).toLocaleDateString()} />
-        <MenuRow icon={Settings} label="Admin Dashboard" onClick={() => onNavigate('admin')} />
+        {user.role === 'ADMIN' && (
+          <MenuRow icon={Settings} label="Admin Dashboard" onClick={() => onNavigate('admin')} />
+        )}
         
         <div className="h-4"></div>
         <SectionTitle>Account Functions</SectionTitle>

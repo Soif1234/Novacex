@@ -11,14 +11,28 @@ export class FuturesTpSlService {
      if (!testMode) this.load();
   }
 
+  private readonly persistKey = 'futures_tpsl';
+
   private load() {
      try {
-         if (typeof localStorage !== 'undefined') {
-             const stored = localStorage.getItem('futures_tpsl');
-             if (stored) {
-                 const parsed = JSON.parse(stored);
-                 if (Array.isArray(parsed)) this.configs = parsed.filter(item => item && typeof item === "object");
+         if (typeof window === 'undefined' && typeof sessionStorage === 'undefined' && typeof localStorage === 'undefined') return;
+         let data: string | null = null;
+         if (typeof sessionStorage !== 'undefined') {
+             data = sessionStorage.getItem(this.persistKey);
+         }
+         // Safe fallback migration from localStorage if sessionStorage is not populated
+         if (!data && typeof localStorage !== 'undefined') {
+             const legacyData = localStorage.getItem(this.persistKey);
+             if (legacyData) {
+                 data = legacyData;
+                 if (typeof sessionStorage !== 'undefined') {
+                     sessionStorage.setItem(this.persistKey, legacyData);
+                 }
              }
+         }
+         if (data) {
+             const parsed = JSON.parse(data);
+             if (Array.isArray(parsed)) this.configs = parsed.filter(item => item && typeof item === "object");
          }
      } catch (e) {
          console.error('Failed to load TP/SL configs', e);
@@ -28,12 +42,22 @@ export class FuturesTpSlService {
   private save() {
      if (this.testMode) return;
      try {
-         if (typeof localStorage !== 'undefined') {
-             localStorage.setItem('futures_tpsl', JSON.stringify(this.configs));
+         if (typeof sessionStorage !== 'undefined') {
+             sessionStorage.setItem(this.persistKey, JSON.stringify(this.configs));
          }
      } catch (e) {
          console.error('Failed to save TP/SL configs', e);
      }
+  }
+
+  public reset(accountId?: string) {
+     if (accountId) {
+         this.configs = this.configs.filter(c => c.accountId !== accountId);
+     } else {
+         this.configs = [];
+     }
+     this.save();
+     this.notify();
   }
 
   public subscribe(cb: () => void) {
@@ -209,12 +233,6 @@ export class FuturesTpSlService {
          this.save();
          this.notify();
      }
-  }
-
-  public reset() {
-      this.configs = [];
-      this.save();
-      this.notify();
   }
 }
 

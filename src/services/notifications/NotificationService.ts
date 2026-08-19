@@ -1,6 +1,7 @@
 import { Notification } from '../../types/notifications';
 import { priceAlertService } from '../alerts/PriceAlertService';
 import { AlertTriggeredEvent } from '../../types/alerts';
+import { userService } from '../user/UserService';
 
 type NotificationListener = () => void;
 type NewNotificationListener = (notification: Notification) => void;
@@ -59,8 +60,11 @@ class NotificationService {
   };
 
   private createNotification(event: AlertTriggeredEvent) {
+    const targetAccountId = event.accountId || (typeof window !== 'undefined' ? userService.getCurrentUser()?.id : undefined) || 'demo-user-1';
+
     const notification: Notification = {
       id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      accountId: targetAccountId,
       type: 'PRICE_ALERT',
       alertId: event.alertId,
       symbol: event.symbol,
@@ -82,16 +86,20 @@ class NotificationService {
     this.notifyNewNotifListeners(notification);
   }
 
-  public getNotifications(): Notification[] {
+  public getNotifications(accountId?: string): Notification[] {
+    const targetAccountId = accountId || (typeof window !== 'undefined' ? userService.getCurrentUser()?.id : undefined);
+    if (targetAccountId) {
+      return this.notifications.filter(n => n.accountId === targetAccountId || (!n.accountId && targetAccountId === 'demo-user-1'));
+    }
     return [...this.notifications];
   }
 
-  public getUnreadCount(): number {
-    return this.notifications.filter(n => !n.read).length;
+  public getUnreadCount(accountId?: string): number {
+    return this.getNotifications(accountId).filter(n => !n.read).length;
   }
 
-  public getUnreadNotifications(): Notification[] {
-    return this.notifications.filter(n => !n.read);
+  public getUnreadNotifications(accountId?: string): Notification[] {
+    return this.getNotifications(accountId).filter(n => !n.read);
   }
 
   public markAsRead(id: string) {
@@ -103,12 +111,15 @@ class NotificationService {
     }
   }
 
-  public markAllAsRead() {
+  public markAllAsRead(accountId?: string) {
     let changed = false;
+    const targetAccountId = accountId || (typeof window !== 'undefined' ? userService.getCurrentUser()?.id : undefined);
     this.notifications.forEach(n => {
-      if (!n.read) {
-        n.read = true;
-        changed = true;
+      if (!targetAccountId || n.accountId === targetAccountId || (!n.accountId && targetAccountId === 'demo-user-1')) {
+        if (!n.read) {
+          n.read = true;
+          changed = true;
+        }
       }
     });
     if (changed) {
@@ -126,12 +137,19 @@ class NotificationService {
     }
   }
 
-  public clearNotifications() {
-    if (this.notifications.length > 0) {
+  public clearNotifications(accountId?: string) {
+    const targetAccountId = accountId || (typeof window !== 'undefined' ? userService.getCurrentUser()?.id : undefined);
+    if (targetAccountId) {
+      this.notifications = this.notifications.filter(n => n.accountId !== targetAccountId && (n.accountId || targetAccountId !== 'demo-user-1'));
+    } else {
       this.notifications = [];
-      this.save();
-      this.notifyListeners();
     }
+    this.save();
+    this.notifyListeners();
+  }
+
+  public reset(accountId?: string) {
+    this.clearNotifications(accountId);
   }
 
   public subscribe(listener: NotificationListener): () => void {
