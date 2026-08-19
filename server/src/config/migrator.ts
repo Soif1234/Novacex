@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import { db, IDatabaseConnection } from './database';
 import { logger } from './logger';
 
@@ -20,14 +21,34 @@ export interface AppliedMigration {
   appliedAt: Date;
 }
 
+const getCurrentDir = () => {
+  try {
+    return path.dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return typeof __dirname !== 'undefined' ? __dirname : process.cwd();
+  }
+};
+
 export class SchemaMigrator {
   private migrationsDir: string;
   private database: IDatabaseConnection;
 
   constructor(migrationsDir?: string, database: IDatabaseConnection = db) {
-    this.migrationsDir = migrationsDir || path.resolve(__dirname, '../../migrations');
+    if (migrationsDir) {
+      this.migrationsDir = migrationsDir;
+    } else {
+      const currentDir = getCurrentDir();
+      const candidates = [
+        path.resolve(process.cwd(), 'server/migrations'),
+        path.resolve(process.cwd(), 'migrations'),
+        path.resolve(currentDir, '../../migrations'),
+        path.resolve(currentDir, '../migrations'),
+      ];
+      this.migrationsDir = candidates.find(c => fs.existsSync(c)) || candidates[0];
+    }
     this.database = database;
   }
+
 
   public getMigrationFiles(): MigrationFile[] {
     if (!fs.existsSync(this.migrationsDir)) {

@@ -1,3 +1,4 @@
+import pg from 'pg';
 import crypto from 'crypto';
 import { env } from './env';
 import { logger } from './logger';
@@ -18,6 +19,7 @@ export interface DatabaseStatus {
   poolSize: number;
   activeConnections: number;
   idleConnections: number;
+  waitingClients?: number;
   lastPingMs?: number;
   error?: string;
 }
@@ -37,7 +39,203 @@ export interface IDatabaseConnection {
   reset?(): void;
 }
 
-export class DatabasePool implements IDatabaseConnection {
+function formatPgResult<T>(res: any): QueryResult<T> {
+
+  if (!res) {
+    return { rows: [], rowCount: 0 };
+  }
+  if (Array.isArray(res)) {
+    const last = res[res.length - 1];
+    const rows = (last?.rows || []) as T[];
+    return {
+      rows,
+      rowCount: last?.rowCount ?? rows.length,
+    };
+  }
+  return {
+    rows: (res.rows || []) as T[],
+    rowCount: res.rowCount ?? (res.rows ? res.rows.length : 0),
+  };
+}
+
+/**
+ * Real PostgreSQL Transaction Client.
+ * Wraps an acquired pg.PoolClient for atomic multi-statement transactions.
+ */
+export class PostgresTransactionClient implements IDatabaseConnection {
+  constructor(private client: pg.PoolClient) {}
+
+  public async connect(): Promise<void> {}
+  public async close(): Promise<void> {}
+
+  public async query<T = unknown>(sql: string, params: unknown[] = []): Promise<QueryResult<T>> {
+    const res = await this.client.query(sql, params);
+    return formatPgResult<T>(res);
+  }
+
+
+  public async transaction<T = unknown>(callback: (client: IDatabaseConnection) => Promise<T>): Promise<T> {
+    return callback(this);
+  }
+
+  public async healthCheck(): Promise<{ healthy: boolean; latencyMs: number; error?: string }> {
+    return { healthy: true, latencyMs: 0 };
+  }
+
+  public getStatus(): DatabaseStatus {
+    return {
+      connected: true,
+      poolSize: 1,
+      activeConnections: 1,
+      idleConnections: 0,
+    };
+  }
+}
+
+/**
+ * Real PostgreSQL Database Pool using 'pg.Pool'.
+ * Production and runtime database adapter.
+ */
+export class PostgresDatabasePool implements IDatabaseConnection {
+  private pool: pg.Pool;
+  private isConnected = false;
+  private connectionError: string | null = null;
+
+  constructor(customConfig?: pg.PoolConfig) {
+    const config: pg.PoolConfig = customConfig || (
+      env.DATABASE_URL
+        ? {
+            connectionString: env.DATABASE_URL,
+            min: env.DB_POOL_MIN,
+            max: env.DB_POOL_MAX,
+            idleTimeoutMillis: 30000,
+            connectionTimeoutMillis: 5000,
+          }
+        : {
+            host: env.DB_HOST,
+            port: env.DB_PORT,
+            database: env.DB_NAME,
+            user: env.DB_USER,
+            password: env.DB_PASSWORD,
+            min: env.DB_POOL_MIN,
+            max: env.DB_POOL_MAX,
+            idleTimeoutMillis: 30000,
+            connectionTimeoutMillis: 5000,
+          }
+    );
+
+    this.pool = new pg.Pool(config);
+
+    this.pool.on('error', (err) => {
+      logger.error('Unexpected error on idle PostgreSQL client', { error: err.message });
+      this.connectionError = err.message;
+    });
+  }
+
+  public async connect(): Promise<void> {
+    try {
+      logger.info('Initializing PostgreSQL connection pool', {
+        host: env.DB_HOST,
+        port: env.DB_PORT,
+        database: env.DB_NAME,
+        user: env.DB_USER,
+        min: env.DB_POOL_MIN,
+        max: env.DB_POOL_MAX,
+      });
+
+      const client = await this.pool.connect();
+      try {
+        await client.query('SELECT 1');
+      } finally {
+        client.release();
+      }
+
+      this.isConnected = true;
+      this.connectionError = null;
+      logger.info('PostgreSQL connection pool initialized successfully');
+    } catch (err: any) {
+      this.isConnected = false;
+      this.connectionError = err.message;
+      logger.error('Failed to connect to PostgreSQL database', { error: err.message });
+      throw err;
+    }
+  }
+
+  public async query<T = unknown>(sql: string, params: unknown[] = []): Promise<QueryResult<T>> {
+    if (!this.isConnected && this.pool.totalCount === 0) {
+      await this.connect().catch(() => {});
+    }
+
+    try {
+      const res = await this.pool.query(sql, params);
+      return formatPgResult<T>(res);
+    } catch (err: any) {
+
+      logger.error('PostgreSQL query execution error', { error: err.message, sql: sql.substring(0, 120) });
+      throw err;
+    }
+  }
+
+  public async transaction<T = unknown>(callback: (client: IDatabaseConnection) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    const txClient = new PostgresTransactionClient(client);
+
+    try {
+      await client.query('BEGIN');
+      const result = await callback(txClient);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackErr: any) {
+        logger.error('Error during transaction rollback', { error: rollbackErr.message });
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async healthCheck(): Promise<{ healthy: boolean; latencyMs: number; error?: string }> {
+    const start = Date.now();
+    try {
+      await this.pool.query('SELECT 1');
+      return { healthy: true, latencyMs: Date.now() - start };
+    } catch (err: any) {
+      return { healthy: false, latencyMs: Date.now() - start, error: err.message };
+    }
+  }
+
+  public getStatus(): DatabaseStatus {
+    return {
+      connected: this.isConnected,
+      poolSize: this.pool.totalCount,
+      activeConnections: Math.max(0, this.pool.totalCount - this.pool.idleCount),
+      idleConnections: this.pool.idleCount,
+      waitingClients: this.pool.waitingCount,
+      error: this.connectionError || undefined,
+    };
+  }
+
+  public async close(): Promise<void> {
+    try {
+      await this.pool.end();
+      this.isConnected = false;
+      logger.info('PostgreSQL connection pool closed cleanly');
+    } catch (err: any) {
+      logger.error('Error closing PostgreSQL pool', { error: err.message });
+      throw err;
+    }
+  }
+}
+
+/**
+ * In-Memory Database Pool.
+ * Used for isolated unit testing without external database dependencies.
+ */
+export class InMemoryDatabasePool implements IDatabaseConnection {
+
   private isConnected = false;
   private connectionError: string | null = null;
   private activeClients = 0;
@@ -1693,4 +1891,10 @@ export class DatabasePool implements IDatabaseConnection {
   }
 }
 
-export const db = new DatabasePool();
+export { InMemoryDatabasePool as DatabasePool };
+
+export const db: IDatabaseConnection =
+  process.env.NODE_ENV === 'test' && process.env.USE_REAL_PG !== 'true'
+    ? new InMemoryDatabasePool()
+    : new PostgresDatabasePool();
+
