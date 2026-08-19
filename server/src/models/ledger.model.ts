@@ -10,7 +10,8 @@ export type LedgerTxType =
   | 'FUTURES_PNL_REALIZED'
   | 'FUTURES_FUNDING_PAYMENT'
   | 'FUTURES_LIQUIDATION'
-  | 'TRADING_FEE';
+  | 'TRADING_FEE'
+  | 'ADJUSTMENT';
 
 export type EntryDirection = 'CREDIT' | 'DEBIT';
 export type TransferStatus = 'PENDING' | 'COMPLETED' | 'FAILED' | 'REJECTED';

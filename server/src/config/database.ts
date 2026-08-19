@@ -2,7 +2,8 @@ import crypto from 'crypto';
 import { env } from './env';
 import { logger } from './logger';
 import { UserEntity, UserProfileEntity, UserAuthCredentialsEntity, UserSessionEntity } from '../models/user.model';
-import { AccountEntity } from '../models/account.model';
+import { AccountEntity, WalletBalanceEntity } from '../models/account.model';
+import { LedgerTransactionEntity, LedgerEntryEntity } from '../models/ledger.model';
 
 export interface DatabaseStatus {
   connected: boolean;
@@ -43,6 +44,13 @@ export class DatabasePool implements IDatabaseConnection {
   private accounts = new Map<string, AccountEntity>(); // id -> account
   private schemaMigrations = new Set<string>();
 
+  // Ledger tables
+  private walletBalances = new Map<string, WalletBalanceEntity>(); // "accountId:asset" -> balance
+  private ledgerTransactions = new Map<string, LedgerTransactionEntity>(); // id -> tx
+  private ledgerTxByRef = new Map<string, string>(); // "accountId:referenceId" -> txId
+  private ledgerEntries: LedgerEntryEntity[] = []; // append-only journal
+  private lockedWallets = new Set<string>(); // concurrency lock keys
+
   constructor(private config = env) {
     this.totalPoolSize = config.DB_POOL_MIN;
   }
@@ -75,6 +83,11 @@ export class DatabasePool implements IDatabaseConnection {
     this.userSessions.clear();
     this.accounts.clear();
     this.schemaMigrations.clear();
+    this.walletBalances.clear();
+    this.ledgerTransactions.clear();
+    this.ledgerTxByRef.clear();
+    this.ledgerEntries = [];
+    this.lockedWallets.clear();
   }
 
   public async transaction<T = unknown>(callback: (client: IDatabaseConnection) => Promise<T>): Promise<T> {
@@ -87,6 +100,10 @@ export class DatabasePool implements IDatabaseConnection {
     const snapCreds = new Map(this.userCredentials);
     const snapSessions = new Map(this.userSessions);
     const snapAccounts = new Map(this.accounts);
+    const snapWalletBalances = new Map(this.walletBalances);
+    const snapLedgerTransactions = new Map(this.ledgerTransactions);
+    const snapLedgerTxByRef = new Map(this.ledgerTxByRef);
+    const snapLedgerEntries = [...this.ledgerEntries];
 
     try {
       const result = await callback(this);
@@ -99,6 +116,10 @@ export class DatabasePool implements IDatabaseConnection {
       this.userCredentials = snapCreds;
       this.userSessions = snapSessions;
       this.accounts = snapAccounts;
+      this.walletBalances = snapWalletBalances;
+      this.ledgerTransactions = snapLedgerTransactions;
+      this.ledgerTxByRef = snapLedgerTxByRef;
+      this.ledgerEntries = snapLedgerEntries;
       throw err;
     }
   }
@@ -344,7 +365,354 @@ export class DatabasePool implements IDatabaseConnection {
       return { rows: rows as unknown as T[], rowCount: rows.length };
     }
 
+    // ── LEDGER TABLE HANDLERS ──────────────────────────────────────────────
+
+    // 14. SELECT ... FROM wallet_balances WHERE account_id = $1 AND asset = $2 FOR UPDATE
+    if (/FROM\s+wallet_balances\s+WHERE\s+account_id\s*=\s*\$1\s+AND\s+asset\s*=\s*\$2/i.test(trimmed)) {
+      const accId = params[0] as string;
+      const asset = params[1] as string;
+      const key = `${accId}:${asset}`;
+      const wb = this.walletBalances.get(key);
+
+      // Simulate row-level lock for concurrency
+      if (/FOR\s+UPDATE/i.test(trimmed)) {
+        if (this.lockedWallets.has(key)) {
+          throw new Error(`LOCK_CONFLICT: wallet row ${key} is already locked by another transaction`);
+        }
+        this.lockedWallets.add(key);
+      }
+
+      if (!wb) return { rows: [], rowCount: 0 };
+      return {
+        rows: [{
+          id: wb.id,
+          account_id: wb.accountId,
+          asset: wb.asset,
+          available_balance: wb.availableBalance,
+          locked_balance: wb.lockedBalance,
+          availableBalance: wb.availableBalance,
+          lockedBalance: wb.lockedBalance,
+          updated_at: wb.updatedAt,
+        } as unknown as T],
+        rowCount: 1,
+      };
+    }
+
+    // 15. SELECT ... FROM wallet_balances WHERE account_id = $1 ORDER BY asset
+    if (/FROM\s+wallet_balances\s+WHERE\s+account_id\s*=\s*\$1/i.test(trimmed) && !/asset/i.test(trimmed.split('WHERE')[1]?.split('ORDER')[0] || '')) {
+      const accId = params[0] as string;
+      const rows: any[] = [];
+      for (const [key, wb] of this.walletBalances) {
+        if (wb.accountId === accId) {
+          rows.push({
+            id: wb.id,
+            account_id: wb.accountId,
+            asset: wb.asset,
+            available_balance: wb.availableBalance,
+            locked_balance: wb.lockedBalance,
+            availableBalance: wb.availableBalance,
+            lockedBalance: wb.lockedBalance,
+            updated_at: wb.updatedAt,
+          });
+        }
+      }
+      rows.sort((a, b) => a.asset.localeCompare(b.asset));
+      return { rows: rows as T[], rowCount: rows.length };
+    }
+
+    // 16. INSERT INTO wallet_balances ... ON CONFLICT DO NOTHING
+    if (/INSERT\s+INTO\s+wallet_balances/i.test(trimmed)) {
+      const id = params[0] as string;
+      const accId = params[1] as string;
+      const asset = params[2] as string;
+      const available = (params[3] as string) || '0';
+      const locked = (params[4] as string) || '0';
+      const key = `${accId}:${asset}`;
+
+      if (/ON\s+CONFLICT.*DO\s+NOTHING/i.test(trimmed) && this.walletBalances.has(key)) {
+        return { rows: [], rowCount: 0 };
+      }
+
+      const wb: WalletBalanceEntity = {
+        id,
+        accountId: accId,
+        asset,
+        availableBalance: available,
+        lockedBalance: locked,
+        updatedAt: new Date(),
+      };
+      this.walletBalances.set(key, wb);
+      return { rows: [wb as unknown as T], rowCount: 1 };
+    }
+
+    // 17. UPDATE wallet_balances SET available_balance = $1, locked_balance = $2
+    if (/UPDATE\s+wallet_balances\s+SET/i.test(trimmed)) {
+      const available = params[0] as string;
+      const locked = params[1] as string;
+      const accId = params[2] as string;
+      const asset = params[3] as string;
+      const key = `${accId}:${asset}`;
+      const wb = this.walletBalances.get(key);
+
+      if (wb) {
+        wb.availableBalance = available;
+        wb.lockedBalance = locked;
+        wb.updatedAt = new Date();
+        // Release lock after update
+        this.lockedWallets.delete(key);
+        return { rows: [wb as unknown as T], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+    // 18. SELECT ... FROM ledger_transactions WHERE account_id = $1 AND reference_id = $2
+    if (/FROM\s+ledger_transactions\s+WHERE\s+account_id\s*=\s*\$1\s+AND\s+reference_id\s*=\s*\$2/i.test(trimmed)) {
+      const accId = params[0] as string;
+      const refId = params[1] as string;
+      const refKey = `${accId}:${refId}`;
+      const txId = this.ledgerTxByRef.get(refKey);
+
+      if (!txId) return { rows: [], rowCount: 0 };
+      const tx = this.ledgerTransactions.get(txId);
+      if (!tx) return { rows: [], rowCount: 0 };
+
+      return {
+        rows: [{
+          id: tx.id,
+          account_id: tx.accountId,
+          transaction_type: tx.transactionType,
+          transactionType: tx.transactionType,
+          reference_id: tx.referenceId,
+          description: tx.description,
+          metadata: tx.metadata,
+          created_at: tx.createdAt,
+          createdAt: tx.createdAt,
+        } as unknown as T],
+        rowCount: 1,
+      };
+    }
+
+    // 19. INSERT INTO ledger_transactions
+    if (/INSERT\s+INTO\s+ledger_transactions/i.test(trimmed)) {
+      const id = params[0] as string;
+      const accId = params[1] as string;
+      const txType = params[2] as string;
+      const refId = params[3] as string;
+      const description = params[4] as string;
+      const metadataRaw = params[5];
+
+      const refKey = `${accId}:${refId}`;
+      if (this.ledgerTxByRef.has(refKey)) {
+        const err = new Error(`duplicate key value violates unique constraint "ledger_transactions_account_id_reference_id_key"`);
+        (err as any).code = '23505';
+        throw err;
+      }
+
+      const metadata = metadataRaw
+        ? (typeof metadataRaw === 'string' ? JSON.parse(metadataRaw) : metadataRaw)
+        : undefined;
+
+      const tx: LedgerTransactionEntity = {
+        id,
+        accountId: accId,
+        transactionType: txType as any,
+        referenceId: refId,
+        description,
+        metadata: metadata as Record<string, unknown> | undefined,
+        createdAt: new Date(),
+      };
+      this.ledgerTransactions.set(id, tx);
+      this.ledgerTxByRef.set(refKey, id);
+      return { rows: [tx as unknown as T], rowCount: 1 };
+    }
+
+    // 20. INSERT INTO ledger_entries
+    if (/INSERT\s+INTO\s+ledger_entries/i.test(trimmed)) {
+      const id = params[0] as string;
+      const txId = params[1] as string;
+      const accId = params[2] as string;
+      const asset = params[3] as string;
+      const direction = params[4] as string;
+      const amount = params[5] as string;
+      const balanceAfter = params[6] as string;
+
+      const entry: LedgerEntryEntity = {
+        id,
+        transactionId: txId,
+        accountId: accId,
+        asset,
+        direction: direction as 'CREDIT' | 'DEBIT',
+        amount,
+        balanceAfter,
+        createdAt: new Date(),
+      };
+      this.ledgerEntries.push(entry);
+      return { rows: [entry as unknown as T], rowCount: 1 };
+    }
+
+    // 21. SELECT ... FROM ledger_entries WHERE transaction_id = $1
+    if (/FROM\s+ledger_entries\s+WHERE\s+transaction_id\s*=\s*\$1/i.test(trimmed)) {
+      const txId = params[0] as string;
+      const entries = this.ledgerEntries.filter(e => e.transactionId === txId);
+      return {
+        rows: entries.map(e => ({
+          id: e.id,
+          transaction_id: e.transactionId,
+          account_id: e.accountId,
+          asset: e.asset,
+          direction: e.direction,
+          amount: e.amount,
+          balance_after: e.balanceAfter,
+          balanceAfter: e.balanceAfter,
+          created_at: e.createdAt,
+        })) as unknown as T[],
+        rowCount: entries.length,
+      };
+    }
+
+    // 22. SELECT ... FROM ledger_entries WHERE account_id = $1 AND asset = $2 AND direction = 'CREDIT'
+    if (/FROM\s+ledger_entries\s+WHERE\s+account_id\s*=\s*\$1\s+AND\s+asset\s*=\s*\$2\s+AND\s+direction\s*=\s*'CREDIT'/i.test(trimmed)) {
+      const accId = params[0] as string;
+      const asset = params[1] as string;
+      const entries = this.ledgerEntries.filter(e => e.accountId === accId && e.asset === asset && e.direction === 'CREDIT');
+      let total = '0';
+      for (const e of entries) {
+        // Simple string addition for test compatibility
+        total = this.decimalAddSimple(total, e.amount);
+      }
+      return { rows: [{ total } as unknown as T], rowCount: 1 };
+    }
+
+    // 23. SELECT ... FROM ledger_entries WHERE account_id = $1 AND asset = $2 AND direction = 'DEBIT'
+    if (/FROM\s+ledger_entries\s+WHERE\s+account_id\s*=\s*\$1\s+AND\s+asset\s*=\s*\$2\s+AND\s+direction\s*=\s*'DEBIT'/i.test(trimmed)) {
+      const accId = params[0] as string;
+      const asset = params[1] as string;
+      const entries = this.ledgerEntries.filter(e => e.accountId === accId && e.asset === asset && e.direction === 'DEBIT');
+      let total = '0';
+      for (const e of entries) {
+        total = this.decimalAddSimple(total, e.amount);
+      }
+      return { rows: [{ total } as unknown as T], rowCount: 1 };
+    }
+
+    // 24. SELECT COUNT(*) FROM ledger_entries ... (history count)
+    if (/SELECT\s+COUNT\s*\(\s*\*\s*\)/i.test(trimmed) && /ledger_entries/i.test(trimmed)) {
+      const accId = params[0] as string;
+      let entries = this.ledgerEntries.filter(e => e.accountId === accId);
+
+      // Apply additional filters if params exist
+      let pIdx = 1;
+      if (params[pIdx] && /e\.asset\s*=\s*\$/i.test(trimmed)) {
+        const asset = params[pIdx] as string;
+        entries = entries.filter(e => e.asset === asset);
+        pIdx++;
+      }
+      if (params[pIdx] && /t\.transaction_type\s*=\s*\$/i.test(trimmed)) {
+        const txType = params[pIdx] as string;
+        entries = entries.filter(e => {
+          const tx = this.ledgerTransactions.get(e.transactionId);
+          return tx?.transactionType === txType;
+        });
+        pIdx++;
+      }
+      if (params[pIdx] && /t\.reference_id\s*=\s*\$/i.test(trimmed)) {
+        const refId = params[pIdx] as string;
+        entries = entries.filter(e => {
+          const tx = this.ledgerTransactions.get(e.transactionId);
+          return tx?.referenceId === refId;
+        });
+      }
+
+      return { rows: [{ total: String(entries.length) } as unknown as T], rowCount: 1 };
+    }
+
+    // 25. SELECT ... FROM ledger_entries JOIN ledger_transactions (history query)
+    if (/FROM\s+ledger_entries\s+e\s+JOIN\s+ledger_transactions\s+t/i.test(trimmed)) {
+      const accId = params[0] as string;
+      let entries = this.ledgerEntries.filter(e => e.accountId === accId);
+
+      // Apply filters
+      let pIdx = 1;
+      if (params[pIdx] && /e\.asset\s*=\s*\$/i.test(trimmed)) {
+        const asset = params[pIdx] as string;
+        entries = entries.filter(e => e.asset === asset);
+        pIdx++;
+      }
+      if (params[pIdx] && /t\.transaction_type\s*=\s*\$/i.test(trimmed)) {
+        const txType = params[pIdx] as string;
+        entries = entries.filter(e => {
+          const tx = this.ledgerTransactions.get(e.transactionId);
+          return tx?.transactionType === txType;
+        });
+        pIdx++;
+      }
+      if (params[pIdx] && /t\.reference_id\s*=\s*\$/i.test(trimmed)) {
+        const refId = params[pIdx] as string;
+        entries = entries.filter(e => {
+          const tx = this.ledgerTransactions.get(e.transactionId);
+          return tx?.referenceId === refId;
+        });
+        pIdx++;
+      }
+
+      // Sort by created_at DESC
+      entries.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+      // Pagination: LIMIT and OFFSET
+      const limit = params[pIdx] as number | undefined;
+      const offset = params[pIdx + 1] as number | undefined;
+      if (limit !== undefined && offset !== undefined) {
+        entries = entries.slice(offset, offset + limit);
+      }
+
+      const rows = entries.map(e => {
+        const tx = this.ledgerTransactions.get(e.transactionId)!;
+        return {
+          transaction_id: e.transactionId,
+          transactionId: e.transactionId,
+          transaction_type: tx?.transactionType,
+          transactionType: tx?.transactionType,
+          reference_id: tx?.referenceId,
+          referenceId: tx?.referenceId,
+          description: tx?.description,
+          direction: e.direction,
+          asset: e.asset,
+          amount: e.amount,
+          balance_after: e.balanceAfter,
+          balanceAfter: e.balanceAfter,
+          created_at: e.createdAt,
+          createdAt: e.createdAt,
+        };
+      });
+
+      return { rows: rows as unknown as T[], rowCount: rows.length };
+    }
+
     return { rows: [] as T[], rowCount: 0 };
+  }
+
+  /**
+   * Simple fixed-point decimal addition for in-memory aggregation.
+   * Used internally by query handlers to sum NUMERIC(36,18) values.
+   */
+  private decimalAddSimple(a: string, b: string): string {
+    const PREC = 18;
+    const SCAL = BigInt(10) ** BigInt(PREC);
+
+    function parse(val: string): bigint {
+      const parts = val.split('.');
+      const intPart = parts[0] || '0';
+      const fracPart = (parts[1] || '').padEnd(PREC, '0').slice(0, PREC);
+      return BigInt(intPart) * SCAL + BigInt(fracPart);
+    }
+
+    function format(val: bigint): string {
+      const intP = val / SCAL;
+      const fracP = val % SCAL;
+      return `${intP}.${fracP.toString().padStart(PREC, '0')}`;
+    }
+
+    return format(parse(a) + parse(b));
   }
 
   public async healthCheck(): Promise<{ healthy: boolean; latencyMs: number; error?: string }> {
