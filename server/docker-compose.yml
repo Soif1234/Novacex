@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mallick_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mallick
+      POSTGRES_PASSWORD: mallick_pass
+      POSTGRES_DB: mallick_exchange
+    ports:
+      - "5432:5432"
+    volumes:
+      - mallick_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mallick -d mallick_exchange"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: mallick_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - mallick_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mallick_pgdata:
+  mallick_redisdata:

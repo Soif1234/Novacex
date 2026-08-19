@@ -1,0 +1,21 @@
+{
+  "name": "mallick-exchange-backend",
+  "version": "1.0.0",
+  "description": "Authoritative backend service for Mallick Exchange (NovaCEX)",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/server.ts",
+    "start": "node dist/server.js",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "crypto-exchange",
+    "trading-engine",
+    "double-entry-ledger"
+  ],
+  "author": "Mallick Exchange Team",
+  "license": "UNLICENSED"
+}
