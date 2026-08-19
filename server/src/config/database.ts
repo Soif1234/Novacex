@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { env } from './env';
 import { logger } from './logger';
 import { UserEntity, UserProfileEntity, UserAuthCredentialsEntity, UserSessionEntity } from '../models/user.model';
-import { AccountEntity, WalletBalanceEntity } from '../models/account.model';
+import { AccountEntity, AssetEntity, WalletBalanceEntity } from '../models/account.model';
 import { LedgerTransactionEntity, LedgerEntryEntity } from '../models/ledger.model';
 
 export interface DatabaseStatus {
@@ -42,6 +42,7 @@ export class DatabasePool implements IDatabaseConnection {
   private userCredentials = new Map<string, UserAuthCredentialsEntity>(); // userId -> creds
   private userSessions = new Map<string, UserSessionEntity>(); // tokenHash -> session
   private accounts = new Map<string, AccountEntity>(); // id -> account
+  private assets = new Map<string, AssetEntity>(); // symbol -> asset
   private schemaMigrations = new Set<string>();
 
   // Ledger tables
@@ -53,6 +54,23 @@ export class DatabasePool implements IDatabaseConnection {
 
   constructor(private config = env) {
     this.totalPoolSize = config.DB_POOL_MIN;
+    this.initDefaultAssets();
+  }
+
+  private initDefaultAssets(): void {
+    const defaultAssets: AssetEntity[] = [
+      { symbol: 'USDT', name: 'Tether USD', decimals: 8, isActive: true, isFiat: false, minWithdrawalAmount: '10', withdrawalFee: '1', createdAt: new Date() },
+      { symbol: 'USDC', name: 'USD Coin', decimals: 8, isActive: true, isFiat: false, minWithdrawalAmount: '10', withdrawalFee: '1', createdAt: new Date() },
+      { symbol: 'BTC', name: 'Bitcoin', decimals: 8, isActive: true, isFiat: false, minWithdrawalAmount: '0.001', withdrawalFee: '0.0005', createdAt: new Date() },
+      { symbol: 'ETH', name: 'Ethereum', decimals: 8, isActive: true, isFiat: false, minWithdrawalAmount: '0.01', withdrawalFee: '0.005', createdAt: new Date() },
+      { symbol: 'SOL', name: 'Solana', decimals: 8, isActive: true, isFiat: false, minWithdrawalAmount: '0.1', withdrawalFee: '0.01', createdAt: new Date() },
+      { symbol: 'XRP', name: 'Ripple', decimals: 8, isActive: true, isFiat: false, minWithdrawalAmount: '1', withdrawalFee: '0.1', createdAt: new Date() },
+      { symbol: 'DOGE', name: 'Dogecoin', decimals: 8, isActive: true, isFiat: false, minWithdrawalAmount: '10', withdrawalFee: '1', createdAt: new Date() },
+      { symbol: 'FUTURES_USDT', name: 'Futures Collateral USDT', decimals: 8, isActive: true, isFiat: false, minWithdrawalAmount: '0', withdrawalFee: '0', createdAt: new Date() },
+    ];
+    for (const a of defaultAssets) {
+      this.assets.set(a.symbol, { ...a });
+    }
   }
 
   public async connect(): Promise<void> {
@@ -82,6 +100,8 @@ export class DatabasePool implements IDatabaseConnection {
     this.userCredentials.clear();
     this.userSessions.clear();
     this.accounts.clear();
+    this.assets.clear();
+    this.initDefaultAssets();
     this.schemaMigrations.clear();
     this.walletBalances.clear();
     this.ledgerTransactions.clear();
@@ -100,6 +120,7 @@ export class DatabasePool implements IDatabaseConnection {
     const snapCreds = new Map(this.userCredentials);
     const snapSessions = new Map(this.userSessions);
     const snapAccounts = new Map(this.accounts);
+    const snapAssets = new Map(this.assets);
     const snapWalletBalances = new Map(this.walletBalances);
     const snapLedgerTransactions = new Map(this.ledgerTransactions);
     const snapLedgerTxByRef = new Map(this.ledgerTxByRef);
@@ -116,6 +137,7 @@ export class DatabasePool implements IDatabaseConnection {
       this.userCredentials = snapCreds;
       this.userSessions = snapSessions;
       this.accounts = snapAccounts;
+      this.assets = snapAssets;
       this.walletBalances = snapWalletBalances;
       this.ledgerTransactions = snapLedgerTransactions;
       this.ledgerTxByRef = snapLedgerTxByRef;
@@ -176,6 +198,22 @@ export class DatabasePool implements IDatabaseConnection {
       user_id: a.userId,
       created_at: a.createdAt,
       updated_at: a.updatedAt
+    };
+  }
+
+  private mapAsset(a: AssetEntity): any {
+    return {
+      ...a,
+      is_active: a.isActive,
+      is_fiat: a.isFiat,
+      isActive: a.isActive,
+      isFiat: a.isFiat,
+      min_withdrawal_amount: a.minWithdrawalAmount,
+      withdrawal_fee: a.withdrawalFee,
+      minWithdrawalAmount: a.minWithdrawalAmount,
+      withdrawalFee: a.withdrawalFee,
+      created_at: a.createdAt,
+      createdAt: a.createdAt
     };
   }
 
@@ -295,12 +333,71 @@ export class DatabasePool implements IDatabaseConnection {
       return { rows: [this.mapAccount(account) as T], rowCount: 1 };
     }
 
-    // 9. SELECT ... FROM accounts WHERE user_id = $1
-    if (/FROM\s+accounts\s+WHERE\s+user_id\s*=/i.test(trimmed)) {
+    // 9. SELECT ... FROM accounts WHERE id = $1 AND user_id = $2
+    if (/FROM\s+accounts.*WHERE\s+id\s*=\s*\$1\s+AND\s+user_id\s*=\s*\$2/i.test(trimmed)) {
+      const id = params[0] as string;
+      const userId = params[1] as string;
+      const account = this.accounts.get(id);
+      if (account && account.userId === userId) {
+        return { rows: [this.mapAccount(account) as T], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+    // 9b. SELECT ... FROM accounts WHERE id = $1
+    if (/FROM\s+accounts.*WHERE\s+id\s*=\s*\$1/i.test(trimmed)) {
+      const id = params[0] as string;
+      const account = this.accounts.get(id);
+      return { rows: account ? [this.mapAccount(account) as T] : [], rowCount: account ? 1 : 0 };
+    }
+
+    // 9c. SELECT ... FROM accounts WHERE user_id = $1
+    if (/FROM\s+accounts.*WHERE\s+user_id\s*=/i.test(trimmed)) {
       const userId = params[0] as string;
       const userAccounts = Array.from(this.accounts.values()).filter(a => a.userId === userId);
       return { rows: userAccounts.map(a => this.mapAccount(a)) as T[], rowCount: userAccounts.length };
     }
+
+    // 9d. SELECT ... FROM assets WHERE symbol = $1
+    if (/FROM\s+assets\s+WHERE\s+symbol\s*=/i.test(trimmed)) {
+      const symbol = (params[0] as string)?.toUpperCase();
+      const asset = this.assets.get(symbol);
+      return { rows: asset ? [this.mapAsset(asset) as T] : [], rowCount: asset ? 1 : 0 };
+    }
+
+    // 9e. SELECT ... FROM assets
+    if (/FROM\s+assets/i.test(trimmed) && !/WHERE/i.test(trimmed)) {
+      const allAssets = Array.from(this.assets.values());
+      return { rows: allAssets.map(a => this.mapAsset(a)) as T[], rowCount: allAssets.length };
+    }
+
+    // 9f. UPDATE assets SET is_active = ... WHERE symbol = ...
+    if (/UPDATE\s+assets\s+SET\s+is_active/i.test(trimmed)) {
+      let isActive = true;
+      let symbol = '';
+
+      if (params.length >= 2) {
+        isActive = Boolean(params[0]);
+        symbol = (params[1] as string)?.toUpperCase();
+      } else {
+        const activeMatch = /is_active\s*=\s*(true|false)/i.exec(trimmed);
+        if (activeMatch) {
+          isActive = activeMatch[1].toLowerCase() === 'true';
+        }
+        const symbolMatch = /symbol\s*=\s*['"]?([a-zA-Z0-9_]+)['"]?/i.exec(trimmed);
+        if (symbolMatch) {
+          symbol = symbolMatch[1].toUpperCase();
+        }
+      }
+
+      const asset = this.assets.get(symbol);
+      if (asset) {
+        asset.isActive = isActive;
+        return { rows: [this.mapAsset(asset) as T], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
 
     // 10. INSERT INTO user_sessions
     if (/INSERT\s+INTO\s+user_sessions/i.test(trimmed)) {

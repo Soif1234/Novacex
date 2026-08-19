@@ -145,3 +145,23 @@ export function decimalZero(): string {
 export function decimalNormalize(value: string): string {
   return fromBigInt(toBigInt(value));
 }
+
+/**
+ * Count the number of decimal places in an amount string.
+ */
+export function countDecimalPlaces(amount: string): number {
+  const trimmed = amount.trim();
+  const parts = trimmed.split('.');
+  if (parts.length < 2) return 0;
+  return parts[1].length;
+}
+
+/**
+ * Validate that an amount string does not exceed the allowed maximum decimal places.
+ */
+export function validateDecimalPrecision(amount: string, maxDecimals: number): void {
+  const decimals = countDecimalPlaces(amount);
+  if (decimals > maxDecimals) {
+    throw new InvalidAmountError(amount, `exceeds maximum allowed precision of ${maxDecimals} decimal places`);
+  }
+}
