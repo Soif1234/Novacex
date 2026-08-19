@@ -253,10 +253,18 @@ export class TradingPairRegistry {
         }
       }
 
-      const [tickerRes, exchangeInfoRes] = await Promise.all([
-        fetch('https://fapi.binance.com/fapi/v1/ticker/24hr').catch(() => null),
-        fetch('https://fapi.binance.com/fapi/v1/exchangeInfo').catch(() => null)
-      ]);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1000);
+      let tickerRes: any = null;
+      let exchangeInfoRes: any = null;
+      try {
+        [tickerRes, exchangeInfoRes] = await Promise.all([
+          fetch('https://fapi.binance.com/fapi/v1/ticker/24hr', { signal: controller.signal }).catch(() => null),
+          fetch('https://fapi.binance.com/fapi/v1/exchangeInfo', { signal: controller.signal }).catch(() => null)
+        ]);
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!tickerRes || !exchangeInfoRes || !tickerRes.ok || !exchangeInfoRes.ok) {
         console.warn('Failed to fetch market data for top 200 pairs');

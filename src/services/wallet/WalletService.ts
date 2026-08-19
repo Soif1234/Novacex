@@ -2,6 +2,7 @@ import { demoLedger } from '../ledger';
 import { orderService } from '../OrderService';
 import { futuresOrderService } from '../futures/FuturesOrderService';
 import { futuresRiskService } from '../futures/FuturesRiskService';
+import { tradingPairRegistry } from '../market/TradingPairRegistry';
 import { Decimal } from 'decimal.js';
 import { fetchMarketData } from '../marketData';
 import { Asset, WalletBalances } from './types';
@@ -31,9 +32,12 @@ export class WalletService {
     }
 
     for (const order of spotOrders) {
+      const pair = tradingPairRegistry.getSpotPair(order.symbol) || tradingPairRegistry.getPair(order.symbol);
+      const quoteAsset = pair?.quoteAsset || (order.symbol.endsWith('USDC') ? 'USDC' : 'USDT');
+      const baseAsset = pair?.baseAsset || order.symbol.replace(quoteAsset, '');
+
       if (order.side === 'BUY') {
         const lockedQuote = new Decimal(order.quantity).mul(new Decimal(order.price!));
-        const quoteAsset = 'USDT';
         if (!assetsMap.has(quoteAsset)) {
           assetsMap.set(quoteAsset, this.createEmptyAsset(quoteAsset));
         }
@@ -41,7 +45,6 @@ export class WalletService {
         a.lockedBalance = new Decimal(a.lockedBalance).plus(lockedQuote).toString();
         a.totalBalance = new Decimal(a.totalBalance).plus(lockedQuote).toString();
       } else {
-        const baseAsset = order.symbol.replace('USDT', '');
         if (!assetsMap.has(baseAsset)) {
           assetsMap.set(baseAsset, this.createEmptyAsset(baseAsset));
         }
@@ -78,7 +81,7 @@ export class WalletService {
     }
 
     for (const [symbol, asset] of assetsMap.entries()) {
-      if (symbol === 'USDT' || symbol === 'FUTURES_USDT') {
+      if (symbol === 'USDT' || symbol === 'FUTURES_USDT' || symbol === 'USDC') {
         asset.marketValue = asset.totalBalance;
       } else {
         const m = markets.find(x => x.baseAsset === symbol);
@@ -140,11 +143,13 @@ export class WalletService {
     if (symbol === 'FUTURES_USDT') return 'Tether US (Futures)';
     const map: Record<string, string> = {
       USDT: 'Tether US',
+      USDC: 'USD Coin',
       BTC: 'Bitcoin',
       ETH: 'Ethereum',
       SOL: 'Solana',
       XRP: 'Ripple',
-      DOGE: 'Dogecoin'
+      DOGE: 'Dogecoin',
+      BNB: 'Binance Coin'
     };
     return map[symbol] || symbol;
   }

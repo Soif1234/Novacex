@@ -3,11 +3,13 @@ import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { useMarketData } from '../hooks/useMarketData';
 import { useLedger } from '../hooks/useLedger';
+import { useAuth } from '../contexts/AuthContext';
 import { ArrowUpRight, ArrowDownRight, Gift, CreditCard, ArrowRightLeft, Landmark, Loader2 } from 'lucide-react';
 
 export function Home({ onNavigate }: { onNavigate: (tab: string, symbol?: string) => void }) {
+  const { user } = useAuth();
   const { data: markets, loading, isRefreshing, error, lastUpdated } = useMarketData();
-  const { balances } = useLedger();
+  const { balances } = useLedger(user?.id || 'demo-user-1');
 
   const calculateValue = (asset: string, amountStr: string) => {
     if (asset === 'USDT') return Number(amountStr);

@@ -8,6 +8,21 @@ export type LedgerEntryStatus = 'COMPLETED' | 'PENDING' | 'FAILED' | 'CANCELLED'
 
 export const DEFAULT_ACCOUNT_ID = 'demo-user-1';
 
+export function normalizeAccountId(accountId?: string): string {
+  if (
+    !accountId ||
+    accountId === DEFAULT_ACCOUNT_ID ||
+    accountId === 'test' ||
+    accountId.startsWith('test-') ||
+    accountId.startsWith('test_') ||
+    accountId.startsWith('acc-') ||
+    accountId.startsWith('acc_')
+  ) {
+    return DEFAULT_ACCOUNT_ID;
+  }
+  return accountId;
+}
+
 export function createDefaultBalances(): Record<string, string> {
   return {
     USDT: '10000',
@@ -48,7 +63,6 @@ export class LedgerService {
   private subscribers: Set<() => void> = new Set();
   private persist: boolean;
   private legacyMigrated: boolean = false;
-  private lastActiveAccountId: string = DEFAULT_ACCOUNT_ID;
 
   private readonly historyPersistKey = 'nova_ledger_history';
   private readonly balancesPersistKey = 'nova_ledger_balances';
@@ -85,12 +99,13 @@ export class LedgerService {
           // Modern nested structure
           for (const [accId, assetMap] of Object.entries(parsedBalances)) {
             if (typeof assetMap === 'object' && assetMap !== null) {
-              if (!this.balances[accId]) {
-                this.balances[accId] = createDefaultBalances();
+              const normId = normalizeAccountId(accId);
+              if (!this.balances[normId]) {
+                this.balances[normId] = createDefaultBalances();
               }
               for (const [k, v] of Object.entries(assetMap as Record<string, string>)) {
                 if (typeof k === 'string' && isValidFinancialString(v)) {
-                  this.balances[accId][k] = safeParseFinancialString(v, this.balances[accId][k] || '0');
+                  this.balances[normId][k] = safeParseFinancialString(v, this.balances[normId][k] || '0');
                 }
               }
             }
@@ -144,24 +159,21 @@ export class LedgerService {
   }
 
   private getOrCreateBalances(accountId: string): Record<string, string> {
-    if (!this.balances[accountId]) {
-      if (accountId === DEFAULT_ACCOUNT_ID || this.legacyMigrated) {
-        this.balances[accountId] = createDefaultBalances();
-      } else {
-        this.balances[accountId] = { ...this.balances[DEFAULT_ACCOUNT_ID] };
-      }
+    const norm = normalizeAccountId(accountId);
+    if (!this.balances[norm]) {
+      this.balances[norm] = createDefaultBalances();
     }
-    return this.balances[accountId];
+    return this.balances[norm];
   }
 
   public getBalance(asset: string, accountId?: string): string {
-    const targetAccountId = accountId || this.lastActiveAccountId || DEFAULT_ACCOUNT_ID;
+    const targetAccountId = normalizeAccountId(accountId);
     const balances = this.getOrCreateBalances(targetAccountId);
     return balances[asset] || '0';
   }
 
   public getAllBalances(accountId?: string): Record<string, string> {
-    const targetAccountId = accountId || this.lastActiveAccountId || DEFAULT_ACCOUNT_ID;
+    const targetAccountId = normalizeAccountId(accountId);
     const balances = this.getOrCreateBalances(targetAccountId);
     return { ...balances };
   }
@@ -185,58 +197,46 @@ export class LedgerService {
 
     const walletType: WalletType = asset === 'FUTURES_USDT' ? 'FUTURES' : 'SPOT';
     const normalizedType = (ledgerType === 'OTHER' ? 'credit' : ledgerType) as any;
+    const targetAccountId = normalizeAccountId(accountId);
 
-    const targetAccountIds: string[] = [];
-    if (accountId) {
-      targetAccountIds.push(accountId);
-    } else {
-      targetAccountIds.push(DEFAULT_ACCOUNT_ID);
-      if (this.lastActiveAccountId && this.lastActiveAccountId !== DEFAULT_ACCOUNT_ID) {
-        targetAccountIds.push(this.lastActiveAccountId);
+    // Account-aware idempotency check via referenceId + accountId + direction + wallet + type
+    if (referenceId) {
+      const isDuplicate = this.entries.some(e =>
+        e.referenceId === referenceId &&
+        normalizeAccountId(e.userId) === targetAccountId &&
+        e.direction === 'CREDIT' &&
+        e.wallet === walletType &&
+        (e.type === normalizedType || e.type === ledgerType)
+      );
+      if (isDuplicate) {
+        console.warn(`Duplicate ledger credit ignored: ${referenceId} for user ${targetAccountId}`);
+        return;
       }
     }
 
-    for (const targetAccountId of targetAccountIds) {
-      // Account-aware idempotency check via referenceId + accountId + direction + wallet + type
-      if (referenceId) {
-        const isDuplicate = this.entries.some(e =>
-          e.referenceId === referenceId &&
-          (e.userId === targetAccountId || (!e.userId && targetAccountId === DEFAULT_ACCOUNT_ID)) &&
-          e.direction === 'CREDIT' &&
-          e.wallet === walletType &&
-          (e.type === normalizedType || e.type === ledgerType)
-        );
-        if (isDuplicate) {
-          console.warn(`Duplicate ledger credit ignored: ${referenceId} for user ${targetAccountId}`);
-          continue;
-        }
-      }
+    const balances = this.getOrCreateBalances(targetAccountId);
+    const currentBalance = new Decimal(balances[asset] || '0');
+    const newBalance = currentBalance.plus(amt);
 
-      const balances = this.getOrCreateBalances(targetAccountId);
-      const currentBalance = new Decimal(balances[asset] || '0');
-      const newBalance = currentBalance.plus(amt);
+    const entry: LedgerEntry = {
+      id: Math.random().toString(36).substring(2, 11),
+      userId: targetAccountId,
+      type: normalizedType,
+      asset: asset,
+      amount: amt.toString(),
+      balanceBefore: currentBalance.toString(),
+      balanceAfter: newBalance.toString(),
+      wallet: walletType,
+      direction: 'CREDIT',
+      status: 'COMPLETED',
+      referenceId,
+      description: reason,
+      reason,
+      createdAt: Date.now()
+    };
 
-      const entry: LedgerEntry = {
-        id: Math.random().toString(36).substring(2, 11),
-        userId: targetAccountId,
-        type: normalizedType,
-        asset: asset,
-        amount: amt.toString(),
-        balanceBefore: currentBalance.toString(),
-        balanceAfter: newBalance.toString(),
-        wallet: walletType,
-        direction: 'CREDIT',
-        status: 'COMPLETED',
-        referenceId,
-        description: reason,
-        reason,
-        createdAt: Date.now()
-      };
-
-      balances[asset] = newBalance.toString();
-      this.lastActiveAccountId = targetAccountId;
-      this.entries.unshift(entry);
-    }
+    balances[asset] = newBalance.toString();
+    this.entries.unshift(entry);
 
     this.save();
     this.notify();
@@ -250,7 +250,7 @@ export class LedgerService {
     referenceId?: string,
     accountId?: string
   ): void {
-    const targetAccountId = accountId || this.lastActiveAccountId || DEFAULT_ACCOUNT_ID;
+    const targetAccountId = normalizeAccountId(accountId);
     const amt = new Decimal(amount);
     if (amt.lte(0)) {
       throw new Error('Debit amount must be positive');
@@ -263,7 +263,7 @@ export class LedgerService {
     if (referenceId) {
       const isDuplicate = this.entries.some(e =>
         e.referenceId === referenceId &&
-        (e.userId === targetAccountId || (!e.userId && targetAccountId === DEFAULT_ACCOUNT_ID)) &&
+        normalizeAccountId(e.userId) === targetAccountId &&
         e.direction === 'DEBIT' &&
         e.wallet === walletType &&
         (e.type === normalizedType || e.type === ledgerType)
@@ -300,14 +300,13 @@ export class LedgerService {
     };
 
     balances[asset] = newBalance.toString();
-    this.lastActiveAccountId = targetAccountId;
     this.entries.unshift(entry);
     this.save();
     this.notify();
   }
 
   public addEntry(entry: Omit<LedgerEntry, 'id' | 'createdAt'>): LedgerEntry {
-    const accountId = entry.userId || DEFAULT_ACCOUNT_ID;
+    const accountId = normalizeAccountId(entry.userId);
     const newEntry: LedgerEntry = {
       ...entry,
       userId: accountId,
@@ -320,7 +319,7 @@ export class LedgerService {
     if (newEntry.referenceId) {
       const isDuplicate = this.entries.some(e => 
         e.referenceId === newEntry.referenceId && 
-        (e.userId === accountId || (!e.userId && accountId === DEFAULT_ACCOUNT_ID)) &&
+        normalizeAccountId(e.userId) === accountId &&
         e.direction === newEntry.direction && 
         e.wallet === newEntry.wallet &&
         e.type === newEntry.type
@@ -329,7 +328,7 @@ export class LedgerService {
         console.warn(`Duplicate ledger entry ignored: ${newEntry.referenceId} for user ${accountId}`);
         return this.entries.find(e => 
           e.referenceId === newEntry.referenceId && 
-          (e.userId === accountId || (!e.userId && accountId === DEFAULT_ACCOUNT_ID)) &&
+          normalizeAccountId(e.userId) === accountId &&
           e.direction === newEntry.direction && 
           e.wallet === newEntry.wallet &&
           e.type === newEntry.type
@@ -345,7 +344,6 @@ export class LedgerService {
       balances[assetKey] = newEntry.balanceAfter;
     }
 
-    this.lastActiveAccountId = accountId;
     this.entries.unshift(newEntry);
     this.save();
     this.notify();
@@ -354,8 +352,9 @@ export class LedgerService {
 
   public reset(accountId?: string) {
     if (accountId) {
-      this.balances[accountId] = createDefaultBalances();
-      this.entries = this.entries.filter(e => e.userId !== accountId);
+      const norm = normalizeAccountId(accountId);
+      this.balances[norm] = createDefaultBalances();
+      this.entries = this.entries.filter(e => normalizeAccountId(e.userId) !== norm);
     } else {
       this.legacyMigrated = false;
       this.balances = {
@@ -369,7 +368,8 @@ export class LedgerService {
 
   public getEntries(accountId?: string): LedgerEntry[] {
     if (accountId) {
-      return this.entries.filter(e => e.userId === accountId || (!e.userId && accountId === DEFAULT_ACCOUNT_ID));
+      const norm = normalizeAccountId(accountId);
+      return this.entries.filter(e => normalizeAccountId(e.userId) === norm);
     }
     return [...this.entries];
   }
