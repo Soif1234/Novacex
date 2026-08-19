@@ -17,6 +17,16 @@ export class UserService {
     apiClient.onUnauthorized(() => {
       this.logout();
     });
+
+    // Cross-tab synchronization
+    if (typeof window !== 'undefined') {
+      window.addEventListener('storage', (e) => {
+        if (e.key === this.persistKey) {
+          this.load();
+          this.notify();
+        }
+      });
+    }
   }
 
   private load() {
