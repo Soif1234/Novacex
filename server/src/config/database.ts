@@ -5,6 +5,13 @@ import { UserEntity, UserProfileEntity, UserAuthCredentialsEntity, UserSessionEn
 import { AccountEntity, AssetEntity, WalletBalanceEntity } from '../models/account.model';
 import { LedgerTransactionEntity, LedgerEntryEntity } from '../models/ledger.model';
 import { TradingPairEntity, OrderEntity, TradeEntity } from '../models/order.model';
+import {
+  FuturesPositionEntity,
+  FuturesOrderEntity,
+  FuturesTpSlConfigEntity,
+  FuturesFundingHistoryEntity,
+  FuturesLiquidationEntity,
+} from '../models/futures.model';
 
 export interface DatabaseStatus {
   connected: boolean;
@@ -59,11 +66,19 @@ export class DatabasePool implements IDatabaseConnection {
   private ordersByClientOrderId = new Map<string, string>(); // "accountId:clientOrderId" -> orderId
   private trades: TradeEntity[] = [];
 
+  // Futures tables
+  private futuresPositions = new Map<string, FuturesPositionEntity>(); // id -> position
+  private futuresOrders = new Map<string, FuturesOrderEntity>(); // id -> futuresOrder
+  private futuresTpSlConfigs = new Map<string, FuturesTpSlConfigEntity>(); // id -> config
+  private futuresFundingHistory: FuturesFundingHistoryEntity[] = [];
+  private futuresLiquidations: FuturesLiquidationEntity[] = [];
+
   constructor(private config = env) {
     this.totalPoolSize = config.DB_POOL_MIN;
     this.initDefaultAssets();
     this.initDefaultTradingPairs();
   }
+
 
   private initDefaultAssets(): void {
     const defaultAssets: AssetEntity[] = [
@@ -128,6 +143,11 @@ export class DatabasePool implements IDatabaseConnection {
     this.orders.clear();
     this.ordersByClientOrderId.clear();
     this.trades = [];
+    this.futuresPositions.clear();
+    this.futuresOrders.clear();
+    this.futuresTpSlConfigs.clear();
+    this.futuresFundingHistory = [];
+    this.futuresLiquidations = [];
     this.schemaMigrations.clear();
     this.walletBalances.clear();
     this.ledgerTransactions.clear();
@@ -151,6 +171,11 @@ export class DatabasePool implements IDatabaseConnection {
     const snapOrders = new Map(this.orders);
     const snapOrdersByClientOrderId = new Map(this.ordersByClientOrderId);
     const snapTrades = [...this.trades];
+    const snapFuturesPositions = new Map(this.futuresPositions);
+    const snapFuturesOrders = new Map(this.futuresOrders);
+    const snapFuturesTpSlConfigs = new Map(this.futuresTpSlConfigs);
+    const snapFuturesFundingHistory = [...this.futuresFundingHistory];
+    const snapFuturesLiquidations = [...this.futuresLiquidations];
     const snapWalletBalances = new Map(this.walletBalances);
     const snapLedgerTransactions = new Map(this.ledgerTransactions);
     const snapLedgerTxByRef = new Map(this.ledgerTxByRef);
@@ -172,6 +197,11 @@ export class DatabasePool implements IDatabaseConnection {
       this.orders = snapOrders;
       this.ordersByClientOrderId = snapOrdersByClientOrderId;
       this.trades = snapTrades;
+      this.futuresPositions = snapFuturesPositions;
+      this.futuresOrders = snapFuturesOrders;
+      this.futuresTpSlConfigs = snapFuturesTpSlConfigs;
+      this.futuresFundingHistory = snapFuturesFundingHistory;
+      this.futuresLiquidations = snapFuturesLiquidations;
       this.walletBalances = snapWalletBalances;
       this.ledgerTransactions = snapLedgerTransactions;
       this.ledgerTxByRef = snapLedgerTxByRef;
@@ -179,6 +209,7 @@ export class DatabasePool implements IDatabaseConnection {
       throw err;
     }
   }
+
 
   private mapUser(u: UserEntity): any {
     return {
@@ -334,6 +365,97 @@ export class DatabasePool implements IDatabaseConnection {
     };
   }
 
+  private mapFuturesPosition(p: FuturesPositionEntity): any {
+    return {
+      ...p,
+      account_id: p.accountId,
+      entry_price: p.entryPrice,
+      mark_price: p.markPrice,
+      liquidation_price: p.liquidationPrice,
+      margin_mode: p.marginMode,
+      initial_margin: p.initialMargin,
+      maintenance_margin: p.maintenanceMargin,
+      realized_pnl: p.realizedPnl,
+      created_at: p.createdAt,
+      updated_at: p.updatedAt,
+      accountId: p.accountId,
+      entryPrice: p.entryPrice,
+      markPrice: p.markPrice,
+      liquidationPrice: p.liquidationPrice,
+      marginMode: p.marginMode,
+      initialMargin: p.initialMargin,
+      maintenanceMargin: p.maintenanceMargin,
+      realizedPnl: p.realizedPnl,
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+    };
+  }
+
+  private mapFuturesOrder(fo: FuturesOrderEntity): any {
+    return {
+      ...fo,
+      order_id: fo.orderId,
+      account_id: fo.accountId,
+      position_side: fo.positionSide,
+      margin_mode: fo.marginMode,
+      reduce_only: fo.reduceOnly,
+      close_position: fo.closePosition,
+      created_at: fo.createdAt,
+      orderId: fo.orderId,
+      accountId: fo.accountId,
+      positionSide: fo.positionSide,
+      marginMode: fo.marginMode,
+      reduceOnly: fo.reduceOnly,
+      closePosition: fo.closePosition,
+      createdAt: fo.createdAt,
+    };
+  }
+
+  private mapFuturesTpSl(c: FuturesTpSlConfigEntity): any {
+    return {
+      ...c,
+      position_id: c.positionId,
+      account_id: c.accountId,
+      position_side: c.positionSide,
+      take_profit_enabled: c.takeProfitEnabled,
+      take_profit_price: c.takeProfitPrice,
+      stop_loss_enabled: c.stopLossEnabled,
+      stop_loss_price: c.stopLossPrice,
+      created_at: c.createdAt,
+      updated_at: c.updatedAt,
+      positionId: c.positionId,
+      accountId: c.accountId,
+      positionSide: c.positionSide,
+      takeProfitEnabled: c.takeProfitEnabled,
+      takeProfitPrice: c.takeProfitPrice,
+      stopLossEnabled: c.stopLossEnabled,
+      stopLossPrice: c.stopLossPrice,
+      createdAt: c.createdAt,
+      updatedAt: c.updatedAt,
+    };
+  }
+
+  private mapFuturesLiquidation(l: FuturesLiquidationEntity): any {
+    return {
+      ...l,
+      position_id: l.positionId,
+      account_id: l.accountId,
+      bankruptcy_price: l.bankruptcyPrice,
+      liquidation_price: l.liquidationPrice,
+      loss_amount: l.lossAmount,
+      insurance_fund_delta: l.insuranceFundDelta,
+      created_at: l.createdAt,
+      positionId: l.positionId,
+      accountId: l.accountId,
+      bankruptcyPrice: l.bankruptcyPrice,
+      liquidationPrice: l.liquidationPrice,
+      lossAmount: l.lossAmount,
+      insuranceFundDelta: l.insuranceFundDelta,
+      createdAt: l.createdAt,
+    };
+  }
+
+
 
   public async query<T = unknown>(sql: string, params: unknown[] = []): Promise<QueryResult<T>> {
     if (!this.isConnected) {
@@ -469,12 +591,21 @@ export class DatabasePool implements IDatabaseConnection {
       return { rows: account ? [this.mapAccount(account) as T] : [], rowCount: account ? 1 : 0 };
     }
 
-    // 9c. SELECT ... FROM accounts WHERE user_id = $1
+    // 9c. SELECT ... FROM accounts WHERE user_id = $1 (optional AND type = '...')
     if (/FROM\s+accounts.*WHERE\s+user_id\s*=/i.test(trimmed)) {
       const userId = params[0] as string;
-      const userAccounts = Array.from(this.accounts.values()).filter(a => a.userId === userId);
+      let userAccounts = Array.from(this.accounts.values()).filter(a => a.userId === userId);
+
+      const typeMatch = trimmed.match(/AND\s+type\s*=\s*'([A-Z_]+)'/i);
+      if (typeMatch) {
+        const expectedType = typeMatch[1].toUpperCase();
+        userAccounts = userAccounts.filter(a => a.type === expectedType);
+      } else if (params[1] && typeof params[1] === 'string' && /type\s*=\s*\$2/i.test(trimmed)) {
+        userAccounts = userAccounts.filter(a => a.type === (params[1] as string).toUpperCase());
+      }
       return { rows: userAccounts.map(a => this.mapAccount(a)) as T[], rowCount: userAccounts.length };
     }
+
 
     // 9d. SELECT ... FROM assets WHERE symbol = $1
     if (/FROM\s+assets\s+WHERE\s+symbol\s*=/i.test(trimmed)) {
@@ -1011,6 +1142,12 @@ export class DatabasePool implements IDatabaseConnection {
       const accountId = params[0] as string;
       let userOrders = Array.from(this.orders.values()).filter(o => o.accountId === accountId);
 
+      if (/market\s*=\s*'FUTURES'/i.test(trimmed)) {
+        userOrders = userOrders.filter(o => o.market === 'FUTURES');
+      } else if (/market\s*=\s*'SPOT'/i.test(trimmed)) {
+        userOrders = userOrders.filter(o => o.market === 'SPOT');
+      }
+
       if (/status\s+IN\s*\('NEW',\s*'PARTIALLY_FILLED'\)/i.test(trimmed)) {
         userOrders = userOrders.filter(o => o.status === 'NEW' || o.status === 'PARTIALLY_FILLED');
       } else if (/status\s*=\s*\$/i.test(trimmed)) {
@@ -1019,7 +1156,7 @@ export class DatabasePool implements IDatabaseConnection {
       }
 
       if (/symbol\s*=\s*\$/i.test(trimmed)) {
-        const sym = (params.find(p => typeof p === 'string' && p !== accountId && this.tradingPairs.has(p as string)) as string)?.toUpperCase();
+        const sym = (params.find(p => typeof p === 'string' && p !== accountId && typeof p === 'string' && p.length >= 3) as string)?.toUpperCase();
         if (sym) {
           userOrders = userOrders.filter(o => o.symbol === sym);
         }
@@ -1037,6 +1174,7 @@ export class DatabasePool implements IDatabaseConnection {
 
       return { rows: userOrders.map(o => this.mapOrder(o)) as T[], rowCount: userOrders.length };
     }
+
 
     // 34. UPDATE orders SET ... WHERE id = ...
     if (/UPDATE\s+orders\s+SET/i.test(trimmed)) {
@@ -1158,8 +1296,345 @@ export class DatabasePool implements IDatabaseConnection {
       return { rows: pairTrades.map(t => this.mapTrade(t)) as T[], rowCount: pairTrades.length };
     }
 
+    // 39. INSERT INTO futures_positions
+    if (/^INSERT\s+INTO\s+futures_positions/i.test(trimmed)) {
+      const [
+        id,
+        accountId,
+        symbol,
+        side,
+        quantity,
+        entryPrice,
+        markPrice,
+        liquidationPrice,
+        leverage,
+        marginMode,
+        initialMargin,
+        maintenanceMargin,
+        realizedPnl,
+        status,
+        createdAt,
+        updatedAt,
+      ] = params as [
+        string,
+        string,
+        string,
+        any,
+        string,
+        string,
+        string,
+        string,
+        number,
+        any,
+        string,
+        string,
+        string,
+        any,
+        Date,
+        Date
+      ];
+
+      const position: FuturesPositionEntity = {
+        id,
+        accountId,
+        symbol: symbol.toUpperCase(),
+        side,
+        quantity,
+        entryPrice,
+        markPrice,
+        liquidationPrice,
+        leverage: Number(leverage),
+        marginMode,
+        initialMargin,
+        maintenanceMargin,
+        realizedPnl: realizedPnl || '0',
+        status: status || 'OPEN',
+        createdAt: createdAt instanceof Date ? createdAt : new Date(createdAt),
+        updatedAt: updatedAt instanceof Date ? updatedAt : new Date(updatedAt),
+      };
+
+      this.futuresPositions.set(position.id, position);
+      return { rows: [this.mapFuturesPosition(position) as T], rowCount: 1 };
+    }
+
+    // 40. UPDATE futures_positions
+    if (/^UPDATE\s+futures_positions/i.test(trimmed)) {
+      if (/WHERE\s+id\s*=\s*\$7/i.test(trimmed)) {
+        // Increase position: quantity, entry_price, mark_price, liquidation_price, initial_margin, maintenance_margin, id
+        const [quantity, entryPrice, markPrice, liquidationPrice, initialMargin, maintenanceMargin, id] = params as [
+          string,
+          string,
+          string,
+          string,
+          string,
+          string,
+          string
+        ];
+        const pos = this.futuresPositions.get(id);
+        if (pos) {
+          pos.quantity = quantity;
+          pos.entryPrice = entryPrice;
+          pos.markPrice = markPrice;
+          pos.liquidationPrice = liquidationPrice;
+          pos.initialMargin = initialMargin;
+          pos.maintenanceMargin = maintenanceMargin;
+          pos.updatedAt = new Date();
+          return { rows: [this.mapFuturesPosition(pos) as T], rowCount: 1 };
+        }
+      } else if (/WHERE\s+id\s*=\s*\$8/i.test(trimmed)) {
+        // Reduce position: quantity, mark_price, initial_margin, maintenance_margin, liquidation_price, realized_pnl, status, id
+        const [quantity, markPrice, initialMargin, maintenanceMargin, liquidationPrice, realizedPnl, status, id] = params as [
+          string,
+          string,
+          string,
+          string,
+          string,
+          string,
+          any,
+          string
+        ];
+        const pos = this.futuresPositions.get(id);
+        if (pos) {
+          pos.quantity = quantity;
+          pos.markPrice = markPrice;
+          pos.initialMargin = initialMargin;
+          pos.maintenanceMargin = maintenanceMargin;
+          pos.liquidationPrice = liquidationPrice;
+          pos.realizedPnl = realizedPnl;
+          pos.status = status;
+          pos.updatedAt = new Date();
+          return { rows: [this.mapFuturesPosition(pos) as T], rowCount: 1 };
+        }
+      } else if (/WHERE\s+id\s*=\s*\$3/i.test(trimmed)) {
+        // Liquidate position: mark_price, realized_pnl, id
+        const [markPrice, realizedPnl, id] = params as [string, string, string];
+        const pos = this.futuresPositions.get(id);
+        if (pos) {
+          pos.status = 'LIQUIDATED';
+          pos.markPrice = markPrice;
+          pos.realizedPnl = realizedPnl;
+          pos.initialMargin = '0';
+          pos.maintenanceMargin = '0';
+          pos.updatedAt = new Date();
+          return { rows: [this.mapFuturesPosition(pos) as T], rowCount: 1 };
+        }
+      }
+      return { rows: [] as T[], rowCount: 0 };
+    }
+
+    // 41. SELECT ... FROM futures_positions WHERE account_id = $1 AND symbol = $2 AND side = $3 AND status = 'OPEN'
+    if (/FROM\s+futures_positions.*WHERE\s+account_id\s*=\s*\$1\s+AND\s+symbol\s*=\s*\$2\s+AND\s+side\s*=\s*\$3/i.test(trimmed)) {
+      const accountId = params[0] as string;
+      const symbol = (params[1] as string).toUpperCase();
+      const side = params[2] as string;
+
+      const pos = Array.from(this.futuresPositions.values()).find(
+        p => p.accountId === accountId && p.symbol === symbol && p.side === side && p.status === 'OPEN'
+      );
+      if (!pos) return { rows: [] as T[], rowCount: 0 };
+      return { rows: [this.mapFuturesPosition(pos) as T], rowCount: 1 };
+    }
+
+    // 42. SELECT ... FROM futures_positions WHERE account_id = $1 AND status = 'OPEN'
+    if (/FROM\s+futures_positions.*WHERE\s+account_id\s*=\s*\$1\s+AND\s+status\s*=\s*'OPEN'/i.test(trimmed)) {
+      const accountId = params[0] as string;
+      const positions = Array.from(this.futuresPositions.values()).filter(
+        p => p.accountId === accountId && p.status === 'OPEN'
+      );
+      return { rows: positions.map(p => this.mapFuturesPosition(p)) as T[], rowCount: positions.length };
+    }
+
+    // 43. SELECT ... FROM futures_positions WHERE id = $1
+    if (/FROM\s+futures_positions.*WHERE\s+id\s*=\s*\$1/i.test(trimmed)) {
+      const id = params[0] as string;
+      const pos = this.futuresPositions.get(id);
+      if (!pos) return { rows: [] as T[], rowCount: 0 };
+      return { rows: [this.mapFuturesPosition(pos) as T], rowCount: 1 };
+    }
+
+    // 44. SELECT ... FROM futures_positions WHERE status = 'OPEN'
+    if (/FROM\s+futures_positions.*WHERE\s+status\s*=\s*'OPEN'/i.test(trimmed)) {
+      const positions = Array.from(this.futuresPositions.values()).filter(p => p.status === 'OPEN');
+      return { rows: positions.map(p => this.mapFuturesPosition(p)) as T[], rowCount: positions.length };
+    }
+
+    // 45. INSERT INTO futures_orders
+    if (/^INSERT\s+INTO\s+futures_orders/i.test(trimmed)) {
+      const [
+        id,
+        orderId,
+        accountId,
+        symbol,
+        positionSide,
+        leverage,
+        marginMode,
+        reduceOnly,
+        closePosition,
+        createdAt,
+      ] = params as [string, string, string, string, any, number, any, boolean, boolean, Date];
+
+      const fo: FuturesOrderEntity = {
+        id,
+        orderId,
+        accountId,
+        symbol: symbol.toUpperCase(),
+        positionSide,
+        leverage: Number(leverage),
+        marginMode,
+        reduceOnly: Boolean(reduceOnly),
+        closePosition: Boolean(closePosition),
+        createdAt: createdAt instanceof Date ? createdAt : new Date(createdAt),
+      };
+
+      this.futuresOrders.set(fo.id, fo);
+      return { rows: [this.mapFuturesOrder(fo) as T], rowCount: 1 };
+    }
+
+    // 46. SELECT ... FROM futures_orders WHERE order_id = $1
+    if (/FROM\s+futures_orders.*WHERE\s+order_id\s*=\s*\$1/i.test(trimmed)) {
+      const orderId = params[0] as string;
+      const fo = Array.from(this.futuresOrders.values()).find(f => f.orderId === orderId);
+      if (!fo) return { rows: [] as T[], rowCount: 0 };
+      return { rows: [this.mapFuturesOrder(fo) as T], rowCount: 1 };
+    }
+
+    // 47. INSERT INTO futures_tpsl_configs
+    if (/^INSERT\s+INTO\s+futures_tpsl_configs/i.test(trimmed)) {
+      const [
+        id,
+        positionId,
+        accountId,
+        symbol,
+        positionSide,
+        takeProfitEnabled,
+        takeProfitPrice,
+        stopLossEnabled,
+        stopLossPrice,
+        createdAt,
+        updatedAt,
+      ] = params as [string, string, string, string, any, boolean, string | undefined, boolean, string | undefined, Date, Date];
+
+      const cfg: FuturesTpSlConfigEntity = {
+        id,
+        positionId,
+        accountId,
+        symbol: symbol.toUpperCase(),
+        positionSide,
+        takeProfitEnabled: Boolean(takeProfitEnabled),
+        takeProfitPrice,
+        stopLossEnabled: Boolean(stopLossEnabled),
+        stopLossPrice,
+        createdAt: createdAt instanceof Date ? createdAt : new Date(createdAt),
+        updatedAt: updatedAt instanceof Date ? updatedAt : new Date(updatedAt),
+      };
+
+      this.futuresTpSlConfigs.set(cfg.id, cfg);
+      return { rows: [this.mapFuturesTpSl(cfg) as T], rowCount: 1 };
+    }
+
+    // 48. UPDATE futures_tpsl_configs
+    if (/^UPDATE\s+futures_tpsl_configs/i.test(trimmed)) {
+      const [takeProfitEnabled, takeProfitPrice, stopLossEnabled, stopLossPrice, id] = params as [
+        boolean,
+        string | undefined,
+        boolean,
+        string | undefined,
+        string
+      ];
+      const cfg = this.futuresTpSlConfigs.get(id);
+      if (cfg) {
+        cfg.takeProfitEnabled = Boolean(takeProfitEnabled);
+        cfg.takeProfitPrice = takeProfitPrice;
+        cfg.stopLossEnabled = Boolean(stopLossEnabled);
+        cfg.stopLossPrice = stopLossPrice;
+        cfg.updatedAt = new Date();
+        return { rows: [this.mapFuturesTpSl(cfg) as T], rowCount: 1 };
+      }
+      return { rows: [] as T[], rowCount: 0 };
+    }
+
+    // 49. SELECT ... FROM futures_tpsl_configs WHERE position_id = $1
+    if (/FROM\s+futures_tpsl_configs.*WHERE\s+position_id\s*=\s*\$1/i.test(trimmed)) {
+      const positionId = params[0] as string;
+      const cfg = Array.from(this.futuresTpSlConfigs.values()).find(c => c.positionId === positionId);
+      if (!cfg) return { rows: [] as T[], rowCount: 0 };
+      return { rows: [this.mapFuturesTpSl(cfg) as T], rowCount: 1 };
+    }
+
+    // 50. INSERT INTO futures_liquidations
+    if (/^INSERT\s+INTO\s+futures_liquidations/i.test(trimmed)) {
+      const [
+        id,
+        positionId,
+        accountId,
+        symbol,
+        side,
+        quantity,
+        bankruptcyPrice,
+        liquidationPrice,
+        lossAmount,
+        insuranceFundDelta,
+        createdAt,
+      ] = params as [string, string, string, string, any, string, string, string, string, string, Date];
+
+      const liq: FuturesLiquidationEntity = {
+        id,
+        positionId,
+        accountId,
+        symbol: symbol.toUpperCase(),
+        side,
+        quantity,
+        bankruptcyPrice,
+        liquidationPrice,
+        lossAmount,
+        insuranceFundDelta: insuranceFundDelta || '0',
+        createdAt: createdAt instanceof Date ? createdAt : new Date(createdAt),
+      };
+
+      this.futuresLiquidations.push(liq);
+      return { rows: [this.mapFuturesLiquidation(liq) as T], rowCount: 1 };
+    }
+
+    // 51. SELECT ... FROM futures_liquidations WHERE account_id = $1
+    if (/FROM\s+futures_liquidations.*WHERE\s+account_id\s*=\s*\$1/i.test(trimmed)) {
+      const accountId = params[0] as string;
+      const liqs = this.futuresLiquidations.filter(l => l.accountId === accountId);
+      liqs.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      return { rows: liqs.map(l => this.mapFuturesLiquidation(l)) as T[], rowCount: liqs.length };
+    }
+
+    // 52. INSERT INTO futures_funding_history
+    if (/^INSERT\s+INTO\s+futures_funding_history/i.test(trimmed)) {
+      const [id, symbol, fundingRate, markPrice, indexPrice, settledAt] = params as [
+        string,
+        string,
+        string,
+        string,
+        string | undefined,
+        Date
+      ];
+
+      const fh: FuturesFundingHistoryEntity = {
+        id,
+        symbol: symbol.toUpperCase(),
+        fundingRate,
+        markPrice,
+        indexPrice,
+        settledAt: settledAt instanceof Date ? settledAt : new Date(settledAt),
+      };
+
+      this.futuresFundingHistory.push(fh);
+      return { rows: [fh as T], rowCount: 1 };
+    }
+
+    // 53. SELECT ... FROM futures_funding_history
+    if (/FROM\s+futures_funding_history/i.test(trimmed)) {
+      return { rows: [...this.futuresFundingHistory] as T[], rowCount: this.futuresFundingHistory.length };
+    }
+
     return { rows: [] as T[], rowCount: 0 };
   }
+
 
 
   /**
