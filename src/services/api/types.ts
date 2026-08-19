@@ -168,6 +168,7 @@ export interface FuturesPositionEntity {
   initialMargin: string;
   maintenanceMargin: string;
   realizedPnl: string;
+  unrealizedPnl?: string;
   status: 'OPEN' | 'CLOSED' | 'LIQUIDATED';
   createdAt: string;
   updatedAt: string;

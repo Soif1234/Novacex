@@ -19,6 +19,7 @@ import { MarketSelector } from '../components/MarketSelector';
 import { useSelectedSymbol } from '../hooks/useSelectedSymbol';
 import { useTicker } from '../hooks/useTicker';
 import { useAuth } from '../contexts/AuthContext';
+import { wsClient } from '../services/websocket/wsClient';
 
 const LEVERAGE_OPTIONS = [1, 2, 3, 5, 10, 20];
 
@@ -27,8 +28,9 @@ import { PriceAlertModal } from '../components/alerts/PriceAlertModal';
 
 export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: string) => void }) {
   const { user } = useAuth();
+  const accountId = user?.futuresAccountId || user?.id || 'demo-user-1';
   const { data: markets, loading } = useFuturesMarketData();
-  const { balances } = useLedger(user?.id || 'demo-user-1');
+  const { balances } = useLedger(accountId);
   
   const { selectedSymbol, setSelectedSymbol } = useSelectedSymbol();
   const ticker = useTicker(selectedSymbol) as any;
@@ -99,20 +101,34 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
 
   useEffect(() => {
     const updateData = () => {
-      setPositions(futuresOrderService.getPositions(user?.id || 'demo-user-1'));
-      setOrders(futuresOrderService.getOrders(user?.id || 'demo-user-1'));
-      setTrades(futuresOrderService.getTrades(user?.id || 'demo-user-1'));
+      setPositions(futuresOrderService.getPositions(accountId));
+      setOrders(futuresOrderService.getOrders(accountId));
+      setTrades(futuresOrderService.getTrades(accountId));
     };
     updateData();
+    futuresOrderService.fetchPositionsFromBackend(accountId);
+    futuresOrderService.fetchOrdersFromBackend(accountId);
+
     const unsub = futuresOrderService.subscribe(updateData);
-    return () => { unsub(); };
-  }, []);
+    const unsubWsPositions = wsClient.subscribe('user:positions', () => {
+      futuresOrderService.fetchPositionsFromBackend(accountId);
+    });
+    const unsubWsOrders = wsClient.subscribe('user:orders', () => {
+      futuresOrderService.fetchOrdersFromBackend(accountId);
+    });
+
+    return () => {
+      unsub();
+      unsubWsPositions();
+      unsubWsOrders();
+    };
+  }, [accountId]);
   
   const handleClosePosition = async (pos: any, quantity: string) => {
     try {
       setModalError(null);
       await futuresOrderService.placeOrder({
-        accountId: user?.id || 'demo-user-1',
+        accountId,
         symbol: pos.symbol,
         side: pos.side === 'LONG' ? 'SELL' : 'BUY',
         positionSide: pos.side,
@@ -244,7 +260,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
     try {
       setOrderFeedback(null);
       await futuresOrderService.placeOrder({
-        accountId: user?.id || 'demo-user-1',
+        accountId,
         symbol: selectedSymbol,
         side: orderSide === 'LONG' ? 'BUY' : 'SELL',
         positionSide: orderSide,

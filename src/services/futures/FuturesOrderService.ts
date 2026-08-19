@@ -17,6 +17,8 @@ import { futuresMarketService } from './FuturesMarketService';
 import { DemoLedger, demoLedger } from '../ledger';
 import { futuresFeeService } from './FuturesFeeService';
 import { safeParseArray, isValidFinancialString } from '../storageUtil';
+import { apiClient } from '../api/client';
+import { OrderEntity, FuturesOrderEntity, FuturesPositionEntity, TradeEntity } from '../api/types';
 
 export class FuturesOrderService {
   private orders: FuturesOrder[] = [];
@@ -124,9 +126,170 @@ export class FuturesOrderService {
     return this.trades.filter(t => t.accountId === accountId);
   }
 
+  public async fetchPositionsFromBackend(accountId?: string): Promise<FuturesPosition[]> {
+    try {
+      if (typeof window !== 'undefined') {
+        const backendPositions = await apiClient.get<FuturesPositionEntity[]>('/futures/positions');
+        if (Array.isArray(backendPositions)) {
+          this.positions = backendPositions.map(bp => ({
+            positionId: bp.id,
+            accountId: bp.accountId,
+            symbol: bp.symbol,
+            side: bp.side as PositionSide,
+            quantity: bp.quantity,
+            entryPrice: bp.entryPrice,
+            markPrice: bp.markPrice,
+            liquidationPrice: bp.liquidationPrice,
+            leverage: bp.leverage,
+            marginMode: bp.marginMode as MarginMode,
+            initialMargin: bp.initialMargin,
+            maintenanceMargin: bp.maintenanceMargin,
+            realizedPnl: bp.realizedPnl,
+            unrealizedPnl: bp.unrealizedPnl || '0',
+            status: bp.status as any,
+            createdAt: new Date(bp.createdAt).getTime(),
+            updatedAt: new Date(bp.updatedAt).getTime(),
+          }));
+          this.save();
+          this.notify();
+        }
+      }
+    } catch {}
+    return this.positions;
+  }
+
+  public async fetchOrdersFromBackend(accountId?: string): Promise<FuturesOrder[]> {
+    try {
+      if (typeof window !== 'undefined') {
+        const backendOrders = await apiClient.get<OrderEntity[]>('/futures/orders');
+        if (Array.isArray(backendOrders)) {
+          for (const bo of backendOrders) {
+            const existing = this.orders.find(o => o.id === bo.id);
+            const status: any = bo.status === 'NEW' || bo.status === 'PARTIALLY_FILLED' ? 'PENDING' : bo.status;
+            if (existing) {
+              existing.status = status;
+              existing.filledQuantity = bo.filledQuantity;
+            } else {
+              this.orders.unshift({
+                id: bo.id,
+                accountId: bo.accountId,
+                symbol: bo.symbol,
+                side: bo.side as OrderSide,
+                positionSide: 'LONG',
+                type: bo.type as any,
+                price: bo.price,
+                quantity: bo.quantity,
+                filledQuantity: bo.filledQuantity,
+                remainingQuantity: bo.remainingQuantity,
+                status,
+                leverage: 10,
+                marginMode: 'ISOLATED',
+                createdAt: new Date(bo.createdAt).getTime(),
+                updatedAt: new Date(bo.updatedAt).getTime(),
+              });
+            }
+          }
+          this.save();
+          this.notify();
+        }
+      }
+    } catch {}
+    return this.orders;
+  }
+
   public async placeOrder(orderPayload: Partial<FuturesOrder>): Promise<FuturesOrder> {
     if (!orderPayload.accountId || !orderPayload.symbol || !orderPayload.quantity || !orderPayload.leverage || !orderPayload.marginMode) {
       throw new Error('Missing required order fields');
+    }
+
+    // 1. Attempt backend futures order placement if in browser environment
+    try {
+      if (typeof window !== 'undefined') {
+        const backendRes = await apiClient.post<{
+          order: OrderEntity;
+          futuresOrder: FuturesOrderEntity;
+          position?: FuturesPositionEntity;
+          trade?: TradeEntity;
+        }>('/futures/orders', {
+          accountId: orderPayload.accountId,
+          symbol: orderPayload.symbol,
+          side: orderPayload.side,
+          positionSide: orderPayload.positionSide,
+          type: orderPayload.type,
+          price: orderPayload.price,
+          quantity: orderPayload.quantity,
+          leverage: orderPayload.leverage,
+          marginMode: orderPayload.marginMode,
+          reduceOnly: orderPayload.reduceOnly,
+          closePosition: orderPayload.closePosition,
+        });
+
+        if (backendRes && backendRes.order) {
+          const bo = backendRes.order;
+          const fo = backendRes.futuresOrder;
+          const status: any = bo.status === 'NEW' || bo.status === 'PARTIALLY_FILLED' ? 'PENDING' : bo.status;
+
+          const syncedOrder: FuturesOrder = {
+            id: bo.id,
+            accountId: bo.accountId,
+            symbol: bo.symbol,
+            side: bo.side as OrderSide,
+            positionSide: fo ? (fo.positionSide as PositionSide) : (orderPayload.positionSide as PositionSide),
+            type: bo.type as any,
+            quantity: bo.quantity,
+            price: bo.price,
+            status,
+            leverage: fo ? fo.leverage : orderPayload.leverage!,
+            marginMode: fo ? (fo.marginMode as MarginMode) : (orderPayload.marginMode as MarginMode),
+            filledQuantity: bo.filledQuantity,
+            remainingQuantity: bo.remainingQuantity,
+            reduceOnly: fo ? fo.reduceOnly : orderPayload.reduceOnly,
+            closePosition: fo ? fo.closePosition : orderPayload.closePosition,
+            createdAt: new Date(bo.createdAt).getTime(),
+            updatedAt: new Date(bo.updatedAt).getTime(),
+          };
+
+          this.orders.unshift(syncedOrder);
+
+          if (backendRes.position) {
+            const bp = backendRes.position;
+            const existingPos = this.positions.find(p => p.positionId === bp.id || (p.symbol === bp.symbol && p.side === bp.side && p.accountId === bp.accountId));
+            const mappedPos: FuturesPosition = {
+              positionId: bp.id,
+              accountId: bp.accountId,
+              symbol: bp.symbol,
+              side: bp.side as PositionSide,
+              quantity: bp.quantity,
+              entryPrice: bp.entryPrice,
+              markPrice: bp.markPrice,
+              liquidationPrice: bp.liquidationPrice,
+              leverage: bp.leverage,
+              marginMode: bp.marginMode as MarginMode,
+              initialMargin: bp.initialMargin,
+              maintenanceMargin: bp.maintenanceMargin,
+              realizedPnl: bp.realizedPnl,
+              unrealizedPnl: bp.unrealizedPnl || '0',
+              status: bp.status as any,
+              createdAt: new Date(bp.createdAt).getTime(),
+              updatedAt: new Date(bp.updatedAt).getTime(),
+            };
+
+            if (existingPos) {
+              Object.assign(existingPos, mappedPos);
+            } else {
+              this.positions.unshift(mappedPos);
+            }
+          }
+
+          this.save();
+          this.notify();
+          return syncedOrder;
+        }
+      }
+    } catch (err: any) {
+      if (err.statusCode && err.statusCode >= 400) {
+        throw new Error(err.message || 'Futures order rejected by server');
+      }
     }
 
     if (!['MARKET', 'LIMIT', 'STOP_MARKET', 'STOP_LIMIT'].includes(orderPayload.type!)) {
@@ -256,6 +419,10 @@ export class FuturesOrderService {
     const order = this.orders.find(o => o.id === orderId);
     if (!order) throw new Error('Order not found');
     if (order.status !== 'PENDING') throw new Error('Only PENDING orders can be cancelled');
+
+    if (typeof window !== 'undefined') {
+      apiClient.post(`/futures/orders/${orderId}/cancel`).catch(() => {});
+    }
 
     order.status = 'CANCELLED';
     order.updatedAt = Date.now();
