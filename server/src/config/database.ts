@@ -1072,6 +1072,22 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
 
     // 20. INSERT INTO ledger_entries
     if (/INSERT\s+INTO\s+ledger_entries/i.test(trimmed)) {
+      if (params.length === 6) {
+        const [txId, accId, asset, direction, amount, balanceAfter] = params as string[];
+        const entry: LedgerEntryEntity = {
+          id: String(this.ledgerEntries.length + 1),
+          transactionId: txId,
+          accountId: accId,
+          asset,
+          direction: direction as 'CREDIT' | 'DEBIT',
+          amount,
+          balanceAfter,
+          createdAt: new Date(),
+        };
+        this.ledgerEntries.push(entry);
+        return { rows: [entry as unknown as T], rowCount: 1 };
+      }
+
       const id = params[0] as string;
       const txId = params[1] as string;
       const accId = params[2] as string;
@@ -1093,6 +1109,7 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       this.ledgerEntries.push(entry);
       return { rows: [entry as unknown as T], rowCount: 1 };
     }
+
 
     // 21. SELECT ... FROM ledger_entries WHERE transaction_id = $1
     if (/FROM\s+ledger_entries\s+WHERE\s+transaction_id\s*=\s*\$1/i.test(trimmed)) {

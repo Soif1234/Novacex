@@ -497,12 +497,12 @@ export class LedgerService {
 
         const balanceAfter = decimalAdd(ab.available, ab.locked);
 
-        const entryId = crypto.randomUUID();
         await txClient.query(
-          `INSERT INTO ledger_entries (id, transaction_id, account_id, asset, direction, amount, balance_after, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
-          [entryId, transactionId, entry.accountId, entry.asset, entry.direction, entry.amount, balanceAfter]
+          `INSERT INTO ledger_entries (transaction_id, account_id, asset, direction, amount, balance_after, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+          [transactionId, entry.accountId, entry.asset, entry.direction, entry.amount, balanceAfter]
         );
+
 
         resultEntries.push({
           direction: entry.direction,
