@@ -142,7 +142,7 @@ export class HybridExecutionEngine {
             overallStatus = 'FILLED';
         } else if (responses.some(r => r.status === 'FILLED' || r.status === 'PARTIALLY_FILLED')) {
             overallStatus = 'PARTIALLY_FILLED';
-        } else if (responses.every(r => r.status === 'REJECTED' || r.status === 'FAILED')) {
+        } else if (responses.every(r => r.status === 'REJECTED' || r.status === 'FAILED' || r.status === 'CANCELLED')) {
             overallStatus = 'REJECTED';
         }
 

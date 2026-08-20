@@ -25,7 +25,7 @@ describe('Phase 5.14 - Real Provider Integration (Hyperliquid Testnet)', () => {
         .toThrow(/Adapter refuses to connect to mainnet endpoint/);
     });
 
-    it('4, 5, 34. Spot/Futures capability isolation', () => {
+    it('4, 5, 34. Spot/Futures capability isolation', async () => {
       const spotAdapter = new HyperliquidAdapter({ ...validTestnetConfig, market: 'SPOT' });
       expect(spotAdapter.hasCapability(ProviderCapability.SPOT)).toBe(true);
       expect(spotAdapter.hasCapability(ProviderCapability.FUTURES)).toBe(false); 
@@ -35,11 +35,11 @@ describe('Phase 5.14 - Real Provider Integration (Hyperliquid Testnet)', () => {
       expect(futuresAdapter.hasCapability(ProviderCapability.FUTURES)).toBe(true); 
 
       // Spot executing Futures
-      expect(spotAdapter.placeOrder({ symbol: 'BTC', side: 'BUY', type: 'LIMIT', quantity: '1', metadata: { isFutures: true } } as any))
+      await expect(spotAdapter.placeOrder({ symbol: 'BTC', side: 'BUY', type: 'LIMIT', quantity: '1', metadata: { isFutures: true } } as any))
         .rejects.toThrow(/Futures operation rejected by Spot adapter/);
         
       // Futures executing Spot
-      expect(futuresAdapter.placeOrder({ symbol: 'BTC', side: 'BUY', type: 'LIMIT', quantity: '1', metadata: { isSpot: true } } as any))
+      await expect(futuresAdapter.placeOrder({ symbol: 'BTC', side: 'BUY', type: 'LIMIT', quantity: '1', metadata: { isSpot: true } } as any))
         .rejects.toThrow(/Spot operation rejected by Futures adapter/);
     });
     
