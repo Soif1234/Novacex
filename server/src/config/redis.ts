@@ -15,6 +15,7 @@ export interface IRedisConnection {
   get(key: string): Promise<string | null>;
   set(key: string, value: string, ttlSeconds?: number): Promise<void>;
   del(key: string): Promise<number>;
+  incr(key: string, ttlSeconds?: number): Promise<number>;
   healthCheck(): Promise<{ healthy: boolean; latencyMs: number; error?: string }>;
   getStatus(): RedisStatus;
 }
@@ -72,6 +73,22 @@ export class RedisClient implements IRedisConnection {
   public async del(key: string): Promise<number> {
     if (!this.isConnected) throw new Error('Redis is not connected');
     return this.memoryStore.delete(key) ? 1 : 0;
+  }
+
+  public async incr(key: string, ttlSeconds?: number): Promise<number> {
+    if (!this.isConnected) throw new Error('Redis is not connected');
+    let item = this.memoryStore.get(key);
+    let count = 1;
+    if (item) {
+      if (item.expiresAt && Date.now() > item.expiresAt) {
+        count = 1;
+      } else {
+        count = (parseInt(item.value, 10) || 0) + 1;
+      }
+    }
+    const expiresAt = ttlSeconds ? Date.now() + ttlSeconds * 1000 : item?.expiresAt;
+    this.memoryStore.set(key, { value: count.toString(), expiresAt });
+    return count;
   }
 
   public async healthCheck(): Promise<{ healthy: boolean; latencyMs: number; error?: string }> {

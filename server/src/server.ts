@@ -5,6 +5,7 @@ import { logger } from './config/logger';
 import { db } from './config/database';
 import { redis } from './config/redis';
 import { webSocketGateway } from './websocket';
+import { liquidationWorker } from './workers/LiquidationWorker';
 
 let server: http.Server | null = null;
 let isShuttingDown = false;
@@ -26,6 +27,10 @@ export async function startServer(): Promise<http.Server> {
       logger.info(`Healthcheck available at http://${env.HOST}:${env.PORT}${env.API_PREFIX}/health`);
       logger.info(`Readiness available at http://${env.HOST}:${env.PORT}${env.API_PREFIX}/ready`);
       webSocketGateway.attachToServer(server!, '/ws');
+      
+      // Start background workers
+      liquidationWorker.start();
+      
       resolve(server!);
     });
   });
@@ -42,6 +47,9 @@ export async function stopServer(): Promise<void> {
   }, env.SHUTDOWN_TIMEOUT_MS);
 
   try {
+    // Stop background workers
+    liquidationWorker.stop();
+
     // 0. Close WebSocket Gateway
     webSocketGateway.close();
 

@@ -4,6 +4,7 @@ import { sessionService } from '../services/auth/session.service';
 import { UserRole } from '../models/user.model';
 import { AppError } from './errorHandler';
 import { logger } from '../config/logger';
+import { redis } from '../config/redis';
 
 declare global {
   namespace Express {
@@ -137,27 +138,33 @@ export function requireAccountOwnership(paramName = 'accountId') {
 }
 
 /**
- * Rate Limiter for Authentication Endpoints (Sliding window memory counter)
+ * Rate Limiter for Authentication Endpoints (Sliding window via Redis)
  */
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-
 export function authRateLimiter(maxRequests = 20, windowMs = 60000) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const key = req.ip || req.socket.remoteAddress || 'unknown-ip';
-    const now = Date.now();
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const ip = req.ip || req.socket.remoteAddress || 'unknown-ip';
+      // Use fixed window per interval based on current time
+      const windowId = Math.floor(Date.now() / windowMs);
+      const key = `rate-limit:auth:${ip}:${windowId}`;
 
-    const record = rateLimitMap.get(key);
-    if (!record || now > record.resetAt) {
-      rateLimitMap.set(key, { count: 1, resetAt: now + windowMs });
-      return next();
+      let currentCount: number;
+      try {
+        currentCount = await redis.incr(key, Math.ceil(windowMs / 1000) + 1);
+      } catch (err) {
+        // Fallback: if Redis fails, log error and allow request to prevent systemic lockout
+        logger.error('Redis rate limit incr failed', { ip, error: err });
+        return next();
+      }
+
+      if (currentCount > maxRequests) {
+        logger.warn('Auth Rate limit exceeded', { ip, count: currentCount });
+        return next(new AppError('Too many authentication attempts. Please wait a moment.', 429, 'RATE_LIMIT_EXCEEDED'));
+      }
+
+      next();
+    } catch (err) {
+      next(err);
     }
-
-    record.count++;
-    if (record.count > maxRequests) {
-      logger.warn('Auth Rate limit exceeded', { ip: key, count: record.count });
-      return next(new AppError('Too many authentication attempts. Please wait a moment.', 429, 'RATE_LIMIT_EXCEEDED'));
-    }
-
-    next();
   };
 }
