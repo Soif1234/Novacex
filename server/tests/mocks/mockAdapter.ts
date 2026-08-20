@@ -70,9 +70,53 @@ export class MockLiquidityAdapter implements ILiquidityProviderAdapter {
       throw new ProviderError(ProviderErrorCode.INVALID_REQUEST, 'Missing clientOrderId', this.providerId);
     }
 
-    // Simulate provider failure mapping
     if (request.metadata?.forceUnknownState) {
       throw new ProviderError(ProviderErrorCode.UNKNOWN_EXECUTION_STATE, 'Timeout during order placement', this.providerId);
+    }
+    
+    if (request.metadata?.simulateRejection) {
+       return {
+         providerOrderId: '',
+         clientOrderId: request.clientOrderId,
+         status: 'REJECTED',
+         executedQuantity: '0',
+         remainingQuantity: request.quantity,
+         averagePrice: '0',
+         fee: '0',
+         feeAsset: 'USDT',
+         providerReference: '',
+         timestamps: { created: new Date(), updated: new Date() }
+       };
+    }
+    
+    if (request.metadata?.simulatePartial) {
+       return {
+         providerOrderId: `mock-partial-${Date.now()}`,
+         clientOrderId: request.clientOrderId,
+         status: 'PARTIALLY_FILLED',
+         executedQuantity: String(Number(request.quantity) / 2),
+         remainingQuantity: String(Number(request.quantity) / 2),
+         averagePrice: request.price || '50000',
+         fee: '0.05',
+         feeAsset: 'USDT',
+         providerReference: 'mock-ref-part',
+         timestamps: { created: new Date(), updated: new Date() }
+       };
+    }
+    
+    if (request.metadata?.simulateInvalidPrice) {
+       return {
+         providerOrderId: `mock-inv-${Date.now()}`,
+         clientOrderId: request.clientOrderId,
+         status: 'FILLED',
+         executedQuantity: request.quantity,
+         remainingQuantity: '0',
+         averagePrice: '-5000', // Invalid price
+         fee: '0.1',
+         feeAsset: 'USDT',
+         providerReference: 'mock-ref-inv',
+         timestamps: { created: new Date(), updated: new Date() }
+       };
     }
 
     return {
