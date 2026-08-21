@@ -48,6 +48,7 @@ export interface CreateFuturesOrderDto {
   positionSide: PositionSide;
   type: OrderType;
   price?: string;
+  stopPrice?: string;
   quantity: string;
   leverage: number;
   marginMode: MarginMode;
@@ -201,8 +202,17 @@ export class FuturesService {
       throw new FuturesError(`Invalid positionSide "${dto.positionSide}": must be LONG or SHORT`, 400, FuturesErrorCode.INVALID_POSITION_SIDE);
     }
 
-    if (dto.type !== 'LIMIT' && dto.type !== 'MARKET') {
-      throw new FuturesError(`Invalid order type "${dto.type}": must be LIMIT or MARKET`, 400, FuturesErrorCode.INVALID_ORDER_TYPE);
+    if (
+      dto.type !== 'LIMIT' &&
+      dto.type !== 'MARKET' &&
+      dto.type !== 'STOP_LIMIT' &&
+      dto.type !== 'TAKE_PROFIT_LIMIT'
+    ) {
+      throw new FuturesError(
+        `Invalid order type "${dto.type}": must be LIMIT, MARKET, STOP_LIMIT, or TAKE_PROFIT_LIMIT`,
+        400,
+        FuturesErrorCode.INVALID_ORDER_TYPE
+      );
     }
 
     if (dto.marginMode !== 'ISOLATED' && dto.marginMode !== 'CROSS') {
@@ -211,16 +221,24 @@ export class FuturesService {
 
     validateAmount(dto.quantity);
 
-    if (dto.type === 'LIMIT') {
+    if (dto.type === 'LIMIT' || dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') {
       if (!dto.price) {
-        throw new FuturesError('Limit price is required for LIMIT orders', 400, FuturesErrorCode.INVALID_PRICE);
+        throw new FuturesError(`Limit price is required for ${dto.type} orders`, 400, FuturesErrorCode.INVALID_PRICE);
       }
       validateAmount(dto.price);
+    }
+
+    if (dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') {
+      if (!dto.stopPrice) {
+        throw new FuturesError(`Stop price is required for ${dto.type} orders`, 400, FuturesErrorCode.INVALID_PRICE);
+      }
+      validateAmount(dto.stopPrice);
     }
 
     const cleanSymbol = contract.symbol;
     const cleanQty = decimalNormalize(dto.quantity);
     const cleanPrice = dto.price ? decimalNormalize(dto.price) : undefined;
+    const cleanStopPrice = dto.stopPrice ? decimalNormalize(dto.stopPrice) : undefined;
     const cleanClientOrderId = dto.clientOrderId?.trim();
 
     // Check minimum quantity
@@ -318,6 +336,8 @@ export class FuturesService {
     }
 
     // 5. Create Order & FuturesOrder entities
+    const initialStatus = (dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') ? 'UNTRIGGERED' : 'NEW';
+
     const order: OrderEntity = {
       id: orderId,
       clientOrderId: cleanClientOrderId,
@@ -327,12 +347,13 @@ export class FuturesService {
       side: dto.side,
       type: dto.type,
       price: cleanPrice,
+      stopPrice: cleanStopPrice,
       quantity: cleanQty,
       filledQuantity: '0',
       remainingQuantity: cleanQty,
       lockedAmount: requiredMargin,
       lockedAsset: 'FUTURES_USDT',
-      status: 'NEW',
+      status: initialStatus,
       timeInForce: dto.timeInForce || 'GTC',
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -353,10 +374,10 @@ export class FuturesService {
 
     await this.database.query(
       `INSERT INTO orders (
-        id, client_order_id, account_id, market, symbol, side, type, price, quantity,
+        id, client_order_id, account_id, market, symbol, side, type, price, stop_price, quantity,
         filled_quantity, remaining_quantity, locked_amount, locked_asset, status,
         time_in_force, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
       [
         order.id,
         order.clientOrderId,
@@ -366,6 +387,7 @@ export class FuturesService {
         order.side,
         order.type,
         order.price,
+        order.stopPrice,
         order.quantity,
         order.filledQuantity,
         order.remainingQuantity,
@@ -659,6 +681,56 @@ export class FuturesService {
   /**
    * Cancel an open Futures order and release remaining reserved margin.
    */
+    /**
+   * Activate an UNTRIGGERED conditional order.
+   */
+  public async triggerOrder(orderId: string): Promise<void> {
+    const orderRes = await this.database.query<any>(
+      "SELECT o.*, a.user_id FROM orders o JOIN accounts a ON o.account_id = a.id WHERE o.id = $1 AND o.status = 'UNTRIGGERED' FOR UPDATE",
+      [orderId]
+    );
+    const row = orderRes.rows[0];
+    if (!row) return;
+
+    await this.database.query(
+      "UPDATE orders SET status = 'NEW', updated_at = NOW() WHERE id = $1",
+      [orderId]
+    );
+
+    const order: OrderEntity = {
+      id: row.id,
+      clientOrderId: row.client_order_id,
+      accountId: row.account_id,
+      market: row.market,
+      symbol: row.symbol,
+      side: row.side,
+      type: row.type,
+      price: row.price,
+      stopPrice: row.stop_price,
+      quantity: row.quantity,
+      filledQuantity: row.filled_quantity,
+      remainingQuantity: row.remaining_quantity,
+      lockedAmount: row.locked_amount,
+      lockedAsset: row.locked_asset,
+      status: 'NEW',
+      timeInForce: row.time_in_force,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(),
+    };
+
+    eventBus.publish({
+      id: crypto.randomUUID(),
+      type: 'futures.order.updated',
+      channel: 'user:orders',
+      userId: row.user_id,
+      symbol: order.symbol,
+      timestamp: Date.now(),
+      version: '1.0.0',
+      payload: order,
+    });
+  }
+
+
   public async cancelOrder(userId: string, orderId: string): Promise<OrderEntity> {
     const orderRes = await this.database.query<any>('SELECT * FROM orders WHERE id = $1', [orderId]);
     const orderRow = orderRes.rows[0];
@@ -682,8 +754,9 @@ export class FuturesService {
       symbol: orderRow.symbol,
       side: orderRow.side,
       type: orderRow.type,
-      price: orderRow.price,
-      quantity: orderRow.quantity,
+        price: orderRow.price,
+        stopPrice: orderRow.stopPrice || orderRow.stop_price,
+        quantity: orderRow.quantity,
       filledQuantity: orderRow.filledQuantity || orderRow.filled_quantity,
       remainingQuantity: orderRow.remainingQuantity || orderRow.remaining_quantity,
       lockedAmount: orderRow.lockedAmount || orderRow.locked_amount,
@@ -819,8 +892,9 @@ export class FuturesService {
       symbol: r.symbol,
       side: r.side,
       type: r.type,
-      price: r.price,
-      quantity: r.quantity,
+        price: r.price,
+        stopPrice: r.stopPrice || r.stop_price,
+        quantity: r.quantity,
       filledQuantity: r.filledQuantity || r.filled_quantity,
       remainingQuantity: r.remainingQuantity || r.remaining_quantity,
       lockedAmount: r.lockedAmount || r.locked_amount,
@@ -864,8 +938,9 @@ export class FuturesService {
       symbol: orderRow.symbol,
       side: orderRow.side,
       type: orderRow.type,
-      price: orderRow.price,
-      quantity: orderRow.quantity,
+        price: orderRow.price,
+        stopPrice: orderRow.stopPrice || orderRow.stop_price,
+        quantity: orderRow.quantity,
       filledQuantity: orderRow.filledQuantity || orderRow.filled_quantity,
       remainingQuantity: orderRow.remainingQuantity || orderRow.remaining_quantity,
       lockedAmount: orderRow.lockedAmount || orderRow.locked_amount,
@@ -905,8 +980,9 @@ export class FuturesService {
       symbol: r.symbol,
       side: r.side,
       type: r.type,
-      price: r.price,
-      quantity: r.quantity,
+        price: r.price,
+        stopPrice: r.stopPrice || r.stop_price,
+        quantity: r.quantity,
       filledQuantity: r.filledQuantity || r.filled_quantity,
       remainingQuantity: r.remainingQuantity || r.remaining_quantity,
       lockedAmount: r.lockedAmount || r.locked_amount,

@@ -270,6 +270,7 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
   private futuresTpSlConfigs = new Map<string, FuturesTpSlConfigEntity>(); // id -> config
   private futuresFundingHistory: FuturesFundingHistoryEntity[] = [];
   private futuresLiquidations: FuturesLiquidationEntity[] = [];
+  private kLines: any[] = [];
 
   constructor(private config = env) {
     this.totalPoolSize = config.DB_POOL_MIN;
@@ -1273,15 +1274,16 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       const market = (params[3] as 'SPOT' | 'FUTURES') || 'SPOT';
       const symbol = (params[4] as string).toUpperCase();
       const side = params[5] as 'BUY' | 'SELL';
-      const type = params[6] as 'LIMIT' | 'MARKET';
+      const type = (params[6] as any) || 'LIMIT';
       const price = params[7] ? String(params[7]) : undefined;
-      const quantity = String(params[8]);
-      const filledQuantity = params[9] ? String(params[9]) : '0';
-      const remainingQuantity = params[10] ? String(params[10]) : quantity;
-      const lockedAmount = params[11] ? String(params[11]) : '0';
-      const lockedAsset = (params[12] as string).toUpperCase();
-      const status = (params[13] as any) || 'NEW';
-      const timeInForce = (params[14] as string) || 'GTC';
+      const stopPrice = params[8] ? String(params[8]) : undefined;
+      const quantity = String(params[9]);
+      const filledQuantity = params[10] ? String(params[10]) : '0';
+      const remainingQuantity = params[11] ? String(params[11]) : quantity;
+      const lockedAmount = params[12] ? String(params[12]) : '0';
+      const lockedAsset = (params[13] as string).toUpperCase();
+      const status = (params[14] as any) || 'NEW';
+      const timeInForce = (params[15] as string) || 'GTC';
 
       if (clientOrderId) {
         const uniqueKey = `${accountId}:${clientOrderId}`;
@@ -1302,6 +1304,7 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
         side,
         type,
         price,
+        stopPrice,
         quantity,
         filledQuantity,
         remainingQuantity,
@@ -1845,6 +1848,52 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     // 53. SELECT ... FROM futures_funding_history
     if (/FROM\s+futures_funding_history/i.test(trimmed)) {
       return { rows: [...this.futuresFundingHistory] as T[], rowCount: this.futuresFundingHistory.length };
+    }
+
+    if (/^INSERT\s+INTO\s+k_lines/i.test(trimmed)) {
+      const [market, symbol, interval, open_time, close_time, open_price, high_price, low_price, close_price, base_volume, quote_volume, trades_count, is_final] = params;
+      this.kLines.push({
+        market, symbol, interval, open_time, close_time, open_price, high_price, low_price, close_price, base_volume, quote_volume, trades_count, is_final
+      });
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (/^UPDATE\s+k_lines[\s\S]*SET\s+high_price/i.test(trimmed)) {
+      const [high_price, low_price, close_price, base_volume, quote_volume, trades_count, market, symbol, interval, open_time] = params;
+      const kline = this.kLines.find(k => k.market === market && k.symbol === symbol && k.interval === interval && k.open_time === open_time);
+      if (kline) {
+        Object.assign(kline, { high_price, low_price, close_price, base_volume, quote_volume, trades_count });
+      }
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (/^UPDATE\s+k_lines[\s\S]*SET\s+is_final/i.test(trimmed)) {
+      const [market, symbol, interval, open_time] = params;
+      const kline = this.kLines.find(k => k.market === market && k.symbol === symbol && k.interval === interval && k.open_time === open_time);
+      if (kline) {
+        kline.is_final = true;
+      }
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (/^SELECT\s+\*\s+FROM\s+k_lines[\s\S]*WHERE[\s\S]*is_final\s*=\s*false/i.test(trimmed)) {
+      const active = this.kLines.filter(k => !k.is_final);
+      return { rows: active as T[], rowCount: active.length };
+    }
+
+    if (/^SELECT\s+\*\s+FROM\s+k_lines[\s\S]*ORDER\s+BY\s+open_time/i.test(trimmed)) {
+      const [market, symbol, interval, end_time, limit] = params;
+      let matched = this.kLines.filter(k => k.market === market && k.symbol === symbol && k.interval === interval && Number(k.open_time) <= Number(end_time));
+      matched.sort((a, b) => Number(b.open_time) - Number(a.open_time));
+      matched = matched.slice(0, Number(limit));
+      return { rows: matched as T[], rowCount: matched.length };
+    }
+
+    if (/^SELECT\s+is_final\s+FROM\s+k_lines/i.test(trimmed)) {
+      const [market, symbol, interval, open_time] = params;
+      const kline = this.kLines.find(k => k.market === market && k.symbol === symbol && k.interval === interval && k.open_time === open_time);
+      if (kline) return { rows: [{ is_final: kline.is_final }] as T[], rowCount: 1 };
+      return { rows: [] as T[], rowCount: 0 };
     }
 
     return { rows: [] as T[], rowCount: 0 };

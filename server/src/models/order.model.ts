@@ -1,7 +1,7 @@
 export type MarketType = 'SPOT' | 'FUTURES';
 export type OrderSide = 'BUY' | 'SELL';
 export type OrderType = 'LIMIT' | 'MARKET' | 'STOP_LIMIT' | 'TAKE_PROFIT_LIMIT';
-export type OrderStatus = 'NEW' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'REJECTED' | 'EXPIRED';
+export type OrderStatus = 'UNTRIGGERED' | 'NEW' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'REJECTED' | 'EXPIRED';
 
 export interface TradingPairEntity {
   symbol: string;
@@ -26,6 +26,7 @@ export interface OrderEntity {
   side: OrderSide;
   type: OrderType;
   price?: string;
+  stopPrice?: string;
   quantity: string;
   filledQuantity: string;
   remainingQuantity: string;

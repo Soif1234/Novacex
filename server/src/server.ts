@@ -6,6 +6,8 @@ import { db } from './config/database';
 import { redis } from './config/redis';
 import { webSocketGateway } from './websocket';
 import { liquidationWorker } from './workers/LiquidationWorker';
+import { conditionalTriggerService } from './services/market/conditional.service';
+import { klineService } from './services/market/kline.service';
 
 let server: http.Server | null = null;
 let isShuttingDown = false;
@@ -30,6 +32,8 @@ export async function startServer(): Promise<http.Server> {
       
       // Start background workers
       liquidationWorker.start();
+      conditionalTriggerService.loadFromDatabase().catch(e => logger.error('Failed to load conditionals', {}, e));
+      klineService.start().catch(e => logger.error('Failed to start klineService', {}, e));
       
       resolve(server!);
     });
@@ -49,6 +53,7 @@ export async function stopServer(): Promise<void> {
   try {
     // Stop background workers
     liquidationWorker.stop();
+    await klineService.stop();
 
     // 0. Close WebSocket Gateway
     webSocketGateway.close();

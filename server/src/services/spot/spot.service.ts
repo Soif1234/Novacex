@@ -42,6 +42,7 @@ export interface CreateOrderDto {
   side: OrderSide;
   type: OrderType;
   price?: string;
+  stopPrice?: string;
   quantity: string;
   clientOrderId?: string;
   timeInForce?: string;
@@ -141,22 +142,35 @@ export class SpotService {
       throw new InvalidOrderSideError(dto.side);
     }
 
-    if (dto.type !== 'LIMIT' && dto.type !== 'MARKET') {
+    if (
+      dto.type !== 'LIMIT' &&
+      dto.type !== 'MARKET' &&
+      dto.type !== 'STOP_LIMIT' &&
+      dto.type !== 'TAKE_PROFIT_LIMIT'
+    ) {
       throw new InvalidOrderTypeError(dto.type);
     }
 
     validateAmount(dto.quantity);
 
-    if (dto.type === 'LIMIT') {
+    if (dto.type === 'LIMIT' || dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') {
       if (!dto.price) {
-        throw new SpotError('Limit price is required for LIMIT orders', 400, SpotErrorCode.INVALID_PRICE);
+        throw new SpotError(`Limit price is required for ${dto.type} orders`, 400, SpotErrorCode.INVALID_PRICE);
       }
       validateAmount(dto.price);
+    }
+
+    if (dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') {
+      if (!dto.stopPrice) {
+        throw new SpotError(`Stop price is required for ${dto.type} orders`, 400, SpotErrorCode.INVALID_PRICE);
+      }
+      validateAmount(dto.stopPrice);
     }
 
     const cleanSymbol = pair.symbol;
     const cleanQty = decimalNormalize(dto.quantity);
     const cleanPrice = dto.price ? decimalNormalize(dto.price) : undefined;
+    const cleanStopPrice = dto.stopPrice ? decimalNormalize(dto.stopPrice) : undefined;
     const cleanClientOrderId = dto.clientOrderId?.trim();
 
     // 3. Check idempotency if clientOrderId is provided
@@ -196,7 +210,7 @@ export class SpotService {
 
     if (dto.side === 'BUY') {
       lockedAsset = pair.quoteAsset;
-      if (dto.type === 'LIMIT') {
+      if (dto.type === 'LIMIT' || dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') {
         lockedAmount = decimalMultiply(cleanQty, cleanPrice!);
       } else {
         // MARKET BUY: Calculate required quote amount from available asks in order book
@@ -248,6 +262,8 @@ export class SpotService {
     );
 
     // 6. Create Order Entity
+    const initialStatus = (dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') ? 'UNTRIGGERED' : 'NEW';
+
     const order: OrderEntity = {
       id: orderId,
       clientOrderId: cleanClientOrderId,
@@ -257,12 +273,13 @@ export class SpotService {
       side: dto.side,
       type: dto.type,
       price: cleanPrice,
+      stopPrice: cleanStopPrice,
       quantity: cleanQty,
       filledQuantity: '0',
       remainingQuantity: cleanQty,
       lockedAmount,
       lockedAsset,
-      status: 'NEW',
+      status: initialStatus,
       timeInForce: dto.timeInForce || 'GTC',
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -271,10 +288,10 @@ export class SpotService {
     // 7. Persist order in PostgreSQL
     await this.database.query(
       `INSERT INTO orders (
-        id, client_order_id, account_id, market, symbol, side, type, price, quantity,
+        id, client_order_id, account_id, market, symbol, side, type, price, stop_price, quantity,
         filled_quantity, remaining_quantity, locked_amount, locked_asset, status,
         time_in_force, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
       [
         order.id,
         order.clientOrderId,
@@ -284,6 +301,7 @@ export class SpotService {
         order.side,
         order.type,
         order.price,
+        order.stopPrice,
         order.quantity,
         order.filledQuantity,
         order.remainingQuantity,
@@ -295,6 +313,10 @@ export class SpotService {
         order.updatedAt,
       ]
     );
+
+    if (order.status === 'UNTRIGGERED') {
+      return { order, trades: [] };
+    }
 
     // 8. Match order in Matching Engine
     const book = this.engine.getBook(cleanSymbol);
@@ -653,6 +675,98 @@ export class SpotService {
   /**
    * Cancel an open order and release remaining locked funds.
    */
+    /**
+   * Activate an UNTRIGGERED conditional order and push it to the matching engine.
+   */
+  public async triggerOrder(orderId: string): Promise<void> {
+    const orderRes = await this.database.query<any>(
+      "SELECT o.*, a.user_id FROM orders o JOIN accounts a ON o.account_id = a.id WHERE o.id = $1 AND o.status = 'UNTRIGGERED' FOR UPDATE",
+      [orderId]
+    );
+    const row = orderRes.rows[0];
+    if (!row) return;
+
+    await this.database.query(
+      "UPDATE orders SET status = 'NEW', updated_at = NOW() WHERE id = $1",
+      [orderId]
+    );
+
+    const order: OrderEntity = {
+      id: row.id,
+      clientOrderId: row.client_order_id,
+      accountId: row.account_id,
+      market: row.market,
+      symbol: row.symbol,
+      side: row.side,
+      type: row.type,
+      price: row.price,
+      stopPrice: row.stop_price,
+      quantity: row.quantity,
+      filledQuantity: row.filled_quantity,
+      remainingQuantity: row.remaining_quantity,
+      lockedAmount: row.locked_amount,
+      lockedAsset: row.locked_asset,
+      status: 'NEW',
+      timeInForce: row.time_in_force,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(),
+    };
+
+    const pair = await this.validateTradingPair(order.symbol);
+    const book = this.engine.getBook(order.symbol);
+    const matches = book.match(order);
+
+    const executedTrades: TradeEntity[] = [];
+    for (const match of matches) {
+      const tradeResults = await this.settleMatch(match, pair);
+      executedTrades.push(...tradeResults);
+    }
+
+    if (decimalCompare(order.remainingQuantity, '0') <= 0) {
+      order.status = 'FILLED';
+      order.filledQuantity = order.quantity;
+      order.remainingQuantity = '0';
+    } else if (decimalCompare(order.filledQuantity, '0') > 0) {
+      order.status = 'PARTIALLY_FILLED';
+    }
+
+    if (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') {
+      book.addRestingOrder(order);
+    }
+
+    await this.database.query(
+      'UPDATE orders SET status = $1, filled_quantity = $2, remaining_quantity = $3, updated_at = NOW() WHERE id = $4',
+      [order.status, order.filledQuantity, order.remainingQuantity, order.id]
+    );
+
+    marketDataService.emitOrderBookUpdate(order.symbol);
+
+    eventBus.publish({
+      id: crypto.randomUUID(),
+      type: 'spot.order.updated',
+      channel: 'user:orders',
+      userId: row.user_id,
+      symbol: order.symbol,
+      timestamp: Date.now(),
+      version: '1.0.0',
+      payload: order,
+    });
+
+    for (const trade of executedTrades) {
+      eventBus.publish({
+        id: crypto.randomUUID(),
+        type: 'spot.trade.executed',
+        channel: 'user:trades',
+        userId: trade.accountId === order.accountId ? row.user_id : 'COUNTERPARTY', // simplified
+        symbol: trade.symbol,
+        timestamp: trade.createdAt.getTime(),
+        version: '1.0.0',
+        payload: trade,
+      });
+    }
+  }
+
+
   public async cancelOrder(userId: string, orderId: string): Promise<OrderEntity> {
     // 1. Fetch order
     const orderRes = await this.database.query<any>('SELECT * FROM orders WHERE id = $1', [orderId]);
@@ -679,6 +793,7 @@ export class SpotService {
       side: orderRow.side,
       type: orderRow.type,
       price: orderRow.price,
+      stopPrice: orderRow.stopPrice || orderRow.stop_price,
       quantity: orderRow.quantity,
       filledQuantity: orderRow.filledQuantity || orderRow.filled_quantity,
       remainingQuantity: orderRow.remainingQuantity || orderRow.remaining_quantity,
@@ -805,6 +920,7 @@ export class SpotService {
       side: orderRow.side,
       type: orderRow.type,
       price: orderRow.price,
+      stopPrice: orderRow.stopPrice || orderRow.stop_price,
       quantity: orderRow.quantity,
       filledQuantity: orderRow.filledQuantity || orderRow.filled_quantity,
       remainingQuantity: orderRow.remainingQuantity || orderRow.remaining_quantity,
@@ -843,8 +959,9 @@ export class SpotService {
       symbol: r.symbol,
       side: r.side,
       type: r.type,
-      price: r.price,
-      quantity: r.quantity,
+        price: r.price,
+        stopPrice: r.stopPrice || r.stop_price,
+        quantity: r.quantity,
       filledQuantity: r.filledQuantity || r.filled_quantity,
       remainingQuantity: r.remainingQuantity || r.remaining_quantity,
       lockedAmount: r.lockedAmount || r.locked_amount,
@@ -892,8 +1009,9 @@ export class SpotService {
       symbol: r.symbol,
       side: r.side,
       type: r.type,
-      price: r.price,
-      quantity: r.quantity,
+        price: r.price,
+        stopPrice: r.stopPrice || r.stop_price,
+        quantity: r.quantity,
       filledQuantity: r.filledQuantity || r.filled_quantity,
       remainingQuantity: r.remainingQuantity || r.remaining_quantity,
       lockedAmount: r.lockedAmount || r.locked_amount,
@@ -964,8 +1082,9 @@ export class SpotService {
       symbol: r.symbol,
       side: r.side,
       type: r.type,
-      price: r.price,
-      quantity: r.quantity,
+        price: r.price,
+        stopPrice: r.stopPrice || r.stop_price,
+        quantity: r.quantity,
       filledQuantity: r.filledQuantity || r.filled_quantity,
       remainingQuantity: r.remainingQuantity || r.remaining_quantity,
       lockedAmount: r.lockedAmount || r.locked_amount,
