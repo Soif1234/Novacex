@@ -3,3 +3,8 @@ export * from './account.model';
 export * from './ledger.model';
 export * from './order.model';
 export * from './futures.model';
+export * from './api-key.model';
+export * from './kyc.model';
+export * from './admin.model';
+export * from './system.model';
+export * from './reconciliation.model';

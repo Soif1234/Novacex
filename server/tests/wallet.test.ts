@@ -72,6 +72,35 @@ describe('WalletService & Paper Transaction API (Phase 4 Step 6)', () => {
       token: loginAdmin.sessionToken,
       spotId: signupAdmin.user.accounts.find(a => a.type === 'SPOT')!.id,
     };
+
+    // 4. Grant Tier 2 KYC to test users for withdrawal test validity
+    const { kycService } = await import('../src/services/compliance/kyc.service');
+    const kyc = new kycService.constructor(database);
+    await kyc.submitKyc({
+      userId: userA.id,
+      targetTier: 'TIER_2',
+      firstName: 'User',
+      lastName: 'A',
+      dateOfBirth: '1990-01-01',
+      nationality: 'USA',
+      idDocumentType: 'PASSPORT',
+      idDocumentNumber: 'P11111',
+      proofOfAddressUrl: 'https://docs.test/poa.pdf'
+    });
+    await kyc.reviewKyc({ reviewerId: adminUser.id, userId: userA.id, approved: true, assignedTier: 'TIER_2' });
+
+    await kyc.submitKyc({
+      userId: userB.id,
+      targetTier: 'TIER_2',
+      firstName: 'User',
+      lastName: 'B',
+      dateOfBirth: '1990-01-01',
+      nationality: 'USA',
+      idDocumentType: 'PASSPORT',
+      idDocumentNumber: 'P22222',
+      proofOfAddressUrl: 'https://docs.test/poa.pdf'
+    });
+    await kyc.reviewKyc({ reviewerId: adminUser.id, userId: userB.id, approved: true, assignedTier: 'TIER_2' });
   });
 
   // ── 1. User can read own balances ──────────────────────────────────────────

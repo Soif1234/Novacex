@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { requireAuth, requireRole } from '../middleware/auth';
+import { requireAuth, requireRole, requireAuthOrApiKey, require2FA } from '../middleware/auth';
+import { requireCircuitBreaker } from '../middleware/circuitBreaker';
 import {
   getBalances,
   adminPaperDeposit,
@@ -13,22 +14,23 @@ const router = Router();
 /**
  * Wallet Routes
  * 
- * Authenticated user endpoints:
- *   GET  /api/v1/wallet/balances       — View own wallet balances
- *   POST /api/v1/wallet/withdraw       — Paper withdrawal from own account
- *   POST /api/v1/wallet/transfer       — Internal transfer between own accounts (SPOT/FUTURES/FUNDING)
- *   GET  /api/v1/wallet/transactions   — View own transaction history
+ * Authenticated user / API key endpoints:
+ *   GET  /api/v1/wallet/balances       — View own wallet balances (Scope: READ)
+ *   POST /api/v1/wallet/withdraw       — Paper withdrawal from own account (Scope: WITHDRAW + 2FA)
+ *   POST /api/v1/wallet/transfer       — Internal transfer between own accounts (Scope: TRADE)
+ *   GET  /api/v1/wallet/transactions   — View own transaction history (Scope: READ)
  * 
  * Admin-only endpoints:
  *   POST /api/v1/wallet/admin/paper-deposit — Admin controlled paper/demo deposit
  */
 
-router.get('/balances', requireAuth, getBalances);
-router.post('/withdraw', requireAuth, paperWithdraw);
-router.post('/transfer', requireAuth, internalTransfer);
-router.get('/transactions', requireAuth, getTransactions);
+router.get('/balances', requireAuthOrApiKey('READ'), getBalances);
+router.post('/withdraw', requireCircuitBreaker('WITHDRAWALS'), requireAuthOrApiKey('WITHDRAW'), require2FA, paperWithdraw);
+router.post('/transfer', requireAuthOrApiKey('TRADE'), internalTransfer);
+router.get('/transactions', requireAuthOrApiKey('READ'), getTransactions);
 
 // Admin-only paper deposit
-router.post('/admin/paper-deposit', requireAuth, requireRole('ADMIN'), adminPaperDeposit);
+router.post('/admin/paper-deposit', requireCircuitBreaker('DEPOSITS'), requireAuth, requireRole('ADMIN'), adminPaperDeposit);
 
 export const walletRoutes = router;
+

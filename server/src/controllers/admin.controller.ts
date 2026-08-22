@@ -1,0 +1,152 @@
+import { Request, Response, NextFunction } from 'express';
+import { adminService } from '../services/admin/admin.service';
+import { auditService } from '../services/admin/audit.service';
+import { AppError } from '../middleware/errorHandler';
+import { UserRole, AccountStatus } from '../models/user.model';
+
+export class AdminController {
+  /**
+   * GET /api/v1/admin/users
+   * Paginated list of users with role, status, and KYC info
+   */
+  public static async listUsers(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const role = req.query.role as UserRole | undefined;
+      const status = req.query.status as AccountStatus | undefined;
+      const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
+      const pageSize = req.query.pageSize ? parseInt(req.query.pageSize as string, 10) : 20;
+
+      const result = await adminService.listUsers({ role, status, page, pageSize });
+
+      res.status(200).json({
+        success: true,
+        data: result,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /**
+   * GET /api/v1/admin/users/:userId
+   * Full administrative detail of a specific user
+   */
+  public static async getUserDetail(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { userId } = req.params;
+      if (!userId) {
+        throw new AppError('userId parameter is required', 400, 'MISSING_USER_ID');
+      }
+
+      const detail = await adminService.getUserDetail(userId);
+
+      res.status(200).json({
+        success: true,
+        data: detail,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /**
+   * PATCH /api/v1/admin/users/:userId/status
+   * Freeze / Suspend / Activate user account
+   */
+  public static async updateUserStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw new AppError('Authentication required', 401, 'UNAUTHORIZED');
+      }
+
+      const { userId } = req.params;
+      const { status, reason } = req.body || {};
+
+      if (!status || !['ACTIVE', 'SUSPENDED', 'CLOSED'].includes(status)) {
+        throw new AppError('Valid status (ACTIVE, SUSPENDED, CLOSED) is required', 400, 'INVALID_STATUS');
+      }
+
+      const user = await adminService.updateUserStatus({
+        adminUserId: req.user.id,
+        userId,
+        status,
+        reason: reason || 'Administrative action',
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+
+      res.status(200).json({
+        success: true,
+        data: { user },
+        message: `User account status updated to ${status}`,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /**
+   * PATCH /api/v1/admin/users/:userId/role
+   * Update user role (promote/demote)
+   */
+  public static async updateUserRole(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw new AppError('Authentication required', 401, 'UNAUTHORIZED');
+      }
+
+      const { userId } = req.params;
+      const { role, reason } = req.body || {};
+
+      if (!role || !['USER', 'ADMIN', 'SYSTEM_BOT'].includes(role)) {
+        throw new AppError('Valid role (USER, ADMIN, SYSTEM_BOT) is required', 400, 'INVALID_ROLE');
+      }
+
+      const user = await adminService.updateUserRole({
+        adminUserId: req.user.id,
+        userId,
+        role,
+        reason: reason || 'Administrative role update',
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+
+      res.status(200).json({
+        success: true,
+        data: { user },
+        message: `User role updated to ${role}`,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /**
+   * GET /api/v1/admin/audit-logs
+   * Query immutable admin audit log records
+   */
+  public static async getAuditLogs(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const adminUserId = req.query.adminUserId as string | undefined;
+      const targetUserId = req.query.targetUserId as string | undefined;
+      const action = req.query.action as string | undefined;
+      const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
+      const pageSize = req.query.pageSize ? parseInt(req.query.pageSize as string, 10) : 20;
+
+      const result = await auditService.getLogs({
+        adminUserId,
+        targetUserId,
+        action,
+        page,
+        pageSize,
+      });
+
+      res.status(200).json({
+        success: true,
+        data: result,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+}

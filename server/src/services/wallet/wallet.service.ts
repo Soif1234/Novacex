@@ -3,6 +3,7 @@ import { db, IDatabaseConnection } from '../../config/database';
 import { AccountEntity, AccountType, AssetEntity } from '../../models/account.model';
 import { LedgerTxType } from '../../models/ledger.model';
 import { ledgerService, LedgerService, LedgerHistoryResult } from '../ledger/ledger.service';
+import { amlService, AmlService } from '../compliance/aml.service';
 import { validateAmount, decimalNormalize, countDecimalPlaces } from '../ledger/decimal';
 import { logger } from '../../config/logger';
 import {
@@ -97,10 +98,17 @@ export interface TransferReceipt {
 }
 
 export class WalletService {
+  private ledger: LedgerService;
+  private aml: AmlService;
+
   constructor(
     private database: IDatabaseConnection = db,
-    private ledger: LedgerService = ledgerService
-  ) {}
+    ledger?: LedgerService,
+    aml?: AmlService
+  ) {
+    this.ledger = ledger || new LedgerService(database);
+    this.aml = aml || new AmlService(database);
+  }
 
   /**
    * Validate that an asset exists in the registry, is active, and the amount does not exceed decimal precision.
@@ -356,7 +364,15 @@ export class WalletService {
     const cleanRef = dto.referenceId.trim();
     const destAddress = dto.destinationAddress?.trim() || 'PAPER_WITHDRAWAL_ADDRESS';
 
-    // 3. Delegate mutation to LedgerService
+    // 3. Pre-flight AML compliance checks (sanctions screening & 24h KYC tier limit)
+    await this.aml.validateWithdrawalCompliance({
+      userId: dto.userId,
+      asset: cleanAsset,
+      amount: dto.amount,
+      destinationAddress: destAddress,
+    });
+
+    // 4. Delegate mutation to LedgerService
     const result = await this.ledger.debit(
       dto.accountId,
       cleanAsset,

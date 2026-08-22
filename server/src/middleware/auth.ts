@@ -1,7 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { authService, SafeUser } from '../services/auth/auth.service';
 import { sessionService } from '../services/auth/session.service';
+import { apiKeyService } from '../services/auth/api-key.service';
 import { UserRole } from '../models/user.model';
+import { ApiKeyPermission } from '../models/api-key.model';
 import { AppError } from './errorHandler';
 import { logger } from '../config/logger';
 import { redis } from '../config/redis';
@@ -12,6 +14,8 @@ declare global {
       user?: SafeUser;
       accounts?: Array<{ id: string; type: string }>;
       sessionToken?: string;
+      apiKeyId?: string;
+      apiKeyPermissions?: ApiKeyPermission[];
     }
   }
 }
@@ -138,13 +142,110 @@ export function requireAccountOwnership(paramName = 'accountId') {
 }
 
 /**
+ * Middleware requiring valid HMAC-SHA256 Signed API Key Authentication
+ */
+export function requireApiKeyAuth(requiredPermission?: ApiKeyPermission) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const keyId = (req.headers['x-api-key'] || req.headers['X-API-KEY']) as string;
+      const timestampStr = (req.headers['x-api-timestamp'] || req.headers['X-API-TIMESTAMP']) as string;
+      const nonce = (req.headers['x-api-nonce'] || req.headers['X-API-NONCE']) as string;
+      const signature = (req.headers['x-api-signature'] || req.headers['X-API-SIGNATURE']) as string;
+
+      if (!keyId || !timestampStr || !nonce || !signature) {
+        throw new AppError('API key authentication headers missing (X-API-KEY, X-API-TIMESTAMP, X-API-NONCE, X-API-SIGNATURE)', 401, 'API_KEY_AUTH_REQUIRED');
+      }
+
+      const timestamp = parseInt(timestampStr, 10);
+      if (isNaN(timestamp)) {
+        throw new AppError('Invalid X-API-TIMESTAMP header', 400, 'INVALID_API_TIMESTAMP');
+      }
+
+      const clientIp = (req.ip || req.socket.remoteAddress || '').replace('::ffff:', '');
+      const bodyString = req.body && Object.keys(req.body).length > 0 ? JSON.stringify(req.body) : '';
+
+      const verification = await apiKeyService.verifySignedRequest({
+        keyId,
+        timestamp,
+        nonce,
+        method: req.method,
+        path: req.originalUrl.split('?')[0],
+        bodyString,
+        signature,
+        clientIp,
+        requiredPermission,
+      });
+
+      if (!verification.valid || !verification.userId) {
+        throw new AppError(verification.error || 'API key authentication failed', 401, 'API_KEY_AUTH_FAILED');
+      }
+
+      const user = await authService.getUserById(verification.userId);
+      if (!user) {
+        throw new AppError('User associated with API key not found', 401, 'USER_NOT_FOUND');
+      }
+
+      if (user.accountStatus === 'SUSPENDED' || user.accountStatus === 'CLOSED') {
+        throw new AppError('Account is suspended. API key access denied.', 403, 'ACCOUNT_SUSPENDED');
+      }
+
+      req.user = user;
+      req.accounts = user.accounts;
+      req.apiKeyId = keyId;
+
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
+/**
+ * Flexible middleware allowing either Session Auth or Signed API Key Auth
+ */
+export function requireAuthOrApiKey(requiredPermission?: ApiKeyPermission) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const hasApiKeyHeader = Boolean(req.headers['x-api-key'] || req.headers['X-API-KEY']);
+    if (hasApiKeyHeader) {
+      return requireApiKeyAuth(requiredPermission)(req, res, next);
+    }
+    return requireAuth(req, res, next);
+  };
+}
+
+/**
+ * Middleware enforcing 2FA verification for sensitive operations
+ */
+export function require2FA(req: Request, res: Response, next: NextFunction): void {
+  try {
+    if (!req.user) {
+      throw new AppError('Authentication required', 401, 'UNAUTHORIZED');
+    }
+
+    if (!req.user.twoFactorEnabled) {
+      return next(); // User has not enabled 2FA
+    }
+
+    const token = (req.headers['x-2fa-code'] || req.headers['X-2FA-CODE'] || req.body?.twoFactorCode || req.body?.twoFactorToken) as string;
+    if (!token) {
+      throw new AppError('Two-Factor Authentication code required (X-2FA-Code header)', 401, '2FA_REQUIRED');
+    }
+
+    authService.verify2FAForSensitiveAction(req.user.id, token)
+      .then(() => next())
+      .catch((err) => next(err));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * Rate Limiter for Authentication Endpoints (Sliding window via Redis)
  */
 export function authRateLimiter(maxRequests = 20, windowMs = 60000) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const ip = req.ip || req.socket.remoteAddress || 'unknown-ip';
-      // Use fixed window per interval based on current time
       const windowId = Math.floor(Date.now() / windowMs);
       const key = `rate-limit:auth:${ip}:${windowId}`;
 
@@ -152,7 +253,6 @@ export function authRateLimiter(maxRequests = 20, windowMs = 60000) {
       try {
         currentCount = await redis.incr(key, Math.ceil(windowMs / 1000) + 1);
       } catch (err) {
-        // Fallback: if Redis fails, log error and allow request to prevent systemic lockout
         logger.error('Redis rate limit incr failed', { ip, error: err });
         return next();
       }
@@ -168,3 +268,5 @@ export function authRateLimiter(maxRequests = 20, windowMs = 60000) {
     }
   };
 }
+
+

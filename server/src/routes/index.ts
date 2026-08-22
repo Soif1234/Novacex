@@ -6,6 +6,8 @@ import { walletRoutes } from './wallet.routes';
 import { spotRoutes } from './spot.routes';
 import { futuresRoutes } from './futures.routes';
 import { marketRoutes } from './market.routes';
+import { kycRoutes } from './kyc.routes';
+import { adminRoutes } from './admin.routes';
 
 const router = Router();
 
@@ -14,6 +16,12 @@ router.use('/', healthRoutes);
 
 // Authentication & Session routes
 router.use('/auth', authRoutes);
+
+// Admin & Security Audit routes
+router.use('/admin', adminRoutes);
+
+// KYC & AML Compliance routes
+router.use('/kyc', kycRoutes);
 
 // Ledger routes (balances, history, reconciliation)
 router.use('/ledger', ledgerRoutes);

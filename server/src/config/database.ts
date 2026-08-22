@@ -13,6 +13,7 @@ import {
   FuturesFundingHistoryEntity,
   FuturesLiquidationEntity,
 } from '../models/futures.model';
+import { decimalAdd, decimalSubtract, decimalCompare, decimalIsZero } from '../services/ledger/decimal';
 
 export interface DatabaseStatus {
   connected: boolean;
@@ -247,6 +248,13 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
   private userProfiles = new Map<string, UserProfileEntity>(); // userId -> profile
   private userCredentials = new Map<string, UserAuthCredentialsEntity>(); // userId -> creds
   private userSessions = new Map<string, UserSessionEntity>(); // tokenHash -> session
+  private apiKeys = new Map<string, any>(); // keyId -> apiKey
+  private userKycProfiles = new Map<string, any>(); // userId -> kycProfile
+  private sanctionedAddresses = new Map<string, any>(); // address -> record
+  private adminAuditLogs: any[] = [];
+  private systemCircuitBreaker: any = null;
+  private reconciliationReports: any[] = [];
+  private securityThreatAlerts = new Map<string, any>();
   private accounts = new Map<string, AccountEntity>(); // id -> account
   private assets = new Map<string, AssetEntity>(); // symbol -> asset
   private schemaMigrations = new Set<string>();
@@ -347,7 +355,13 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     this.futuresTpSlConfigs.clear();
     this.futuresFundingHistory = [];
     this.futuresLiquidations = [];
-    this.schemaMigrations.clear();
+    this.apiKeys.clear();
+    this.userKycProfiles.clear();
+    this.sanctionedAddresses.clear();
+    this.adminAuditLogs = [];
+    this.systemCircuitBreaker = null;
+    this.reconciliationReports = [];
+    this.securityThreatAlerts.clear();
     this.walletBalances.clear();
     this.ledgerTransactions.clear();
     this.ledgerTxByRef.clear();
@@ -435,7 +449,10 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       ...c,
       user_id: c.userId,
       password_hash: c.passwordHash,
+      two_factor_secret: c.twoFactorSecret,
+      twoFactorSecret: c.twoFactorSecret,
       two_factor_enabled: c.twoFactorEnabled,
+      twoFactorEnabled: c.twoFactorEnabled,
       failed_login_attempts: c.failedLoginAttempts,
       locked_until: c.lockedUntil,
       last_login_at: c.lastLoginAt,
@@ -755,6 +772,761 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       return { rows: creds ? [this.mapCreds(creds) as T] : [], rowCount: creds ? 1 : 0 };
     }
 
+    // 7b. UPDATE user_auth_credentials
+    if (/UPDATE\s+user_auth_credentials/i.test(trimmed)) {
+      if (/two_factor_secret\s*=\s*\$1/i.test(trimmed)) {
+        const secret = params[0] as string;
+        const userId = params[1] as string;
+        const creds = this.userCredentials.get(userId);
+        if (creds) {
+          creds.twoFactorSecret = secret;
+          creds.updatedAt = new Date();
+        }
+        return { rows: [], rowCount: 1 };
+      }
+
+      if (/two_factor_enabled\s*=\s*TRUE/i.test(trimmed)) {
+        const userId = params[0] as string;
+        const creds = this.userCredentials.get(userId);
+        if (creds) {
+          creds.twoFactorEnabled = true;
+          creds.updatedAt = new Date();
+        }
+        return { rows: [], rowCount: 1 };
+      }
+
+      if (/two_factor_enabled\s*=\s*FALSE/i.test(trimmed)) {
+        const userId = params[0] as string;
+        const creds = this.userCredentials.get(userId);
+        if (creds) {
+          creds.twoFactorEnabled = false;
+          creds.twoFactorSecret = undefined;
+          creds.updatedAt = new Date();
+        }
+        return { rows: [], rowCount: 1 };
+      }
+    }
+
+    // 7c. INSERT INTO api_keys
+    if (/INSERT\s+INTO\s+api_keys/i.test(trimmed)) {
+      const id = crypto.randomUUID();
+      const userId = params[0] as string;
+      const keyId = params[1] as string;
+      const secretHash = params[2] as string;
+      const encryptedSecret = params[3] as string;
+      const secretPreview = params[4] as string;
+      const label = params[5] as string;
+      const permissions = params[6] as string[];
+      const ipWhitelist = params[7] as string[];
+      const expiresAt = params[8] ? new Date(params[8] as string) : undefined;
+
+      const apiKey = {
+        id,
+        user_id: userId,
+        userId,
+        key_id: keyId,
+        keyId,
+        secret_hash: secretHash,
+        secretHash,
+        encrypted_secret: encryptedSecret,
+        encryptedSecret,
+        secret_preview: secretPreview,
+        secretPreview,
+        label,
+        permissions,
+        ip_whitelist: ipWhitelist,
+        ipWhitelist,
+        status: 'ACTIVE',
+        last_used_at: undefined,
+        expires_at: expiresAt,
+        expiresAt,
+        created_at: new Date(),
+        createdAt: new Date(),
+        updated_at: new Date(),
+        updatedAt: new Date(),
+      };
+
+      this.apiKeys.set(keyId, apiKey);
+      return { rows: [apiKey as T], rowCount: 1 };
+    }
+
+    // 7d. SELECT ... FROM api_keys WHERE user_id = $1
+    if (/FROM\s+api_keys\s+WHERE\s+user_id\s*=/i.test(trimmed)) {
+      const userId = params[0] as string;
+      if (/COUNT\(\*\)/i.test(trimmed)) {
+        const count = Array.from(this.apiKeys.values()).filter(k => (k.user_id === userId || k.userId === userId) && k.status === 'ACTIVE').length;
+        return { rows: [{ count: String(count) }] as T[], rowCount: 1 };
+      }
+      const keys = Array.from(this.apiKeys.values())
+        .filter(k => k.user_id === userId || k.userId === userId)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      return { rows: keys as T[], rowCount: keys.length };
+    }
+
+    // 7e. SELECT ... FROM api_keys WHERE key_id = $1
+    if (/FROM\s+api_keys\s+WHERE\s+key_id\s*=/i.test(trimmed)) {
+      const keyId = params[0] as string;
+      const key = this.apiKeys.get(keyId);
+      return { rows: key ? [key as T] : [], rowCount: key ? 1 : 0 };
+    }
+
+    // 7f. UPDATE api_keys SET status = 'REVOKED'
+    if (/UPDATE\s+api_keys\s+SET\s+status\s*=\s*'REVOKED'/i.test(trimmed)) {
+      const userId = params[0] as string;
+      const keyIdOrId = params[1] as string | undefined;
+      let count = 0;
+      for (const [k, key] of this.apiKeys.entries()) {
+        if ((key.user_id === userId || key.userId === userId) && key.status === 'ACTIVE') {
+          if (!keyIdOrId || key.key_id === keyIdOrId || key.keyId === keyIdOrId || key.id === keyIdOrId) {
+            key.status = 'REVOKED';
+            key.updated_at = new Date();
+            key.updatedAt = new Date();
+            count++;
+          }
+        }
+      }
+      return { rows: count > 0 ? [{ id: userId }] as T[] : [], rowCount: count };
+    }
+
+    // 7g. UPDATE api_keys SET last_used_at
+    if (/UPDATE\s+api_keys\s+SET\s+last_used_at/i.test(trimmed)) {
+      const id = params[0] as string;
+      for (const [k, key] of this.apiKeys.entries()) {
+        if (key.id === id || key.key_id === id) {
+          key.last_used_at = new Date();
+          key.lastUsedAt = new Date();
+          return { rows: [], rowCount: 1 };
+        }
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+    // 7h. INSERT INTO user_kyc_profiles
+    if (/INSERT\s+INTO\s+user_kyc_profiles/i.test(trimmed)) {
+      const userId = params[0] as string;
+      const firstName = params[1] as string;
+      const lastName = params[2] as string;
+      const dateOfBirth = params[3] as string;
+      const nationality = params[4] as string;
+      const idDocumentType = params[5] as string;
+      const idDocumentNumber = params[6] as string;
+      const idDocumentFrontUrl = params[7] as string;
+      const idDocumentBackUrl = params[8] as string;
+      const proofOfAddressUrl = params[9] as string;
+
+      const profile = {
+        id: crypto.randomUUID(),
+        user_id: userId,
+        userId,
+        tier: 'TIER_0',
+        status: 'PENDING_REVIEW',
+        first_name: firstName,
+        firstName,
+        last_name: lastName,
+        lastName,
+        date_of_birth: dateOfBirth,
+        dateOfBirth,
+        nationality,
+        id_document_type: idDocumentType,
+        idDocumentType,
+        id_document_number: idDocumentNumber,
+        idDocumentNumber,
+        id_document_front_url: idDocumentFrontUrl,
+        idDocumentFrontUrl,
+        id_document_back_url: idDocumentBackUrl,
+        idDocumentBackUrl,
+        proof_of_address_url: proofOfAddressUrl,
+        proofOfAddressUrl,
+        rejection_reason: null,
+        rejectionReason: undefined,
+        reviewer_id: null,
+        reviewerId: undefined,
+        submitted_at: new Date(),
+        submittedAt: new Date(),
+        verified_at: null,
+        verifiedAt: undefined,
+        created_at: new Date(),
+        createdAt: new Date(),
+        updated_at: new Date(),
+        updatedAt: new Date(),
+      };
+
+      this.userKycProfiles.set(userId, profile);
+      return { rows: [profile as T], rowCount: 1 };
+    }
+
+    // 7i. UPDATE user_kyc_profiles
+    if (/UPDATE\s+user_kyc_profiles/i.test(trimmed)) {
+      if (/status\s*=\s*'PENDING_REVIEW'/i.test(trimmed)) {
+        const userId = params[9] as string;
+        let profile = this.userKycProfiles.get(userId);
+        if (!profile) {
+          profile = { id: crypto.randomUUID(), user_id: userId, userId, tier: 'TIER_0', created_at: new Date(), createdAt: new Date() };
+          this.userKycProfiles.set(userId, profile);
+        }
+        profile.status = 'PENDING_REVIEW';
+        profile.first_name = params[0];
+        profile.firstName = params[0];
+        profile.last_name = params[1];
+        profile.lastName = params[1];
+        profile.date_of_birth = params[2];
+        profile.dateOfBirth = params[2];
+        profile.nationality = params[3];
+        profile.id_document_type = params[4];
+        profile.idDocumentType = params[4];
+        profile.id_document_number = params[5];
+        profile.idDocumentNumber = params[5];
+        profile.id_document_front_url = params[6];
+        profile.idDocumentFrontUrl = params[6];
+        profile.id_document_back_url = params[7];
+        profile.idDocumentBackUrl = params[7];
+        profile.proof_of_address_url = params[8];
+        profile.proofOfAddressUrl = params[8];
+        profile.rejection_reason = null;
+        profile.rejectionReason = undefined;
+        profile.submitted_at = new Date();
+        profile.submittedAt = new Date();
+        profile.updated_at = new Date();
+        profile.updatedAt = new Date();
+        return { rows: [profile as T], rowCount: 1 };
+      }
+
+      if (/status\s*=\s*'VERIFIED'/i.test(trimmed)) {
+        const assignedTier = params[0] as string;
+        const reviewerId = params[1] as string;
+        const userId = params[2] as string;
+        const profile = this.userKycProfiles.get(userId);
+        if (profile) {
+          profile.status = 'VERIFIED';
+          profile.tier = assignedTier;
+          profile.reviewer_id = reviewerId;
+          profile.reviewerId = reviewerId;
+          profile.rejection_reason = null;
+          profile.rejectionReason = undefined;
+          profile.verified_at = new Date();
+          profile.verifiedAt = new Date();
+          profile.updated_at = new Date();
+          profile.updatedAt = new Date();
+          return { rows: [profile as T], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      }
+
+      if (/status\s*=\s*'REJECTED'/i.test(trimmed)) {
+        const reviewerId = params[0] as string;
+        const rejectionReason = params[1] as string;
+        const userId = params[2] as string;
+        const profile = this.userKycProfiles.get(userId);
+        if (profile) {
+          profile.status = 'REJECTED';
+          profile.tier = 'TIER_0';
+          profile.reviewer_id = reviewerId;
+          profile.reviewerId = reviewerId;
+          profile.rejection_reason = rejectionReason;
+          profile.rejectionReason = rejectionReason;
+          profile.updated_at = new Date();
+          profile.updatedAt = new Date();
+          return { rows: [profile as T], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      }
+    }
+
+    // 7j. SELECT ... FROM user_kyc_profiles WHERE user_id = $1
+    if (/FROM\s+user_kyc_profiles\s+WHERE\s+user_id\s*=/i.test(trimmed)) {
+      const userId = params[0] as string;
+      const profile = this.userKycProfiles.get(userId);
+      return { rows: profile ? [profile as T] : [], rowCount: profile ? 1 : 0 };
+    }
+
+    // 7k. Sanctioned Addresses queries
+    if (/FROM\s+sanctioned_addresses\s+WHERE\s+address\s*=/i.test(trimmed)) {
+      const address = params[0] as string;
+      const record = this.sanctionedAddresses.get(address);
+      if (record && record.is_active) {
+        return { rows: [record as T], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+    if (/INSERT\s+INTO\s+sanctioned_addresses/i.test(trimmed)) {
+      const address = params[0] as string;
+      const reason = params[1] as string;
+      const source = params[2] as string;
+      const record = {
+        id: crypto.randomUUID(),
+        address,
+        reason,
+        source: source || 'OFAC',
+        is_active: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+      this.sanctionedAddresses.set(address, record);
+      return { rows: [record as T], rowCount: 1 };
+    }
+
+    // 7l. 24-hour withdrawal sum query
+    if (/FROM\s+ledger_transactions\s+lt[\s\S]*JOIN\s+ledger_entries\s+le[\s\S]*lt\.transaction_type\s*=\s*'WITHDRAWAL'/i.test(trimmed)) {
+      const accountIds = params[0] as string[];
+      const withdrawalEntries: any[] = [];
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+
+      for (const entry of this.ledgerEntries) {
+        if (entry.direction === 'DEBIT' && Array.isArray(accountIds) && accountIds.includes(entry.accountId)) {
+          const tx = this.ledgerTransactions.get(entry.transactionId);
+          if (tx && tx.transactionType === 'WITHDRAWAL' && tx.createdAt.getTime() >= cutoff) {
+            withdrawalEntries.push({ amount: entry.amount });
+          }
+        }
+      }
+      return { rows: withdrawalEntries as T[], rowCount: withdrawalEntries.length };
+    }
+
+    // 7m. INSERT INTO admin_audit_logs
+    if (/INSERT\s+INTO\s+admin_audit_logs/i.test(trimmed)) {
+      const adminUserId = params[0] as string;
+      const action = params[1] as string;
+      const targetUserId = params[2] as string | null;
+      const targetResourceType = params[3] as string;
+      const targetResourceId = params[4] as string | null;
+      const prevState = params[5] ? JSON.parse(params[5] as string) : null;
+      const newState = params[6] ? JSON.parse(params[6] as string) : null;
+      const reason = params[7] as string | null;
+      const ipAddress = params[8] as string | null;
+      const userAgent = params[9] as string | null;
+
+      const log = {
+        id: crypto.randomUUID(),
+        admin_user_id: adminUserId,
+        adminUserId,
+        action,
+        target_user_id: targetUserId,
+        targetUserId,
+        target_resource_type: targetResourceType,
+        targetResourceType,
+        target_resource_id: targetResourceId,
+        targetResourceId,
+        previous_state: prevState,
+        previousState: prevState,
+        new_state: newState,
+        newState,
+        reason,
+        ip_address: ipAddress,
+        ipAddress,
+        user_agent: userAgent,
+        userAgent,
+        created_at: new Date(),
+        createdAt: new Date(),
+      };
+
+      this.adminAuditLogs.push(log);
+      return { rows: [log as T], rowCount: 1 };
+    }
+
+    // 7n. SELECT ... FROM admin_audit_logs
+    if (/FROM\s+admin_audit_logs/i.test(trimmed)) {
+      let filtered = [...this.adminAuditLogs];
+      if (/admin_user_id\s*=\s*\$[0-9]+/i.test(trimmed)) {
+        const adminId = params[0] as string;
+        filtered = filtered.filter(l => l.adminUserId === adminId || l.admin_user_id === adminId);
+      }
+      if (/target_user_id\s*=\s*\$[0-9]+/i.test(trimmed)) {
+        const targetId = params.find((p, idx) => {
+          return new RegExp(`target_user_id\\s*=\\s*\\$${idx + 1}`, 'i').test(trimmed);
+        }) as string;
+        if (targetId) {
+          filtered = filtered.filter(l => l.targetUserId === targetId || l.target_user_id === targetId);
+        }
+      }
+      if (/action\s*=\s*\$[0-9]+/i.test(trimmed)) {
+        const actionVal = params.find((p, idx) => {
+          return new RegExp(`action\\s*=\\s*\\$${idx + 1}`, 'i').test(trimmed);
+        }) as string;
+        if (actionVal) {
+          filtered = filtered.filter(l => l.action === actionVal);
+        }
+      }
+
+      if (/SELECT\s+COUNT\(\*\)/i.test(trimmed)) {
+        return { rows: [{ total: String(filtered.length) }] as T[], rowCount: 1 };
+      }
+
+      filtered.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      if (/LIMIT\s+\$[0-9]+\s+OFFSET\s+\$[0-9]+/i.test(trimmed)) {
+        const pageSize = (params[params.length - 2] as number) || 20;
+        const offset = (params[params.length - 1] as number) || 0;
+        filtered = filtered.slice(offset, offset + pageSize);
+      }
+      return { rows: filtered as T[], rowCount: filtered.length };
+    }
+
+    // 7o. Admin queries for users list & counts
+    if (/SELECT\s+COUNT\(\*\)\s+AS\s+count\s+FROM\s+users\s+WHERE\s+role\s*=\s*'ADMIN'/i.test(trimmed)) {
+      const activeAdmins = Array.from(this.users.values()).filter(u => u.role === 'ADMIN' && u.accountStatus === 'ACTIVE');
+      return { rows: [{ count: String(activeAdmins.length) }] as T[], rowCount: 1 };
+    }
+
+    if (/SELECT\s+COUNT\(\*\)\s+AS\s+total\s+FROM\s+users/i.test(trimmed)) {
+      return { rows: [{ total: String(this.users.size) }] as T[], rowCount: 1 };
+    }
+
+    if (/SELECT\s+u\.id,\s*u\.email[\s\S]*FROM\s+users\s+u/i.test(trimmed)) {
+      const list: any[] = [];
+      for (const u of this.users.values()) {
+        const kyc = this.userKycProfiles.get(u.id);
+        list.push({
+          id: u.id,
+          email: u.email,
+          role: u.role,
+          accountStatus: u.accountStatus,
+          kycTier: kyc?.tier || 'TIER_0',
+          kycStatus: kyc?.status || 'UNVERIFIED',
+          createdAt: u.createdAt,
+          updatedAt: u.updatedAt,
+        });
+      }
+      list.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      return { rows: list as T[], rowCount: list.length };
+    }
+
+    // 7p. UPDATE users SET account_status = $1
+    if (/UPDATE\s+users\s+SET\s+account_status\s*=/i.test(trimmed)) {
+      const status = params[0] as 'ACTIVE' | 'SUSPENDED' | 'CLOSED';
+      const userId = params[1] as string;
+      const user = this.users.get(userId);
+      if (user) {
+        user.accountStatus = status;
+        user.updatedAt = new Date();
+        return { rows: [user as T], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+    // 7q. UPDATE users SET role = $1
+    if (/UPDATE\s+users\s+SET\s+role\s*=/i.test(trimmed)) {
+      let role: 'USER' | 'ADMIN' | 'SYSTEM_BOT';
+      let userId: string;
+      if (/role\s*=\s*'ADMIN'/i.test(trimmed)) {
+        role = 'ADMIN';
+        userId = params[0] as string;
+      } else if (/role\s*=\s*'SYSTEM_BOT'/i.test(trimmed)) {
+        role = 'SYSTEM_BOT';
+        userId = params[0] as string;
+      } else if (/role\s*=\s*'USER'/i.test(trimmed)) {
+        role = 'USER';
+        userId = params[0] as string;
+      } else {
+        role = params[0] as 'USER' | 'ADMIN' | 'SYSTEM_BOT';
+        userId = params[1] as string;
+      }
+      const user = this.users.get(userId);
+      if (user) {
+        user.role = role;
+        user.updatedAt = new Date();
+        return { rows: [user as T], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+    // 7r. Bulk session / api key revocation on suspension
+    if (/UPDATE\s+user_sessions\s+SET\s+status\s*=\s*'REVOKED'[\s\S]*WHERE\s+user_id\s*=/i.test(trimmed)) {
+      const userId = params[0] as string;
+      let count = 0;
+      for (const sess of this.userSessions.values()) {
+        if (sess.userId === userId && sess.status === 'ACTIVE') {
+          sess.status = 'REVOKED';
+          sess.lastActiveAt = new Date();
+          count++;
+        }
+      }
+      return { rows: [], rowCount: count };
+    }
+
+    if (/UPDATE\s+api_keys\s+SET\s+status\s*=\s*'REVOKED'/i.test(trimmed) && params.length === 1) {
+      const userId = params[0] as string;
+      let count = 0;
+      for (const key of this.apiKeys.values()) {
+        if ((key.user_id === userId || key.userId === userId) && key.status === 'ACTIVE') {
+          key.status = 'REVOKED';
+          key.updated_at = new Date();
+          key.updatedAt = new Date();
+          count++;
+        }
+      }
+      return { rows: [], rowCount: count };
+    }
+
+    // 7s. Count active user sessions / active api keys
+    if (/SELECT\s+COUNT\(\*\)\s+AS\s+count\s+FROM\s+user_sessions\s+WHERE\s+user_id\s*=\s*\$1/i.test(trimmed)) {
+      const userId = params[0] as string;
+      const count = Array.from(this.userSessions.values()).filter(s => s.userId === userId && s.status === 'ACTIVE').length;
+      return { rows: [{ count: String(count) }] as T[], rowCount: 1 };
+    }
+
+    if (/SELECT\s+COUNT\(\*\)\s+AS\s+count\s+FROM\s+api_keys\s+WHERE\s+user_id\s*=\s*\$1/i.test(trimmed)) {
+      const userId = params[0] as string;
+      const count = Array.from(this.apiKeys.values()).filter(k => (k.user_id === userId || k.userId === userId) && k.status === 'ACTIVE').length;
+      return { rows: [{ count: String(count) }] as T[], rowCount: 1 };
+    }
+
+    // 7t. system_circuit_breakers queries
+    if (/FROM\s+system_circuit_breakers/i.test(trimmed)) {
+      if (!this.systemCircuitBreaker) {
+        this.systemCircuitBreaker = {
+          id: 'SYSTEM_GLOBAL',
+          mode: 'SYSTEM_ACTIVE',
+          is_spot_trading_enabled: true,
+          isSpotTradingEnabled: true,
+          is_futures_trading_enabled: true,
+          isFuturesTradingEnabled: true,
+          is_withdrawals_enabled: true,
+          isWithdrawalsEnabled: true,
+          is_deposits_enabled: true,
+          isDepositsEnabled: true,
+          halt_reason: null,
+          haltReason: null,
+          halted_by: null,
+          haltedBy: null,
+          updated_at: new Date(),
+          updatedAt: new Date(),
+        };
+      }
+      return { rows: [this.systemCircuitBreaker as T], rowCount: 1 };
+    }
+
+    if (/INSERT\s+INTO\s+system_circuit_breakers/i.test(trimmed)) {
+      const mode = params[0] as string;
+      const isSpot = Boolean(params[1]);
+      const isFutures = Boolean(params[2]);
+      const isWithdrawals = Boolean(params[3]);
+      const isDeposits = Boolean(params[4]);
+      const haltReason = (params[5] as string) || null;
+      const haltedBy = (params[6] as string) || null;
+
+      this.systemCircuitBreaker = {
+        id: 'SYSTEM_GLOBAL',
+        mode,
+        is_spot_trading_enabled: isSpot,
+        isSpotTradingEnabled: isSpot,
+        is_futures_trading_enabled: isFutures,
+        isFuturesTradingEnabled: isFutures,
+        is_withdrawals_enabled: isWithdrawals,
+        isWithdrawalsEnabled: isWithdrawals,
+        is_deposits_enabled: isDeposits,
+        isDepositsEnabled: isDeposits,
+        halt_reason: haltReason,
+        haltReason,
+        halted_by: haltedBy,
+        haltedBy,
+        updated_at: new Date(),
+        updatedAt: new Date(),
+      };
+      return { rows: [this.systemCircuitBreaker as T], rowCount: 1 };
+    }
+
+    // 7u. security_threat_alerts queries
+    if (/INSERT\s+INTO\s+security_threat_alerts/i.test(trimmed)) {
+      const id = (params[0] as string) || crypto.randomUUID();
+      const severity = params[1] as string;
+      const category = params[2] as string;
+      const title = params[3] as string;
+      const description = params[4] as string;
+      const metadata = typeof params[5] === 'string' ? JSON.parse(params[5]) : params[5] || {};
+
+      const alert = {
+        id,
+        severity,
+        category,
+        title,
+        description,
+        metadata,
+        status: 'ACTIVE',
+        resolved_by: null,
+        resolvedBy: null,
+        resolved_at: null,
+        resolvedAt: null,
+        resolution_notes: null,
+        resolutionNotes: null,
+        created_at: new Date(),
+        createdAt: new Date(),
+      };
+      this.securityThreatAlerts.set(id, alert);
+      return { rows: [alert as T], rowCount: 1 };
+    }
+
+    if (/UPDATE\s+security_threat_alerts/i.test(trimmed)) {
+      const status = params[0] as string;
+      const resolvedBy = params[1] as string;
+      const resolutionNotes = params[2] as string;
+      const id = params[3] as string;
+
+      const alert = this.securityThreatAlerts.get(id);
+      if (alert) {
+        alert.status = status;
+        alert.resolved_by = resolvedBy;
+        alert.resolvedBy = resolvedBy;
+        alert.resolved_at = new Date();
+        alert.resolvedAt = new Date();
+        alert.resolution_notes = resolutionNotes;
+        alert.resolutionNotes = resolutionNotes;
+        return { rows: [alert as T], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+    if (/FROM\s+security_threat_alerts\s+WHERE\s+id\s*=\s*\$1/i.test(trimmed)) {
+      const id = params[0] as string;
+      const alert = this.securityThreatAlerts.get(id);
+      return { rows: alert ? ([alert as T]) : [], rowCount: alert ? 1 : 0 };
+    }
+
+    if (/SELECT\s+COUNT\(\*\)\s+AS\s+count\s+FROM\s+security_threat_alerts/i.test(trimmed)) {
+      let alerts = Array.from(this.securityThreatAlerts.values());
+      if (params[0]) {
+        alerts = alerts.filter(a => a.status === params[0] || a.severity === params[0] || a.category === params[0]);
+      }
+      return { rows: [{ count: String(alerts.length) }] as T[], rowCount: 1 };
+    }
+
+    if (/FROM\s+security_threat_alerts/i.test(trimmed)) {
+      let alerts = Array.from(this.securityThreatAlerts.values()).sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      if (params.length > 0 && typeof params[0] === 'string' && ['ACTIVE', 'RESOLVED', 'IGNORED'].includes(params[0])) {
+        alerts = alerts.filter(a => a.status === params[0]);
+      }
+      return { rows: alerts as T[], rowCount: alerts.length };
+    }
+
+    // 7v. reconciliation_reports queries
+    if (/INSERT\s+INTO\s+reconciliation_reports/i.test(trimmed)) {
+      const id = (params[0] as string) || crypto.randomUUID();
+      const status = params[1] as string;
+      const accountsChecked = Number(params[2]);
+      const discrepanciesCount = Number(params[3]);
+      const details = typeof params[4] === 'string' ? JSON.parse(params[4]) : params[4] || [];
+      const triggeredBy = (params[5] as string) || 'SYSTEM_WORKER';
+
+      const report = {
+        id,
+        status,
+        accounts_checked: accountsChecked,
+        accountsChecked,
+        discrepancies_count: discrepanciesCount,
+        discrepanciesCount,
+        details,
+        triggered_by: triggeredBy,
+        triggeredBy,
+        created_at: new Date(),
+        createdAt: new Date(),
+      };
+      this.reconciliationReports.unshift(report);
+      return { rows: [report as T], rowCount: 1 };
+    }
+
+    if (/SELECT\s+COUNT\(\*\)\s+AS\s+count\s+FROM\s+reconciliation_reports/i.test(trimmed)) {
+      let reports = this.reconciliationReports;
+      if (params[0]) {
+        reports = reports.filter(r => r.status === params[0]);
+      }
+      return { rows: [{ count: String(reports.length) }] as T[], rowCount: 1 };
+    }
+
+    if (/FROM\s+reconciliation_reports/i.test(trimmed)) {
+      let reports = [...this.reconciliationReports];
+      if (params.length > 0 && typeof params[0] === 'string' && ['PASSED', 'DISCREPANCY_DETECTED', 'ERROR'].includes(params[0])) {
+        reports = reports.filter(r => r.status === params[0]);
+      }
+      return { rows: reports as T[], rowCount: reports.length };
+    }
+
+    // 7w. Reconciliation multi-account aggregation queries
+    if (/SELECT\s+account_id\s+AS\s+"accountId",\s+asset,\s+available_balance/i.test(trimmed)) {
+      const rows = Array.from(this.walletBalances.values()).map(wb => ({
+        accountId: wb.accountId || (wb as any).account_id,
+        asset: wb.asset,
+        availableBalance: wb.availableBalance || (wb as any).available_balance || '0',
+        lockedBalance: wb.lockedBalance || (wb as any).locked_balance || '0',
+      }));
+      return { rows: rows as T[], rowCount: rows.length };
+    }
+
+    if (/SELECT\s+account_id\s+AS\s+"accountId",\s+asset,\s+COALESCE\(SUM\(amount\),\s*0\)\s+AS\s+"totalCredits"\s+FROM\s+ledger_entries\s+WHERE\s+direction\s*=\s*'CREDIT'/i.test(trimmed)) {
+      const creditsMap = new Map<string, { accountId: string; asset: string; totalCredits: string }>();
+      for (const entry of this.ledgerEntries) {
+        const accId = (entry as any).accountId || (entry as any).account_id;
+        const dir = (entry as any).direction;
+        const ast = (entry as any).asset;
+        const amt = (entry as any).amount;
+        if (dir === 'CREDIT') {
+          const key = `${accId}:${ast}`;
+          const current = creditsMap.get(key) || { accountId: accId, asset: ast, totalCredits: '0' };
+          current.totalCredits = decimalAdd(current.totalCredits, amt);
+          creditsMap.set(key, current);
+        }
+      }
+      const rows = Array.from(creditsMap.values());
+      return { rows: rows as T[], rowCount: rows.length };
+    }
+
+    if (/SELECT\s+account_id\s+AS\s+"accountId",\s+asset,\s+COALESCE\(SUM\(amount\),\s*0\)\s+AS\s+"totalDebits"\s+FROM\s+ledger_entries\s+WHERE\s+direction\s*=\s*'DEBIT'/i.test(trimmed)) {
+      const debitsMap = new Map<string, { accountId: string; asset: string; totalDebits: string }>();
+      for (const entry of this.ledgerEntries) {
+        const accId = (entry as any).accountId || (entry as any).account_id;
+        const dir = (entry as any).direction;
+        const ast = (entry as any).asset;
+        const amt = (entry as any).amount;
+        if (dir === 'DEBIT') {
+          const key = `${accId}:${ast}`;
+          const current = debitsMap.get(key) || { accountId: accId, asset: ast, totalDebits: '0' };
+          current.totalDebits = decimalAdd(current.totalDebits, amt);
+          debitsMap.set(key, current);
+        }
+      }
+      const rows = Array.from(debitsMap.values());
+      return { rows: rows as T[], rowCount: rows.length };
+    }
+
+    if (/SELECT\s+lt\.id\s+AS\s+"transactionId"/i.test(trimmed)) {
+      const txMap = new Map<string, { transactionId: string; asset: string; netDelta: string }>();
+      const multiLegTxTypes = new Set([
+        'INTERNAL_TRANSFER',
+        'SPOT_TRADE_SETTLE',
+        'SPOT_ORDER_LOCK',
+        'SPOT_ORDER_UNLOCK',
+        'FUTURES_MARGIN_LOCK',
+        'FUTURES_MARGIN_RELEASE',
+        'FUTURES_PNL_REALIZED',
+        'FUTURES_FUNDING_PAYMENT',
+        'FUTURES_LIQUIDATION',
+        'TRADING_FEE',
+      ]);
+      for (const entry of this.ledgerEntries) {
+        const txId = (entry as any).transactionId || (entry as any).transaction_id;
+        const tx = this.ledgerTransactions.get(txId);
+        if (tx && multiLegTxTypes.has(tx.transactionType)) {
+          const ast = (entry as any).asset;
+          const dir = (entry as any).direction;
+          const amt = (entry as any).amount;
+          const key = `${txId}:${ast}`;
+          const current = txMap.get(key) || { transactionId: txId, asset: ast, netDelta: '0' };
+          if (dir === 'CREDIT') {
+            current.netDelta = decimalAdd(current.netDelta, amt);
+          } else {
+            current.netDelta = decimalSubtract(current.netDelta, amt);
+          }
+          txMap.set(key, current);
+        }
+      }
+      const violations = Array.from(txMap.values()).filter(t => !decimalIsZero(t.netDelta));
+      return { rows: violations as T[], rowCount: violations.length };
+    }
+
+
+
+
+
     // 8. INSERT INTO accounts
     if (/INSERT\s+INTO\s+accounts/i.test(trimmed)) {
       const id = (params[0] as string) || crypto.randomUUID();
@@ -992,21 +1764,60 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
 
     // 17. UPDATE wallet_balances SET available_balance = $1, locked_balance = $2
     if (/UPDATE\s+wallet_balances\s+SET/i.test(trimmed)) {
-      const available = params[0] as string;
-      const locked = params[1] as string;
-      const accId = params[2] as string;
-      const asset = params[3] as string;
-      const key = `${accId}:${asset}`;
-      const wb = this.walletBalances.get(key);
+      if (params.length >= 4) {
+        const available = params[0] as string;
+        const locked = params[1] as string;
+        const accId = params[2] as string;
+        const asset = params[3] as string;
+        const key = `${accId}:${asset}`;
+        let wb = this.walletBalances.get(key);
 
-      if (wb) {
-        wb.availableBalance = available;
-        wb.lockedBalance = locked;
-        wb.updatedAt = new Date();
+        if (!wb) {
+          wb = {
+            id: crypto.randomUUID(),
+            accountId: accId,
+            asset,
+            availableBalance: available,
+            lockedBalance: locked,
+            updatedAt: new Date(),
+          };
+          this.walletBalances.set(key, wb);
+        } else {
+          wb.availableBalance = available;
+          wb.lockedBalance = locked;
+          wb.updatedAt = new Date();
+        }
         // Release lock after update
         this.lockedWallets.delete(key);
         return { rows: [wb as unknown as T], rowCount: 1 };
       }
+
+      // Handle literal / 2-param update: UPDATE wallet_balances SET available_balance = '99999' WHERE account_id = $1 AND asset = 'USDT'
+      const litMatch = trimmed.match(/available_balance\s*=\s*'([0-9.]+)'/i);
+      const assetMatch = trimmed.match(/asset\s*=\s*'([A-Za-z0-9]+)'/i);
+      if (litMatch && params.length >= 1) {
+        const available = litMatch[1];
+        const accId = params[0] as string;
+        const asset = assetMatch ? assetMatch[1] : (params[1] as string);
+        const key = `${accId}:${asset}`;
+        let wb = this.walletBalances.get(key);
+        if (!wb) {
+          wb = {
+            id: crypto.randomUUID(),
+            accountId: accId,
+            asset,
+            availableBalance: available,
+            lockedBalance: '0',
+            updatedAt: new Date(),
+          };
+          this.walletBalances.set(key, wb);
+        } else {
+          wb.availableBalance = available;
+          wb.updatedAt = new Date();
+        }
+        return { rows: [wb as unknown as T], rowCount: 1 };
+      }
+
       return { rows: [], rowCount: 0 };
     }
 

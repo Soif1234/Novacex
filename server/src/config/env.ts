@@ -26,6 +26,7 @@ export interface EnvironmentConfig {
   REDIS_PASSWORD?: string;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
   SHUTDOWN_TIMEOUT_MS: number;
+  API_KEY_ENCRYPTION_SECRET?: string;
 }
 
 function parseNumber(val: string | undefined, fallback: number, name: string): number {
@@ -86,6 +87,7 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     REDIS_PASSWORD: process.env.REDIS_PASSWORD || undefined,
     LOG_LEVEL: logLevel as 'debug' | 'info' | 'warn' | 'error',
     SHUTDOWN_TIMEOUT_MS: shutdownTimeout,
+    API_KEY_ENCRYPTION_SECRET: process.env.API_KEY_ENCRYPTION_SECRET || undefined,
     ...overrides
   };
 
