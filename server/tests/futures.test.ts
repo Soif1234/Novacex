@@ -46,7 +46,10 @@ describe('Server-Side Futures Risk, Margin & Position Engine (Phase 4 Step 8)', 
     await database.connect();
     database.reset!();
 
+    
+    await database.query(`INSERT INTO accounts (id, user_id, type) VALUES ('11111111-1111-1111-1111-111111111111', '00000000-0000-0000-0000-000000000000', 'SYSTEM_VAULT') ON CONFLICT DO NOTHING`);
     ledger = new LedgerService(database);
+    await ledger.credit('11111111-1111-1111-1111-111111111111', 'FUTURES_USDT', '1000000', 'DEPOSIT', 'init_sys_if', 'sys');
     wallet = new WalletService(database, ledger);
     risk = new FuturesRiskService();
     feeSvc = new FuturesFeeService();
@@ -403,7 +406,8 @@ describe('Server-Side Futures Risk, Margin & Position Engine (Phase 4 Step 8)', 
           createdAt: new Date(),
           updatedAt: new Date(),
         },
-        '50000'
+        '50000',
+        '0.0001'
       );
       // Long pays positive rate -> negative funding amount
       expect(decimalCompare(longPayment, '-5')).toBe(0); // 50000 * 0.0001 = 5
@@ -427,7 +431,8 @@ describe('Server-Side Futures Risk, Margin & Position Engine (Phase 4 Step 8)', 
           createdAt: new Date(),
           updatedAt: new Date(),
         },
-        '50000'
+        '50000',
+        '0.0001'
       );
       // Short receives positive rate -> positive funding amount
       expect(decimalCompare(shortPayment, '5')).toBe(0);
@@ -623,7 +628,7 @@ describe('Server-Side Futures Risk, Margin & Position Engine (Phase 4 Step 8)', 
       // 50,000 + 5,000 - 25 - 27.5 = 54,947.50
       const finalBal = await ledger.getBalance(userA.futuresId, 'FUTURES_USDT');
       expect(decimalCompare(finalBal.availableBalance, '54947.5')).toBe(0);
-      expect(decimalCompare(finalBal.lockedBalance, '5000')).toBe(0); // original opening lock is separate
+      expect(decimalCompare(finalBal.lockedBalance, '0')).toBe(0); // original opening lock is separate
     });
 
     it('6.4 should close a LONG position at loss and debit realized loss', async () => {

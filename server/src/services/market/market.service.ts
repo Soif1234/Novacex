@@ -149,12 +149,22 @@ export class MarketDataService {
   public async getMarkPrice(symbol: string): Promise<MarkPriceData> {
     const cleanSym = symbol.trim().toUpperCase();
     const price = await this.markPrices.getMarkPrice(cleanSym);
+    const indexPrice = await this.markPrices.getIndexPrice(cleanSym);
 
     return {
       symbol: cleanSym,
       price,
+      indexPrice,
       timestamp: Date.now(),
     };
+  }
+
+  /**
+   * Get Index Price directly.
+   */
+  public async getIndexPrice(symbol: string): Promise<string> {
+    const cleanSym = symbol.trim().toUpperCase();
+    return this.markPrices.getIndexPrice(cleanSym);
   }
 
   /**

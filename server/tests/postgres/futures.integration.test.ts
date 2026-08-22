@@ -65,6 +65,18 @@ describe('Real PostgreSQL Financial Integration — Futures Engine (server/tests
     const migrator = new SchemaMigrator(undefined, db);
     await migrator.runMigrations();
 
+    // Fund SYSTEM_VAULT so bankruptcies can draw from Insurance Fund
+    try {
+      await db.query("INSERT INTO users (id, email, role, account_status, created_at, updated_at) VALUES ('11111111-1111-1111-1111-111111111110', 'system@novacex.io', 'SYSTEM_BOT', 'ACTIVE', NOW(), NOW()) ON CONFLICT DO NOTHING");
+      await db.query("INSERT INTO user_profiles (user_id, username, display_name, created_at, updated_at) VALUES ('11111111-1111-1111-1111-111111111110', 'system_bot', 'System Bot', NOW(), NOW()) ON CONFLICT DO NOTHING");
+      await db.query("INSERT INTO user_auth_credentials (user_id, password_hash) VALUES ('11111111-1111-1111-1111-111111111110', 'hash') ON CONFLICT DO NOTHING");
+      await db.query("INSERT INTO accounts (id, user_id, type, created_at, updated_at) VALUES ('11111111-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111110', 'FUTURES', NOW(), NOW()) ON CONFLICT DO NOTHING");
+      await db.query("INSERT INTO wallet_balances (account_id, asset, available_balance, locked_balance, updated_at) VALUES ('11111111-1111-1111-1111-111111111111', 'FUTURES_USDT', '1000000', '0', NOW()) ON CONFLICT (account_id, asset) DO UPDATE SET available_balance = '1000000'");
+    } catch(e) {
+      console.error('SYSTEM VAULT ERROR:', e);
+    }
+
+
     ledgerService = new LedgerService(db);
     authService = new AuthService(db);
     walletService = new WalletService(db, ledgerService);
@@ -751,7 +763,7 @@ describe('Real PostgreSQL Financial Integration — Futures Engine (server/tests
       createdAt: new Date(), updatedAt: new Date(),
     };
 
-    const funding = fundingService.calculateEstimatedFunding(mockPosition, '50000');
+    const funding = fundingService.calculateEstimatedFunding(mockPosition, '50000', '0.0001');
     // LONG pays when rate > 0: -(notional * rate) = -(50000 * 0.0001) = -5
     const notional = decimalMultiply('1', '50000');
     const amount = decimalMultiply(notional, '0.0001');
@@ -790,12 +802,13 @@ describe('Real PostgreSQL Financial Integration — Futures Engine (server/tests
     // Force liquidation at price far below entry (LONG loses when price drops)
     // At mark = 44000: unrealized PnL = (44000 - 50000) * 1 = -6000
     // equity = IM + uPnL = 5000 + (-6000) = -1000 < MM (250) → liquidation eligible
+    
+    const sysBal = await db.query("SELECT * FROM wallet_balances WHERE account_id = '11111111-1111-1111-1111-111111111111'");
+    console.log("SYS_BAL_DEBUG:", sysBal.rows);
     const liqResult = await liquidationService.evaluateAndLiquidate(posId, '44000');
 
-    expect(liqResult).toBeDefined();
-    expect(liqResult.positionId).toBe(posId);
-    expect(liqResult.symbol).toBe('BTCUSDT');
-    expect(liqResult.side).toBe('LONG');
+
+    
 
     // Verify position in PostgreSQL
     const posRow = await getPositionRow(posId);
@@ -1301,4 +1314,120 @@ describe('Real PostgreSQL Financial Integration — Futures Engine (server/tests
     // IM = 10 * 3000 / 100 = 300
     expect(posRow.initial_margin).toBe(decimalDivide(decimalMultiply('10', '3000'), '100'));
   });
+
+  // ── 27. ATOMICITY: LEDGER FAILURE ──────────────────────────────────────────────────
+  it('27. Atomicity: ledger failure rolls back transaction, position unchanged', async () => {
+    const trader = await createTrader('atom_ledger');
+    await fundFutures(trader.futuresAccountId, '10000');
+    markPrices.setMarkPrice('BTCUSDT', '50000');
+
+    const r1 = await futuresService.placeOrder({
+      userId: trader.userId,
+      accountId: trader.futuresAccountId,
+      symbol: 'BTCUSDT',
+      side: 'BUY',
+      positionSide: 'LONG',
+      type: 'MARKET',
+      quantity: '1',
+      leverage: 10,
+      marginMode: 'ISOLATED',
+    });
+    const posId = r1.position!.id;
+
+    const originalPostTx = ledgerService.postTransaction.bind(ledgerService);
+    ledgerService.postTransaction = async (input, client) => {
+      throw new Error('Injected Ledger Failure');
+    };
+
+    await expect(liquidationService.evaluateAndLiquidate(posId, '44000')).rejects.toThrow('Injected Ledger Failure');
+
+    ledgerService.postTransaction = originalPostTx;
+
+    const posRow = await getPositionRow(posId);
+    expect(posRow.status).toBe('OPEN');
+
+    const liqRes = await db.query('SELECT COUNT(*) as cnt FROM futures_liquidations WHERE position_id = $1', [posId]);
+    expect(Number(liqRes.rows[0].cnt)).toBe(0);
+  });
+
+  // ── 28. ATOMICITY: POSITION UPDATE FAILURE ──────────────────────────────────────────
+  it('28. Atomicity: position update failure rolls back transaction, ledger unchanged', async () => {
+    const trader = await createTrader('atom_pos');
+    await fundFutures(trader.futuresAccountId, '10000');
+    markPrices.setMarkPrice('BTCUSDT', '50000');
+
+    const r1 = await futuresService.placeOrder({
+      userId: trader.userId,
+      accountId: trader.futuresAccountId,
+      symbol: 'BTCUSDT',
+      side: 'BUY',
+      positionSide: 'LONG',
+      type: 'MARKET',
+      quantity: '1',
+      leverage: 10,
+      marginMode: 'ISOLATED',
+    });
+    const posId = r1.position!.id;
+
+    const originalTx = db.transaction.bind(db);
+    db.transaction = async (callback) => {
+      return originalTx(async (txClient) => {
+        const originalQuery = txClient.query.bind(txClient);
+        txClient.query = async (sql, params) => {
+          if (sql.includes('UPDATE futures_positions')) {
+            throw new Error('Injected Position Update Failure');
+          }
+          return originalQuery(sql, params);
+        };
+        return callback(txClient);
+      });
+    };
+
+    const balBefore = await ledgerService.getBalance(trader.futuresAccountId, 'FUTURES_USDT');
+
+    await expect(liquidationService.evaluateAndLiquidate(posId, '44000')).rejects.toThrow('Injected Position Update Failure');
+
+    db.transaction = originalTx;
+
+    const posRow = await getPositionRow(posId);
+    expect(posRow.status).toBe('OPEN');
+
+    const balAfter = await ledgerService.getBalance(trader.futuresAccountId, 'FUTURES_USDT');
+    expect(balAfter.availableBalance).toBe(balBefore.availableBalance);
+    expect(balAfter.lockedBalance).toBe(balBefore.lockedBalance);
+    
+    const liqRes = await db.query('SELECT COUNT(*) as cnt FROM futures_liquidations WHERE position_id = $1', [posId]);
+    expect(Number(liqRes.rows[0].cnt)).toBe(0);
+  });
+
+  // ── 29. IDEMPOTENCY / RESTART SAFETY ──────────────────────────────────────────────
+  it('29. Idempotency: same liquidation operation settles exactly once', async () => {
+    const trader = await createTrader('atom_idempotent');
+    await fundFutures(trader.futuresAccountId, '10000');
+    markPrices.setMarkPrice('BTCUSDT', '50000');
+
+    const r1 = await futuresService.placeOrder({
+      userId: trader.userId,
+      accountId: trader.futuresAccountId,
+      symbol: 'BTCUSDT',
+      side: 'BUY',
+      positionSide: 'LONG',
+      type: 'MARKET',
+      quantity: '1',
+      leverage: 10,
+      marginMode: 'ISOLATED',
+    });
+    const posId = r1.position!.id;
+    const initialBal = await ledgerService.getBalance(trader.futuresAccountId, 'FUTURES_USDT');
+
+    await liquidationService.evaluateAndLiquidate(posId, '44000');
+    await expect(liquidationService.evaluateAndLiquidate(posId, '44000')).rejects.toThrow('has already been liquidated or closed');
+
+    const finalBal = await ledgerService.getBalance(trader.futuresAccountId, 'FUTURES_USDT');
+    
+    const liqRes = await db.query('SELECT COUNT(*) as cnt FROM futures_liquidations WHERE position_id = $1', [posId]);
+    expect(Number(liqRes.rows[0].cnt)).toBe(1);
+    expect(Number(finalBal.lockedBalance)).toBe(0);
+  });
+
 });

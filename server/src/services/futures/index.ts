@@ -7,3 +7,4 @@ export * from './liquidation.service';
 export * from './tpsl.service';
 export * from './mark-price.provider';
 export * from './futures.service';
+export * from './adl.service';

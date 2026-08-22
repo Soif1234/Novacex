@@ -1,9 +1,9 @@
 import { eventBus } from './event-bus';
-import { db } from '../../config/database';
+import { db, IDatabaseConnection } from '../../config/database';
 import { logger } from '../../config/logger';
 import { decimalCompare } from '../ledger/decimal';
-import { spotService } from '../spot/spot.service';
-import { futuresService } from '../futures/futures.service';
+import { spotService, SpotService } from '../spot/spot.service';
+import { futuresService, FuturesService } from '../futures/futures.service';
 
 interface ConditionalOrder {
   id: string;
@@ -17,7 +17,11 @@ interface ConditionalOrder {
 export class ConditionalTriggerService {
   private activeTriggers = new Map<string, ConditionalOrder[]>();
 
-  constructor() {
+  constructor(
+    private database: IDatabaseConnection = db,
+    private futuresSvc: FuturesService = futuresService,
+    private spotSvc: SpotService = spotService
+  ) {
     eventBus.subscribe('market.trade', this.onMarketTrade.bind(this));
     eventBus.subscribe('spot.order.created', this.onOrderCreated.bind(this));
     eventBus.subscribe('futures.order.created', this.onOrderCreated.bind(this));
@@ -26,7 +30,7 @@ export class ConditionalTriggerService {
   }
 
   public async loadFromDatabase(): Promise<void> {
-    const res = await db.query<any>(
+    const res = await this.database.query<any>(
       "SELECT id, market, symbol, side, type, stop_price FROM orders WHERE status = 'UNTRIGGERED'"
     );
     for (const row of res.rows) {
@@ -118,9 +122,9 @@ export class ConditionalTriggerService {
         try {
           logger.info(`Triggering conditional order ${order.id} due to LTP ${ltp} crossing ${order.stopPrice}`);
           if (order.market === 'SPOT') {
-            await spotService.triggerOrder(order.id);
+            await this.spotSvc.triggerOrder(order.id);
           } else {
-            await futuresService.triggerOrder(order.id);
+            await this.futuresSvc.triggerOrder(order.id);
           }
         } catch (err) {
           logger.error(`Failed to trigger conditional order ${order.id}`, {}, err as Error);

@@ -1,3 +1,5 @@
+import { INSURANCE_FUND_ACCOUNT_ID } from './insurance-fund.service';
+import { ADL_SUSPENSE_ACCOUNT_ID } from './adl.service';
 import crypto from 'crypto';
 import { db, IDatabaseConnection } from '../../config/database';
 import { FuturesLiquidationEntity, PositionSide } from '../../models/futures.model';
@@ -10,10 +12,21 @@ import {
   PositionAlreadyLiquidatedError,
   LiquidationNotEligibleError,
 } from './errors';
-import { decimalCompare, decimalNormalize, decimalZero } from '../ledger/decimal';
+import { decimalCompare, decimalNormalize, decimalZero, decimalSubtract, decimalAdd, decimalDivide, decimalMultiply } from '../ledger/decimal';
 import { eventBus } from '../market/event-bus';
 import { logger } from '../../config/logger';
 
+
+
+export interface LiquidationPolicy {
+    partialReductionStepPct: string;
+    minimumNotionalBypass: string;
+}
+
+export const TEST_ONLY_DEFAULT_LIQUIDATION_POLICY: LiquidationPolicy = {
+    partialReductionStepPct: '0.5',
+    minimumNotionalBypass: '100',
+};
 
 export class FuturesLiquidationService {
   constructor(
@@ -24,126 +37,250 @@ export class FuturesLiquidationService {
     private markPrices: IMarkPriceProvider = developmentMarkPriceProvider
   ) {}
 
-  public async evaluateAndLiquidate(
-    positionId: string,
-    overrideMarkPrice?: string
-  ): Promise<FuturesLiquidationEntity> {
-    const position = await this.positions.getPositionById(positionId);
-    if (!position) {
-      throw new PositionNotFoundError(positionId);
-    }
-    if (position.status !== 'OPEN') {
-      throw new PositionAlreadyLiquidatedError(positionId);
-    }
-
-    const markPrice = overrideMarkPrice
-      ? decimalNormalize(overrideMarkPrice)
-      : await this.markPrices.getMarkPrice(position.symbol);
-
-    // Update position mark price in memory for risk calculation
-    position.markPrice = markPrice;
-
-    // Check liquidation condition
-    const isEligible = this.risk.checkLiquidation(position);
-    if (!isEligible) {
-      const equity = this.risk.calculatePositionEquity(position);
-      throw new LiquidationNotEligibleError(positionId, equity, position.maintenanceMargin);
-    }
-
-    // Execute liquidation on position
-    const result = await this.positions.liquidatePosition(position, markPrice);
-
-    const liquidationId = crypto.randomUUID();
-    const liqRef = `FUTURES-LIQ-${liquidationId}`;
-
-    // Prepare ledger entries for double-entry liquidation settlement
-    const entries: Array<{
-      accountId: string;
-      asset: string;
-      amount: string;
-      direction: 'CREDIT' | 'DEBIT';
-      balancePool?: 'available' | 'locked';
-    }> = [];
-
-    if (decimalCompare(result.totalReturn, '0') > 0) {
-      entries.push({
-        accountId: position.accountId,
-        asset: 'FUTURES_USDT',
-        amount: result.totalReturn,
-        direction: 'CREDIT',
-        balancePool: 'available',
-      });
-    }
-
-    if (position.marginMode === 'CROSS' && decimalCompare(result.deficit, '0') > 0) {
-      const bal = await this.ledger.getBalance(position.accountId, 'FUTURES_USDT');
-      const deduct = decimalCompare(bal.availableBalance, result.deficit) >= 0 ? result.deficit : bal.availableBalance;
-      if (decimalCompare(deduct, '0') > 0) {
-        entries.push({
-          accountId: position.accountId,
-          asset: 'FUTURES_USDT',
-          amount: deduct,
-          direction: 'DEBIT',
-          balancePool: 'available',
-        });
+  public async evaluateAndLiquidate(positionId: string, overrideMarkPrice?: string): Promise<any> {
+    
+    // We wrap the entire liquidation in a single atomic transaction
+    const { liquidation, position, markPrice, totalRealizedPnl, totalFee, totalReturn, deficit, finalStatus } = await this.database.transaction(async (txClient) => {
+      // 1. Lock the position row for update to prevent concurrent liquidations
+      const res = await txClient.query<any>('SELECT * FROM futures_positions WHERE id = $1 FOR UPDATE', [positionId]);
+      const row = res.rows[0];
+      if (!row) {
+        throw new PositionNotFoundError(positionId);
       }
-    }
+      if (row.status !== 'OPEN') {
+        throw new PositionAlreadyLiquidatedError(positionId);
+      }
+      
+      const pos = await this.positions.getPositionById(positionId); 
+      if (!pos) throw new PositionNotFoundError(positionId);
+      if (pos.status !== 'OPEN') throw new PositionAlreadyLiquidatedError(positionId);
 
-    if (entries.length > 0) {
-      await this.ledger.postTransaction({
-        accountId: position.accountId,
-        transactionType: 'FUTURES_LIQUIDATION',
-        referenceId: liqRef,
-        description: `Futures Liquidation Settlement: ${position.symbol} ${position.side} ${position.quantity} @ ${markPrice}`,
-        entries,
-        metadata: {
-          positionId: position.id,
-          symbol: position.symbol,
-          side: position.side,
-          markPrice,
-          realizedPnl: result.realizedPnl,
-          fee: result.fee,
-          totalReturn: result.totalReturn,
-          deficit: result.deficit,
-        },
-      });
-    }
+      const mark = overrideMarkPrice
+        ? decimalNormalize(overrideMarkPrice)
+        : await this.markPrices.getMarkPrice(pos.symbol);
 
-    const liquidation: FuturesLiquidationEntity = {
-      id: liquidationId,
-      positionId: position.id,
-      accountId: position.accountId,
-      symbol: position.symbol,
-      side: position.side,
-      quantity: position.quantity,
-      bankruptcyPrice: position.entryPrice,
-      liquidationPrice: position.liquidationPrice,
-      lossAmount: result.realizedPnl,
-      insuranceFundDelta: decimalZero(),
-      createdAt: new Date(),
-    };
+      pos.markPrice = mark;
 
-    await this.database.query(
-      `INSERT INTO futures_liquidations (
-        id, position_id, account_id, symbol, side, quantity,
-        bankruptcy_price, liquidation_price, loss_amount, insurance_fund_delta, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [
-        liquidation.id,
-        liquidation.positionId,
-        liquidation.accountId,
-        liquidation.symbol,
-        liquidation.side,
-        liquidation.quantity,
-        liquidation.bankruptcyPrice,
-        liquidation.liquidationPrice,
-        liquidation.lossAmount,
-        liquidation.insuranceFundDelta,
-        liquidation.createdAt,
-      ]
-    );
+      const balRowInitial = await txClient.query<any>('SELECT available_balance FROM wallet_balances WHERE account_id = $1 AND asset = $2', [pos.accountId, 'FUTURES_USDT']);
+      let currentAvail = balRowInitial.rows[0] ? String(balRowInitial.rows[0].available_balance) : '0';
 
-    // ── Emit Domain Events strictly after successful commit ──────────────
+      const isEligible = this.risk.checkLiquidation(pos, currentAvail);
+      if (!isEligible) {
+        const equity = this.risk.calculatePositionEquity(pos, currentAvail);
+        throw new LiquidationNotEligibleError(positionId, equity, pos.maintenanceMargin);
+      }
+
+      const cleanMarkPrice = decimalNormalize(mark);
+      
+      let remainingQuantity = pos.quantity;
+      let remainingIM = pos.initialMargin;
+      
+      let totalReducedQuantity = '0';
+      let totalRealizedPnl = '0';
+      let totalFee = '0';
+      let totalInsuranceDelta = '0';
+      
+      // We will aggregate all financial impacts and hit the ledger ONCE
+      let totalReleasedIM = '0';
+      let totalUserDeduction = '0';
+      let totalUserCredit = '0';
+      let totalDeficitToInsurance = '0';
+      
+      let isFullyLiquidated = false;
+      let isSafe = false;
+
+      while (!isFullyLiquidated && !isSafe) {
+        const mockPos = { 
+            ...pos, 
+            quantity: remainingQuantity, 
+            initialMargin: remainingIM,
+            markPrice: cleanMarkPrice,
+        };
+        const equity = this.risk.calculatePositionEquity(mockPos, currentAvail);
+        const mm = this.risk.calculateMaintenanceMargin(remainingQuantity, pos.entryPrice, '0.005');
+        mockPos.maintenanceMargin = mm;
+        
+        if (decimalCompare(equity, mm) >= 0) {
+            isSafe = true;
+            break;
+        }
+
+        let stepQty = remainingQuantity;
+        const isBankrupt = decimalCompare(equity, '0') <= 0;
+        
+        if (!isBankrupt) {
+            
+              const reductionPct = TEST_ONLY_DEFAULT_LIQUIDATION_POLICY.partialReductionStepPct;
+              const minNotional = TEST_ONLY_DEFAULT_LIQUIDATION_POLICY.minimumNotionalBypass;
+              const halfQty = decimalMultiply(remainingQuantity, reductionPct);
+              const halfNotional = this.risk.calculateNotional(halfQty, cleanMarkPrice);
+              if (decimalCompare(halfNotional, minNotional) >= 0) {
+
+                stepQty = halfQty;
+            }
+        }
+        
+        if (decimalCompare(stepQty, remainingQuantity) >= 0) {
+            stepQty = remainingQuantity;
+            isFullyLiquidated = true;
+        }
+
+        const stepRatio = decimalDivide(stepQty, remainingQuantity);
+        const stepIM = decimalMultiply(remainingIM, stepRatio);
+        const stepRPnl = this.risk.calculateUnrealizedPnl(pos.side, stepQty, pos.entryPrice, cleanMarkPrice);
+        const stepNotional = this.risk.calculateNotional(stepQty, cleanMarkPrice);
+        const stepFee = decimalMultiply(stepNotional, '0.0005');
+        
+        totalReleasedIM = decimalAdd(totalReleasedIM, stepIM);
+        
+        const userNet = decimalSubtract(stepRPnl, stepFee);
+        
+        if (decimalCompare(userNet, '0') > 0) {
+            totalUserCredit = decimalAdd(totalUserCredit, userNet);
+            currentAvail = decimalAdd(currentAvail, decimalAdd(stepIM, userNet));
+            totalInsuranceDelta = decimalAdd(totalInsuranceDelta, stepFee);
+        } else {
+            const lossToCover = decimalSubtract('0', userNet);
+            const virtualAvail = decimalAdd(currentAvail, stepIM);
+            
+            let actualDeduction = '0';
+            let deficitToInsurance = '0';
+            
+            if (pos.marginMode === 'ISOLATED') {
+               actualDeduction = decimalCompare(stepIM, lossToCover) >= 0 ? lossToCover : stepIM;
+               deficitToInsurance = decimalSubtract(lossToCover, actualDeduction);
+            } else {
+               actualDeduction = decimalCompare(virtualAvail, lossToCover) >= 0 ? lossToCover : virtualAvail;
+               deficitToInsurance = decimalSubtract(lossToCover, actualDeduction);
+            }
+            
+            totalUserDeduction = decimalAdd(totalUserDeduction, actualDeduction);
+            totalDeficitToInsurance = decimalAdd(totalDeficitToInsurance, deficitToInsurance);
+            
+            currentAvail = decimalAdd(currentAvail, stepIM);
+            currentAvail = decimalSubtract(currentAvail, actualDeduction);
+            
+            const insuranceFundNet = decimalSubtract(stepFee, deficitToInsurance);
+            totalInsuranceDelta = decimalAdd(totalInsuranceDelta, insuranceFundNet);
+        }
+
+        totalReducedQuantity = decimalAdd(totalReducedQuantity, stepQty);
+        totalRealizedPnl = decimalAdd(totalRealizedPnl, stepRPnl);
+        totalFee = decimalAdd(totalFee, stepFee);
+
+        remainingQuantity = decimalSubtract(remainingQuantity, stepQty);
+        remainingIM = decimalSubtract(remainingIM, stepIM);
+      }
+      
+      // Perform ONE ledger transaction for the accumulated amounts
+      const liquidationId = crypto.randomUUID();
+        const entries: Array<any> = [];
+        let adlDraw = '0';
+      if (decimalCompare(totalReleasedIM, '0') > 0) {
+          entries.push(
+              { accountId: pos.accountId, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: totalReleasedIM, balancePool: 'locked' },
+              { accountId: pos.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: totalReleasedIM, balancePool: 'available' }
+          );
+      }
+      if (decimalCompare(totalUserCredit, '0') > 0) {
+          entries.push({ accountId: pos.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: totalUserCredit, balancePool: 'available' });
+      }
+      if (decimalCompare(totalUserDeduction, '0') > 0) {
+          entries.push({ accountId: pos.accountId, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: totalUserDeduction, balancePool: 'available' });
+      }
+      if (decimalCompare(totalFee, '0') > 0) {
+          entries.push({ accountId: INSURANCE_FUND_ACCOUNT_ID, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: totalFee, balancePool: 'available' });
+      }
+      if (decimalCompare(totalDeficitToInsurance, '0') > 0) {
+          const vaultRes = await txClient.query<any>('SELECT available_balance FROM wallet_balances WHERE account_id = $1 AND asset = $2', [INSURANCE_FUND_ACCOUNT_ID, 'FUTURES_USDT']);
+          const vaultBal = vaultRes.rows[0]?.available_balance || '0';
+            let ifDraw = totalDeficitToInsurance;
+            adlDraw = '0';
+          if (decimalCompare(vaultBal, totalDeficitToInsurance) < 0) {
+              ifDraw = vaultBal;
+              adlDraw = decimalSubtract(totalDeficitToInsurance, vaultBal);
+          }
+          if (decimalCompare(ifDraw, '0') > 0) {
+              entries.push({ accountId: INSURANCE_FUND_ACCOUNT_ID, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: ifDraw, balancePool: 'available' });
+          }
+          if (decimalCompare(adlDraw, '0') > 0) {
+              entries.push({ accountId: ADL_SUSPENSE_ACCOUNT_ID, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: adlDraw, balancePool: 'available' });
+              
+          }
+      }
+      
+      if (entries.length > 0) {
+          const liqStepRef = `FUTURES-LIQ-${pos.id}-${new Date(pos.updatedAt || Date.now()).getTime()}`;
+          await this.ledger.postTransaction({
+
+            accountId: pos.accountId,
+            transactionType: 'FUTURES_LIQUIDATION',
+            referenceId: liqStepRef,
+            description: `Futures Liquidation Settlement: ${pos.symbol} ${pos.side} ${totalReducedQuantity} @ ${mark}`,
+            entries,}, txClient);
+      }
+
+      // Calculate final DB values
+      const finalStatus = isFullyLiquidated ? 'LIQUIDATED' : 'OPEN';
+      const finalMM = this.risk.calculateMaintenanceMargin(remainingQuantity, pos.entryPrice, '0.005');
+      const totalAccumulatedRealizedPnl = decimalAdd(pos.realizedPnl || '0', totalRealizedPnl);
+
+      await txClient.query(
+        `UPDATE futures_positions SET
+          quantity = $1, mark_price = $2, initial_margin = $3,
+          maintenance_margin = $4, liquidation_price = $5, realized_pnl = $6,
+          status = $7, updated_at = NOW()
+        WHERE id = $8`,
+        [remainingQuantity, cleanMarkPrice, remainingIM, finalMM, pos.liquidationPrice, totalAccumulatedRealizedPnl, finalStatus, pos.id]
+      );
+
+            const imPerUnit = decimalDivide(pos.initialMargin, pos.quantity);
+      const bankruptcyPrice = pos.side === 'LONG' 
+          ? decimalSubtract(pos.entryPrice, imPerUnit) 
+          : decimalAdd(pos.entryPrice, imPerUnit);
+
+      const liq: FuturesLiquidationEntity = {
+        id: liquidationId,
+        positionId: pos.id,
+        accountId: pos.accountId,
+        symbol: pos.symbol,
+        side: pos.side,
+        quantity: totalReducedQuantity,
+        bankruptcyPrice: bankruptcyPrice,
+        liquidationPrice: pos.liquidationPrice,
+        lossAmount: totalRealizedPnl,
+        insuranceFundDelta: totalInsuranceDelta,
+        createdAt: new Date(),
+      };
+
+      await txClient.query(
+        `INSERT INTO futures_liquidations (
+          id, position_id, account_id, symbol, side, quantity,
+          bankruptcy_price, liquidation_price, loss_amount, insurance_fund_delta, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          liquidationId, liq.positionId, liq.accountId, liq.symbol, liq.side, liq.quantity,
+          liq.bankruptcyPrice, liq.liquidationPrice, liq.lossAmount, liq.insuranceFundDelta, liq.createdAt,
+        ]
+      );
+
+        if (decimalCompare(adlDraw, '0') > 0) {
+            await txClient.query(`INSERT INTO futures_adl_events (liquidation_id, symbol, side, target_deficit, status) VALUES ($1, $2, $3, $4, 'PENDING')`, [liquidationId, pos.symbol, pos.side, adlDraw]);
+        }
+
+      
+      const userTotalNet = decimalSubtract(totalUserCredit, totalUserDeduction);
+      let tReturn = '0';
+      let def = '0';
+      if (decimalCompare(userTotalNet, '0') > 0) {
+        tReturn = userTotalNet;
+      } else {
+        def = decimalSubtract('0', userTotalNet);
+      }
+
+      return { ...liq, liquidation: liq, position: { ...pos, quantity: remainingQuantity, initialMargin: remainingIM, maintenanceMargin: finalMM }, markPrice: mark, totalRealizedPnl, totalFee, totalReturn: tReturn, deficit: def, finalStatus };
+    });
+
     try {
       const accRes = await this.database.query<any>('SELECT user_id AS "userId" FROM accounts WHERE id = $1', [position.accountId]);
       const acc = accRes.rows[0];
@@ -162,11 +299,11 @@ export class FuturesLiquidationService {
           positionId: position.id,
           symbol: position.symbol,
           side: position.side,
-          quantity: position.quantity,
+          quantity: liquidation.quantity, 
           markPrice,
-          lossAmount: result.realizedPnl,
-          fee: result.fee,
-          totalReturn: result.totalReturn,
+          lossAmount: totalRealizedPnl,
+          fee: totalFee,
+          totalReturn: totalReturn,
           timestamp: Date.now(),
         },
       });
@@ -189,10 +326,8 @@ export class FuturesLiquidationService {
           liquidationPrice: position.liquidationPrice,
           leverage: position.leverage,
           marginMode: position.marginMode,
-          initialMargin: '0',
-          maintenanceMargin: '0',
-          realizedPnl: result.realizedPnl,
-          status: 'LIQUIDATED',
+          realizedPnl: totalRealizedPnl,
+          status: finalStatus,
           timestamp: Date.now(),
         },
       });
@@ -200,18 +335,20 @@ export class FuturesLiquidationService {
       logger.warn('Failed to emit liquidation events', { error: evtErr.message });
     }
 
-    logger.warn('Futures position liquidated', {
+    logger.warn('Futures position partially/fully liquidated', {
       positionId: position.id,
       accountId: position.accountId,
       symbol: position.symbol,
       side: position.side,
       markPrice,
-      lossAmount: result.realizedPnl,
+      lossAmount: totalRealizedPnl,
+      reducedQuantity: liquidation.quantity,
+      remainingQuantity: position.quantity,
+      finalStatus
     });
 
-    return liquidation;
+    return { ...liquidation, liquidation, position, markPrice, totalRealizedPnl, totalFee, totalReturn, deficit, finalStatus };
   }
-
 
   public async getLiquidations(accountId: string): Promise<FuturesLiquidationEntity[]> {
     const res = await this.database.query<any>(

@@ -470,36 +470,38 @@ export class FuturesService {
         );
         resultingPosition = reduceRes.updatedPosition;
 
-        // Settle freed margin + realized PnL
-        const netSettlement = decimalAdd(reduceRes.freedMargin, reduceRes.realizedPnl);
-        const pnlRef = `FUTURES-PNL-${orderId}`;
-
-        if (decimalCompare(netSettlement, '0') > 0) {
-          await this.ledger.credit(
-            dto.accountId,
-            'FUTURES_USDT',
-            netSettlement,
-            'FUTURES_PNL_REALIZED',
-            pnlRef,
-            `Futures Realized Profit: ${cleanSymbol} ${dto.positionSide} ${cleanQty} @ ${execPrice}`
-          );
-        } else if (decimalCompare(netSettlement, '0') < 0) {
-          const loss = decimalSubtract('0', netSettlement);
-          const bal = await this.ledger.getBalance(dto.accountId, 'FUTURES_USDT');
-          const debitLoss = decimalCompare(bal.availableBalance, loss) >= 0 ? loss : bal.availableBalance;
-          if (decimalCompare(debitLoss, '0') > 0) {
-            await this.ledger.debit(
-              dto.accountId,
-              'FUTURES_USDT',
-              debitLoss,
-              'FUTURES_PNL_REALIZED',
-              pnlRef,
-              `Futures Realized Loss: ${cleanSymbol} ${dto.positionSide} ${cleanQty} @ ${execPrice}`
+          const pnlRef = `FUTURES-PNL-${orderId}`;
+          const entries: any[] = [];
+          
+          if (decimalCompare(reduceRes.freedMargin, '0') > 0) {
+            entries.push(
+              { accountId: dto.accountId, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: reduceRes.freedMargin, balancePool: 'locked' },
+              { accountId: dto.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: reduceRes.freedMargin, balancePool: 'available' }
             );
           }
+          
+          if (decimalCompare(reduceRes.realizedPnl, '0') > 0) {
+             entries.push({ accountId: dto.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: reduceRes.realizedPnl, balancePool: 'available' });
+          } else if (decimalCompare(reduceRes.realizedPnl, '0') < 0) {
+             const loss = decimalSubtract('0', reduceRes.realizedPnl);
+             const bal = await this.ledger.getBalance(dto.accountId, 'FUTURES_USDT');
+             const tempAvailable = decimalAdd(bal.availableBalance, reduceRes.freedMargin);
+             const debitLoss = decimalCompare(tempAvailable, loss) >= 0 ? loss : tempAvailable;
+             if (decimalCompare(debitLoss, '0') > 0) {
+               entries.push({ accountId: dto.accountId, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: debitLoss, balancePool: 'available' });
+             }
+          }
+          
+          if (entries.length > 0) {
+            await this.ledger.postTransaction({
+              accountId: dto.accountId,
+              transactionType: 'FUTURES_PNL_REALIZED',
+              referenceId: pnlRef,
+              description: `Futures Position Reduction: ${cleanSymbol} ${dto.positionSide} ${cleanQty} @ ${execPrice}`,
+              entries
+            });
+          }
         }
-      }
-
       // Calculate and debit trading fee
       const isMaker = dto.type === 'LIMIT';
       const feeResult = this.feeSvc.calculateExecutionFee(cleanQty, execPrice, isMaker);
@@ -681,16 +683,16 @@ export class FuturesService {
   /**
    * Cancel an open Futures order and release remaining reserved margin.
    */
-    /**
+  /**
    * Activate an UNTRIGGERED conditional order.
    */
-  public async triggerOrder(orderId: string): Promise<void> {
+  public async triggerOrder(orderId: string): Promise<boolean> {
     const orderRes = await this.database.query<any>(
       "SELECT o.*, a.user_id FROM orders o JOIN accounts a ON o.account_id = a.id WHERE o.id = $1 AND o.status = 'UNTRIGGERED' FOR UPDATE",
       [orderId]
     );
     const row = orderRes.rows[0];
-    if (!row) return;
+    if (!row) return false;
 
     await this.database.query(
       "UPDATE orders SET status = 'NEW', updated_at = NOW() WHERE id = $1",
@@ -726,8 +728,25 @@ export class FuturesService {
       symbol: order.symbol,
       timestamp: Date.now(),
       version: '1.0.0',
-      payload: order,
+      payload: {
+        orderId: order.id,
+        clientOrderId: order.clientOrderId,
+        accountId: order.accountId,
+        symbol: order.symbol,
+        side: order.side,
+        positionSide: row.position_side,
+        type: order.type,
+        status: order.status,
+        price: order.price,
+        stopPrice: order.stopPrice,
+        quantity: order.quantity,
+        filledQuantity: order.filledQuantity,
+        remainingQuantity: order.remainingQuantity,
+        timestamp: Date.now(),
+      },
     });
+
+    return true;
   }
 
 

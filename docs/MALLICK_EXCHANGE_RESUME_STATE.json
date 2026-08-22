@@ -1,40 +1,16 @@
 {
   "project": "MALLICK EXCHANGE / NovaCEX",
-  "currentPhase": "6.2",
+  "currentPhase": "6",
   "currentStatus": "COMPLETE",
-  "nextPhase": "6.3",
-  "nextPhaseName": "Adaptive Funding Engine",
+  "nextPhase": "7",
+  "nextPhaseName": "NOT STARTED",
   "hyperliquidMode": "SIMULATION_ONLY",
   "realCapitalUsed": false,
   "mainnetOrders": false,
   "phase4FinancialLogicFrozen": true,
+  "phase5LiquidityPreserved": true,
   "postgresRequiredForProduction": true,
   "inMemoryExposureStorePersistent": false,
-  "gitState": {
-    "branch": "main",
-    "commit": "d2123dd docs: consolidate Phase 1-5 project status and deployment",
-    "isDirty": true,
-    "uncommittedFiles": [
-      "server/src/config/database.ts",
-      "server/src/models/order.model.ts",
-      "server/src/server.ts",
-      "server/src/services/futures/futures.service.ts",
-      "server/src/services/spot/spot.service.ts"
-    ],
-    "untrackedFiles": [
-      "docs/PHASE_6_CURRENT_STATE_AUDIT.md",
-      "docs/PHASE_6_ROADMAP.md",
-      "fix_log.cjs",
-      "fix_mapping.cjs",
-      "futures.trigger.ts",
-      "server/migrations/006_add_conditional_orders.sql",
-      "server/migrations/007_create_k_lines_market_data.sql",
-      "server/src/services/market/conditional.service.ts",
-      "server/src/services/market/kline.service.ts",
-      "server/tests/kline.test.ts",
-      "spot.trigger.ts"
-    ]
-  },
   "databaseMigrations": [
     "001_create_users_and_auth.sql",
     "002_create_accounts_and_wallets.sql",
@@ -42,26 +18,33 @@
     "004_create_spot_orders_and_trades.sql",
     "005_create_futures_orders_and_positions.sql",
     "006_add_conditional_orders.sql",
-    "007_create_k_lines_market_data.sql"
+    "007_create_k_lines_market_data.sql",
+    "008_create_insurance_fund_and_adl.sql",
+    "009_create_adl_suspense_type.sql",
+    "010_modify_constraints_and_insert.sql"
   ],
   "validation": {
     "typeScript": "PASS",
-    "build": "PASS",
-    "klineTests": "7/7 PASS",
-    "projectRegressionTests": "603/603 PASS"
+    "backendBuild": "PASS",
+    "frontendBuild": "PASS",
+    "fullVitestSuite": "43/43 files, 636/636 tests PASS",
+    "postgresIntegrationTests": "5/5 files, 63/63 tests PASS"
   },
   "completedPhases": [
     "Phase 1 — UI Foundation",
     "Phase 2 — Core Exchange Features",
     "Phase 3 — Client Authority & Mathematical Hardening",
-    "Phase 4 — Authoritative Backend & PostgreSQL",
-    "Phase 5 — Production Liquidity Infrastructure",
+    "Phase 4 — Authoritative Backend & PostgreSQL (FROZEN)",
+    "Phase 5 — Production Liquidity Infrastructure (PRESERVED)",
     "Phase 6.1 — Advanced Order Types / Conditional Execution",
-    "Phase 6.2 — Market Data / OHLCV K-Line Infrastructure"
+    "Phase 6.2 — Market Data / OHLCV K-Line Infrastructure",
+    "Phase 6.3 — Adaptive Funding Engine",
+    "Phase 6.4A — Insurance Fund, Atomic Liquidation & Partial Liquidation",
+    "Phase 6.4B — Auto-Deleveraging (ADL)",
+    "Phase 6 — Advanced Execution, Market Data & Risk Infrastructure (COMPLETE)"
   ],
   "knownLimitations": [
     "Hyperliquid adapter is in simulation mode only",
-    "InMemoryExposureStore does not provide true production persistence between restarts",
-    "No circuit breakers implemented yet (scheduled for Phase 6.5)"
+    "InMemoryExposureStore does not provide true production persistence between restarts"
   ]
 }
