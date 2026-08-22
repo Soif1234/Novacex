@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth, requireAuthOrApiKey } from '../middleware/auth';
 import { requireCircuitBreaker } from '../middleware/circuitBreaker';
+import { idempotencyMiddleware } from '../middleware/idempotency';
 import {
   createOrder,
   cancelOrder,
@@ -29,7 +30,7 @@ const router = Router();
  *   GET    /api/v1/spot/orderbook/:symbol    — Public order book depth
  */
 
-router.post('/orders', requireCircuitBreaker('SPOT_TRADING'), requireAuthOrApiKey('TRADE'), createOrder);
+router.post('/orders', requireCircuitBreaker('SPOT_TRADING'), requireAuthOrApiKey('TRADE'), idempotencyMiddleware(), createOrder);
 router.post('/orders/:orderId/cancel', requireAuthOrApiKey('TRADE'), cancelOrder);
 router.delete('/orders/:orderId', requireAuthOrApiKey('TRADE'), cancelOrder);
 router.get('/orders/open', requireAuthOrApiKey('READ'), getOpenOrders);

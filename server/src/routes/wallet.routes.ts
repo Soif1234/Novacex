@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth, requireRole, requireAuthOrApiKey, require2FA } from '../middleware/auth';
 import { requireCircuitBreaker } from '../middleware/circuitBreaker';
+import { idempotencyMiddleware } from '../middleware/idempotency';
 import {
   getBalances,
   adminPaperDeposit,
@@ -25,12 +26,12 @@ const router = Router();
  */
 
 router.get('/balances', requireAuthOrApiKey('READ'), getBalances);
-router.post('/withdraw', requireCircuitBreaker('WITHDRAWALS'), requireAuthOrApiKey('WITHDRAW'), require2FA, paperWithdraw);
-router.post('/transfer', requireAuthOrApiKey('TRADE'), internalTransfer);
+router.post('/withdraw', requireCircuitBreaker('WITHDRAWALS'), requireAuthOrApiKey('WITHDRAW'), require2FA, idempotencyMiddleware(), paperWithdraw);
+router.post('/transfer', requireAuthOrApiKey('TRADE'), idempotencyMiddleware(), internalTransfer);
 router.get('/transactions', requireAuthOrApiKey('READ'), getTransactions);
 
 // Admin-only paper deposit
-router.post('/admin/paper-deposit', requireCircuitBreaker('DEPOSITS'), requireAuth, requireRole('ADMIN'), adminPaperDeposit);
+router.post('/admin/paper-deposit', requireCircuitBreaker('DEPOSITS'), requireAuth, requireRole('ADMIN'), idempotencyMiddleware(), adminPaperDeposit);
 
 export const walletRoutes = router;
 

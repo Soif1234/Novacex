@@ -5,9 +5,7 @@ import { logger } from './config/logger';
 import { db } from './config/database';
 import { redis } from './config/redis';
 import { webSocketGateway } from './websocket';
-import { liquidationWorker } from './workers/LiquidationWorker';
-import { conditionalTriggerService } from './services/market/conditional.service';
-import { klineService } from './services/market/kline.service';
+import { workerSupervisor } from './workers/WorkerSupervisor';
 
 let server: http.Server | null = null;
 let isShuttingDown = false;
@@ -24,16 +22,14 @@ export async function startServer(): Promise<http.Server> {
   }
 
   return new Promise((resolve) => {
-    server = app.listen(env.PORT, env.HOST, () => {
+    server = app.listen(env.PORT, env.HOST, async () => {
       logger.info(`Server successfully bound and listening on http://${env.HOST}:${env.PORT}`);
       logger.info(`Healthcheck available at http://${env.HOST}:${env.PORT}${env.API_PREFIX}/health`);
       logger.info(`Readiness available at http://${env.HOST}:${env.PORT}${env.API_PREFIX}/ready`);
       webSocketGateway.attachToServer(server!, '/ws');
       
-      // Start background workers
-      liquidationWorker.start();
-      conditionalTriggerService.loadFromDatabase().catch(e => logger.error('Failed to load conditionals', {}, e));
-      klineService.start().catch(e => logger.error('Failed to start klineService', {}, e));
+      // Start all background workers via unified supervisor
+      await workerSupervisor.startAll();
       
       resolve(server!);
     });
@@ -51,11 +47,10 @@ export async function stopServer(): Promise<void> {
   }, env.SHUTDOWN_TIMEOUT_MS);
 
   try {
-    // Stop background workers
-    liquidationWorker.stop();
-    await klineService.stop();
+    // 0. Stop all background workers via unified supervisor
+    await workerSupervisor.stopAll();
 
-    // 0. Close WebSocket Gateway
+    // 1. Close WebSocket Gateway
     webSocketGateway.close();
 
     // 1. Stop accepting new HTTP connections

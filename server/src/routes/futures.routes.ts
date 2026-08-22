@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth, requireAuthOrApiKey } from '../middleware/auth';
 import { requireCircuitBreaker } from '../middleware/circuitBreaker';
+import { idempotencyMiddleware } from '../middleware/idempotency';
 import {
   createOrder,
   cancelOrder,
@@ -35,7 +36,7 @@ const router = Router();
  *   POST   /api/v1/futures/positions/:positionId/liquidate — Trigger liquidation evaluation (Scope: TRADE)
  */
 
-router.post('/orders', requireCircuitBreaker('FUTURES_TRADING'), requireAuthOrApiKey('TRADE'), createOrder);
+router.post('/orders', requireCircuitBreaker('FUTURES_TRADING'), requireAuthOrApiKey('TRADE'), idempotencyMiddleware(), createOrder);
 router.post('/orders/:orderId/cancel', requireAuthOrApiKey('TRADE'), cancelOrder);
 router.delete('/orders/:orderId', requireAuthOrApiKey('TRADE'), cancelOrder);
 router.get('/orders/open', requireAuthOrApiKey('READ'), getOpenOrders);
