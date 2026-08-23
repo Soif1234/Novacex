@@ -106,13 +106,10 @@ export class RedisClient implements IRedisConnection {
           }
         });
 
+        let settled = false;
+
         this.client.on('connect', () => {
-          this.isConnected = true;
-          this.mode = 'REDIS_CONNECTED';
-          this.connectionError = null;
-          this.reconnectAttempts = 0;
-          logger.info('Redis client connected successfully');
-          resolve();
+          logger.info('Redis TCP connection established');
         });
 
         this.client.on('ready', () => {
@@ -120,6 +117,11 @@ export class RedisClient implements IRedisConnection {
           this.mode = 'REDIS_CONNECTED';
           this.connectionError = null;
           this.reconnectAttempts = 0; // Reset after successful connection and ready state
+          logger.info('Redis client ready to accept commands');
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
         });
 
         this.client.on('error', (error) => {
@@ -128,7 +130,10 @@ export class RedisClient implements IRedisConnection {
           this.connectionError = error.message;
           logger.error('Redis connection error', { error: error.message });
           // If this is the initial connect attempt, resolve it to allow the app to boot in fallback mode
-          resolve(); 
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
         });
 
         this.client.on('close', () => {
