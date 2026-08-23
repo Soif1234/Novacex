@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/server.ts",
     "start": "node dist/server.js",
+    "migrate": "tsx scripts/run_real_pg_migrations.ts",
     "test": "vitest run"
   },
   "keywords": [

@@ -7,6 +7,14 @@ import { tradeService } from './TradeService';
 import { demoLedger } from './ledger';
 import { syncOrderToCore, syncFillToCore } from './orders/integration';
 
+// SUPERSEDED BY BACKEND (kept skipped intentionally, with rationale — not to hide failures):
+// This suite exercised the former CLIENT-SIDE order-authority model (client placeOrder
+// building local projections against a mocked-empty backend). Order execution is now
+// backend-authoritative — OrderService/FuturesOrderService are thin clients that require a
+// real backend order response and throw otherwise — so these client-side assertions no
+// longer reflect production behavior. Equivalent authority/isolation coverage now lives in
+// the backend suites (server/tests/*spot*, *futures*, postgres/*.integration.test.ts).
+// Do NOT re-enable as-is; it would need rewriting against the backend order contract.
 describe.skip('Phase 3 Step 3 — Order Authority Unification', () => {
   const userA = 'user-alice-step3';
   const userB = 'user-bob-step3';

@@ -4,22 +4,22 @@ import { FuturesMarket } from '../../types/futures';
 import { updateMarketPriceLocally } from '../../hooks/useFuturesMarketData';
 import { preferencesService } from '../../services/user/PreferencesService';
 import { apiClient } from '../../services/api/client';
-
+import { wsClient } from '../../services/websocket/wsClient';
+import { tradingPairRegistry } from '../../services/market/TradingPairRegistry';
 
 interface FuturesChartProps {
   market: FuturesMarket;
 }
 
+// Maps UI timeframe labels to backend-supported kline intervals (1m/5m/1h/1d).
 const INTERVAL_MAP: Record<string, string> = {
   '1m': '1m',
   '5m': '5m',
-  '15m': '15m',
   '1H': '1h',
-  '4H': '4h',
   '1D': '1d',
 };
 
-import { tradingPairRegistry } from '../../services/market/TradingPairRegistry';
+const TIMEFRAMES = ['1m', '5m', '1H', '1D'];
 
 export function FuturesChart({ market }: FuturesChartProps) {
   const pair = tradingPairRegistry.getPair(market.symbol || (market as any).id);
@@ -28,13 +28,14 @@ export function FuturesChart({ market }: FuturesChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
-  
-  const [timeframe, setTimeframe] = useState(preferencesService.getPreferences().defaultTimeframe || '15m');
+
+  const prefTimeframe = preferencesService.getPreferences().defaultTimeframe || '5m';
+  const [timeframe, setTimeframe] = useState(TIMEFRAMES.includes(prefTimeframe) ? prefTimeframe : '5m');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
   const symbol = market?.symbol;
-  const binanceInterval = INTERVAL_MAP[timeframe] || '15m';
+  const interval = INTERVAL_MAP[timeframe] || '1m';
 
   // Initialization and Resize
   useEffect(() => {
@@ -69,7 +70,7 @@ export function FuturesChart({ market }: FuturesChartProps) {
         }
       },
     });
-    
+
     chartInstanceRef.current = chart;
 
     const series = chart.addCandlestickSeries({
@@ -79,7 +80,7 @@ export function FuturesChart({ market }: FuturesChartProps) {
       wickUpColor: '#10b981',
       wickDownColor: '#ef4444',
     });
-    
+
     seriesRef.current = series;
 
     // Resize Observer for iframe/container elasticity
@@ -105,60 +106,56 @@ export function FuturesChart({ market }: FuturesChartProps) {
     };
   }, []); // Only run once on mount
 
-  // Fetch historical data and connect WS when symbol or timeframe changes
+  // Fetch historical data (backend REST) and subscribe to backend WS for live updates.
   useEffect(() => {
     if (!symbol || !seriesRef.current || !chartInstanceRef.current) return;
 
     let isMounted = true;
-    let ws: WebSocket | null = null;
-    let reconnectTimeout: ReturnType<typeof setTimeout>;
+    // Backend kline channel matches kline.service publisher: kline:<market>:<symbol>:<interval>
+    const channel = `kline:${String(marketType).toLowerCase()}:${String(apiSym).toLowerCase()}:${interval}`;
+    let unsubscribe: (() => void) | null = null;
+
+    const mapCandle = (k: any): CandlestickData<Time> | null => {
+      if (!k) return null;
+      const rawTime = k.openTime ?? k.time;
+      const timeSec = (typeof rawTime === 'number' && rawTime > 10000000000) ? Math.floor(rawTime / 1000) : rawTime;
+      const candle: CandlestickData<Time> = {
+        time: timeSec as Time,
+        open: parseFloat(k.open),
+        high: parseFloat(k.high),
+        low: parseFloat(k.low),
+        close: parseFloat(k.close),
+      };
+      if (
+        isNaN(candle.open) || isNaN(candle.high) || isNaN(candle.low) || isNaN(candle.close) ||
+        candle.high < candle.low || candle.open < 0 || candle.close < 0
+      ) {
+        return null;
+      }
+      return candle;
+    };
 
     const loadDataAndConnect = async () => {
       setIsLoading(true);
       setError(null);
-      
-      try {
-        // 1. Fetch historical data from authoritative backend /market/klines first
-        let data: any = null;
-        try {
-          const backendKlines = await apiClient.get<any[]>('/market/klines', {
-            symbol: apiSym,
-            interval: binanceInterval,
-            limit: 500,
-          });
-          if (Array.isArray(backendKlines) && backendKlines.length > 0) {
-            data = backendKlines.map(k => [k.openTime || k.time, k.open, k.high, k.low, k.close, k.volume]);
-          }
-        } catch {
-          // Backend klines not available or offline, fallback to external stream
-        }
 
-        if (!data) {
-          const res = await fetch(marketType === 'SPOT' ? `https://api.binance.com/api/v3/klines?symbol=${apiSym}&interval=${binanceInterval}&limit=500` : `https://fapi.binance.com/fapi/v1/klines?symbol=${apiSym}&interval=${binanceInterval}&limit=500`);
-          if (!res.ok) throw new Error('Failed to fetch historical klines');
-          data = await res.json();
-        }
-        
+      try {
+        // 1. Historical candles from the authoritative backend ONLY (no external source).
+        const backendKlines = await apiClient.get<any[]>('/market/klines', {
+          symbol: apiSym,
+          market: marketType,
+          interval,
+          limit: 500,
+        });
+
         if (!isMounted) return;
 
-        const formattedData: CandlestickData<Time>[] = data.map((d: any) => ({
-          time: ((typeof d[0] === 'number' && d[0] > 10000000000 ? d[0] / 1000 : d[0])) as Time,
-          open: parseFloat(d[1]),
-          high: parseFloat(d[2]),
-          low: parseFloat(d[3]),
-          close: parseFloat(d[4]),
-        }));
+        const validData = (Array.isArray(backendKlines) ? backendKlines : [])
+          .map(mapCandle)
+          .filter((c): c is CandlestickData<Time> => c !== null);
 
-
-        // Filter out any invalid candles
-        const validData = formattedData.filter(d => 
-          !isNaN(d.open) && !isNaN(d.high) && !isNaN(d.low) && !isNaN(d.close) &&
-          d.high >= d.low && d.open >= 0 && d.close >= 0
-        );
-
-        // Sort just in case, and remove duplicates
+        // De-duplicate and order ascending by time.
         validData.sort((a, b) => (a.time as number) - (b.time as number));
-        
         const uniqueData: CandlestickData<Time>[] = [];
         let lastTime = 0;
         for (const candle of validData) {
@@ -171,62 +168,18 @@ export function FuturesChart({ market }: FuturesChartProps) {
         seriesRef.current?.setData(uniqueData);
         chartInstanceRef.current?.timeScale().fitContent();
 
-        // 2. Connect WebSocket for live updates
-        const connectWs = () => {
+        // 2. Live updates via the backend WebSocket kline channel.
+        unsubscribe = wsClient.subscribe(channel, (data: any) => {
           if (!isMounted) return;
-          
-          const streamName = `${symbol.toLowerCase()}@kline_${binanceInterval}`;
-          console.log('Connecting to WS:', `wss://fstream.binance.com/ws/${streamName}`);
-          ws = new WebSocket(`wss://fstream.binance.com/ws/${streamName}`);
-
-          ws.onmessage = (event) => {
-            if (!isMounted) return;
-            try {
-              const msg = JSON.parse(event.data);
-              if (msg && msg.e === 'kline' && msg.k) {
-                const k = msg.k;
-                
-                const candle: CandlestickData<Time> = {
-                  time: (k.t / 1000) as Time,
-                  open: parseFloat(k.o),
-                  high: parseFloat(k.h),
-                  low: parseFloat(k.l),
-                  close: parseFloat(k.c),
-                };
-
-                // Validate
-                if (
-                  !isNaN(candle.open) && !isNaN(candle.high) && !isNaN(candle.low) && !isNaN(candle.close) &&
-                  candle.high >= candle.low && candle.open >= 0 && candle.close >= 0
-                ) {
-                  seriesRef.current?.update(candle);
-                  // Also update the global market price to keep everything in sync
-                  updateMarketPriceLocally(symbol, k.c);
-                }
-              }
-            } catch (err) {
-              console.warn('Failed to parse WS candle frame safely', err);
-            }
-          };
-
-          ws.onclose = () => {
-            if (isMounted) {
-              // Automatically reconnect
-              reconnectTimeout = setTimeout(connectWs, 3000);
-            }
-          };
-
-          ws.onerror = (err) => {
-            console.warn('Binance WS connection warning - will auto-reconnect');
-            ws?.close();
-          };
-        };
-
-        connectWs();
-
+          const candle = mapCandle(data);
+          if (candle) {
+            seriesRef.current?.update(candle);
+            updateMarketPriceLocally(symbol, String(data.close));
+          }
+        });
       } catch (err: any) {
         if (isMounted) {
-          setError(err.message || 'Error loading chart data');
+          setError(err?.message || 'Error loading chart data');
         }
       } finally {
         if (isMounted) {
@@ -239,12 +192,9 @@ export function FuturesChart({ market }: FuturesChartProps) {
 
     return () => {
       isMounted = false;
-      if (ws) {
-        ws.close();
-      }
-      clearTimeout(reconnectTimeout);
+      if (unsubscribe) unsubscribe();
     };
-  }, [symbol, binanceInterval]);
+  }, [symbol, apiSym, marketType, interval]);
 
   if (!market) {
       return <div className="flex items-center justify-center h-full text-gray-500 text-sm">No chart data available</div>;
@@ -259,8 +209,8 @@ export function FuturesChart({ market }: FuturesChartProps) {
                     <span className="text-gray-500 font-normal">Perp</span>
                 </div>
                 <div className="flex gap-2 text-gray-400">
-                    {['1m', '5m', '15m', '1H', '4H', '1D'].map(tf => (
-                        <button 
+                    {TIMEFRAMES.map(tf => (
+                        <button
                             key={tf}
                             className={`hover:text-gray-200 ${timeframe === tf ? 'text-emerald-500 font-bold' : ''}`}
                             onClick={() => setTimeframe(tf)}

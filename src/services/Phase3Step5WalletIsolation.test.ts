@@ -7,6 +7,13 @@ import { transactionService } from './transactions/TransactionService';
 import { internalTransferService } from './wallet/InternalTransferService';
 import { demoTransactionService } from './wallet/DemoTransactionService';
 
+// SUPERSEDED BY BACKEND (kept skipped intentionally, with rationale — not to hide failures):
+// This suite exercised the former CLIENT-SIDE wallet/ledger authority (client LedgerService
+// balances + client-computed locked balances). Balances are now backend-authoritative
+// (WalletService reads /wallet/balances; the client ledger is orphaned from the UI), so
+// these assertions no longer reflect production behavior. Equivalent coverage now lives in
+// server/tests/postgres/ledger.integration.test.ts and the wallet/reconciliation backend
+// suites. Do NOT re-enable as-is; it would need rewriting against the backend wallet contract.
 describe.skip('Phase 3 Step 5 — Wallet & Transaction Authority Remediation', () => {
   const userA = 'user-alice-step5';
   const userB = 'user-bob-step5';

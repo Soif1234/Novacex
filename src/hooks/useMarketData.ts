@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { MarketPair } from '../types';
 import { fetchMarketData } from '../services/marketData';
-import { mockMarkets } from '../mockData';
 
 let globalData: MarketPair[] = [];
 let globalLastUpdated: Date | null = null;

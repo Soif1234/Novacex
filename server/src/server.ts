@@ -4,6 +4,7 @@ import { env } from './config/env';
 import { logger } from './config/logger';
 import { db } from './config/database';
 import { redis } from './config/redis';
+import { migrator } from './config/migrator';
 import { webSocketGateway } from './websocket';
 import { workerSupervisor } from './workers/WorkerSupervisor';
 
@@ -19,6 +20,19 @@ export async function startServer(): Promise<http.Server> {
     await redis.connect();
   } catch (err) {
     logger.warn('Non-fatal connection warning during skeleton startup', {}, err as Error);
+  }
+
+  // Apply pending schema migrations on startup (single-instance deploy model).
+  // Fail startup if migrations cannot be applied — serving with an incomplete
+  // schema is worse than not starting. Disable via AUTO_MIGRATE=false.
+  if (env.AUTO_MIGRATE && env.NODE_ENV !== 'test') {
+    try {
+      const result = await migrator.runMigrations();
+      logger.info('Database migrations applied on startup', { applied: result.total });
+    } catch (err) {
+      logger.error('Fatal: database migration failed on startup', {}, err as Error);
+      throw err;
+    }
   }
 
   return new Promise((resolve) => {

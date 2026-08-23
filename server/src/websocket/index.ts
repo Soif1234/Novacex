@@ -301,6 +301,33 @@ export class WebSocketGateway {
       return;
     }
 
+    // 1b. K-line channels use a 4-part format: kline:<market>:<symbol>:<interval>
+    // (matches the publisher in kline.service.ts). Public, read-only OHLCV stream.
+    if (channel.startsWith('kline:')) {
+      const kparts = channel.split(':');
+      if (kparts.length !== 4) {
+        this.sendError(client, 'INVALID_CHANNEL_FORMAT', `Invalid kline channel "${channel}". Expected "kline:market:symbol:interval"`);
+        return;
+      }
+      const kMarket = kparts[1].toLowerCase();
+      const kSymbol = kparts[2].toLowerCase();
+      const kInterval = kparts[3].toLowerCase();
+      if (kMarket !== 'spot' && kMarket !== 'futures') {
+        this.sendError(client, 'INVALID_CHANNEL', `Invalid kline market "${kparts[1]}"`);
+        return;
+      }
+      if (!['1m', '5m', '1h', '1d'].includes(kInterval)) {
+        this.sendError(client, 'INVALID_CHANNEL', `Unsupported kline interval "${kparts[3]}"`);
+        return;
+      }
+      // Normalize to EXACTLY the publisher channel string so broadcasts match.
+      const cleanKline = `kline:${kMarket}:${kSymbol}:${kInterval}`;
+      client.subscriptions.add(cleanKline);
+      this.registerChannelSubscriber(cleanKline, client.id);
+      this.sendMessage(client, { type: 'subscribed', channel: cleanKline });
+      return;
+    }
+
     // 2. Validate Public Channels
     const parts = channel.split(':');
     if (parts.length !== 2) {

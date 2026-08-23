@@ -129,6 +129,31 @@ export class PostgresTransactionClient implements IDatabaseConnection {
  * Real PostgreSQL Database Pool using 'pg.Pool'.
  * Production and runtime database adapter with resilience, queue monitoring, and query timeouts.
  */
+/**
+ * Resolve PostgreSQL SSL/TLS options.
+ * - DB_SSL_MODE=disable  -> no TLS
+ * - DB_SSL_MODE=require  -> always TLS
+ * - DB_SSL_MODE=auto (default) -> TLS for remote hosts, none for localhost
+ * Certificate validation is ENABLED by default (rejectUnauthorized:true). A provider
+ * CA may be supplied via DB_CA_CERT; validation may be explicitly relaxed with
+ * DB_SSL_REJECT_UNAUTHORIZED=false (conscious, documented operator choice).
+ */
+function resolveDbSsl(hostOrUrl: string): pg.PoolConfig['ssl'] {
+  const mode = env.DB_SSL_MODE;
+  if (mode === 'disable') return false;
+  const s = hostOrUrl || '';
+  const isLocalHost = /(^|@|\/\/)(localhost|127\.0\.0\.1|\[?::1\]?)(:|\/|$)/.test(s);
+  const enable = mode === 'require' || (mode === 'auto' && !isLocalHost);
+  if (!enable) return false;
+  const ssl: { rejectUnauthorized: boolean; ca?: string } = {
+    rejectUnauthorized: env.DB_SSL_REJECT_UNAUTHORIZED,
+  };
+  if (env.DB_CA_CERT) {
+    ssl.ca = env.DB_CA_CERT.replace(/\\n/g, '\n');
+  }
+  return ssl;
+}
+
 export class PostgresDatabasePool implements IDatabaseConnection {
   private pool: pg.Pool;
   private isConnected = false;
@@ -139,7 +164,7 @@ export class PostgresDatabasePool implements IDatabaseConnection {
     const baseConfig: pg.PoolConfig = env.DATABASE_URL
       ? {
           connectionString: env.DATABASE_URL,
-            ssl: env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
+            ssl: resolveDbSsl(env.DATABASE_URL),
           min: env.DB_POOL_MIN,
           max: env.DB_POOL_MAX,
           idleTimeoutMillis: env.DB_IDLE_TIMEOUT_MS,
@@ -153,6 +178,7 @@ export class PostgresDatabasePool implements IDatabaseConnection {
           database: env.DB_NAME,
           user: env.DB_USER,
           password: env.DB_PASSWORD,
+          ssl: resolveDbSsl(env.DB_HOST),
           min: env.DB_POOL_MIN,
           max: env.DB_POOL_MAX,
           idleTimeoutMillis: env.DB_IDLE_TIMEOUT_MS,

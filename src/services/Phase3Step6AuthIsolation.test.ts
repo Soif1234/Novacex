@@ -6,7 +6,7 @@ import { notificationService } from './notifications/NotificationService';
 import { FuturesTpSlService, futuresTpSlService } from './futures/FuturesTpSlService';
 import { FuturesPosition } from '../types/futures';
 
-describe.skip('Phase 3 Step 6 — Authentication, Authorization & Session Isolation', () => {
+describe('Phase 3 Step 6 — Authentication, Authorization & Session Isolation', () => {
   const userAEmail = 'alice@example.com';
   const userBEmail = 'bob@example.com';
   const adminEmail = 'admin@mallickexchange.com';
@@ -196,29 +196,31 @@ describe.skip('Phase 3 Step 6 — Authentication, Authorization & Session Isolat
     expect(service.getConfigs('user-bob-step6')).toHaveLength(0);
   });
 
-  it('10 & 11. Normal USER receives USER role; admin receives ADMIN role', () => {
+  it('10 & 11. Client-side login NEVER grants ADMIN — role is USER regardless of email (backend is authoritative)', () => {
     const userSvc = new UserService(false);
-    
+
     // Normal user login
     userSvc.login('trader@example.com');
     expect(userSvc.getCurrentUser()?.role).toBe('USER');
     expect(userSvc.isAdmin()).toBe(false);
 
-    // Admin login
+    // Security regression guard (F4): a "magic" email must NOT confer admin on the
+    // client. Elevated roles are assigned only by the backend (via /auth/me and the
+    // login/demo-session responses in handleAuthSuccess).
     userSvc.login(adminEmail);
-    expect(userSvc.getCurrentUser()?.role).toBe('ADMIN');
-    expect(userSvc.isAdmin()).toBe(true);
+    expect(userSvc.getCurrentUser()?.role).toBe('USER');
+    expect(userSvc.isAdmin()).toBe(false);
   });
 
-  it('12 & 13. Admin role persists across session reloads', () => {
+  it('12 & 13. Client login never persists an ADMIN role across reloads (stays USER without backend confirmation)', () => {
     const service1 = new UserService(true);
     service1.login(adminEmail);
-    expect(service1.isAdmin()).toBe(true);
+    expect(service1.isAdmin()).toBe(false);
 
-    // Simulate page reload
+    // Simulate page reload — a cached client role must not silently escalate to ADMIN.
     const service2 = new UserService(true);
-    expect(service2.getCurrentUser()?.role).toBe('ADMIN');
-    expect(service2.isAdmin()).toBe(true);
+    expect(service2.getCurrentUser()?.role).toBe('USER');
+    expect(service2.isAdmin()).toBe(false);
   });
 
   it('14 & 15. Switching A -> B reloads singleton state; switching B -> A restores A cleanly', () => {

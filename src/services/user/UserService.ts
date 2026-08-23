@@ -40,8 +40,7 @@ export class UserService {
         if (data) {
           const parsed = JSON.parse(data);
           const email = parsed.email || 'demo@mallickexchange.com';
-          const safeEmail = email.toLowerCase().trim();
-          const role = (parsed.role === 'ADMIN' || safeEmail === 'admin@mallickexchange.com') ? 'ADMIN' : 'USER';
+          const role = parsed.role === 'ADMIN' ? 'ADMIN' : 'USER';
           this.currentUser = {
             id: parsed.id || 'demo-user-1',
             username: parsed.username || parsed.name || 'DemoTrader',
@@ -60,8 +59,7 @@ export class UserService {
         } else if (oldData) {
           const parsed = JSON.parse(oldData);
           const email = parsed.email || 'demo@mallickexchange.com';
-          const safeEmail = email.toLowerCase().trim();
-          const role = (parsed.role === 'ADMIN' || safeEmail === 'admin@mallickexchange.com') ? 'ADMIN' : 'USER';
+          const role = parsed.role === 'ADMIN' ? 'ADMIN' : 'USER';
           this.currentUser = {
             id: parsed.id || 'demo-user-1',
             username: parsed.name || 'DemoTrader',
@@ -176,11 +174,15 @@ export class UserService {
     this.logout();
   }
   
+  /**
+   * Local account-context setter used by tests/offline flows ONLY. This is NOT an
+   * authentication path and grants no privileges — the backend is authoritative for
+   * real auth (see loginWithBackend / demoLogin). Always assigns USER role.
+   */
   public login(email: string): void {
     const safeEmail = email.toLowerCase().trim();
     const namePrefix = safeEmail.split('@')[0];
-    const isAdmin = safeEmail === 'admin@mallickexchange.com';
-    
+
     const b64 = typeof btoa !== 'undefined' ? btoa(safeEmail) : Buffer.from(safeEmail).toString('base64');
     const stableId = 'demo-' + b64.replace(/=/g, '');
 
@@ -190,75 +192,60 @@ export class UserService {
       displayName: namePrefix,
       email: safeEmail,
       avatar: '',
-      role: isAdmin ? 'ADMIN' : 'USER',
+      role: 'USER',
       accountStatus: 'ACTIVE',
       createdAt: Date.now(),
       lastActiveAt: Date.now()
     };
     this.save();
     this.notify();
-
-    // Asynchronously authenticate against real backend
-    if (typeof window !== 'undefined') {
-      this.loginWithBackend(safeEmail).catch(() => {});
-    }
   }
 
   /**
    * Authoritative backend authentication
    */
-  public async loginWithBackend(email: string, password = 'DemoPassword123!'): Promise<User | { requires2FA: true, tempToken: string }> {
+  public async loginWithBackend(email: string, password: string): Promise<User | { requires2FA: true, tempToken: string }> {
     const safeEmail = email.toLowerCase().trim();
     const namePrefix = safeEmail.split('@')[0];
 
-    try {
-      // 1. Attempt login
-      const res = await apiClient.post<AuthSessionResponse>('/auth/login', {
-        email: safeEmail,
-        password,
-      });
-
-      if (res.requires2FA && res.tempToken) {
-        return { requires2FA: true, tempToken: res.tempToken };
-      }
-
-      return this.handleAuthSuccess(res, safeEmail, namePrefix);
-    } catch (err: any) {
-      // 2. If user doesn't exist on backend, automatically signup then login
-      if (err.statusCode === 401 || err.errorCode === 'INVALID_CREDENTIALS') {
-        try {
-          const signupRes = await apiClient.post<AuthSessionResponse>('/auth/signup', {
-            email: safeEmail,
-            password,
-            username: namePrefix,
-            displayName: namePrefix,
-          });
-
-          // Login to establish session cookie
-          const loginRes = await apiClient.post<AuthSessionResponse>('/auth/login', {
-            email: safeEmail,
-            password,
-          });
-
-          if (loginRes.requires2FA && loginRes.tempToken) {
-            return { requires2FA: true, tempToken: loginRes.tempToken };
-          }
-
-          return this.handleAuthSuccess(loginRes || signupRes, safeEmail, namePrefix);
-        } catch {
-          // If signup also fails, fallback to local user state
-        }
-      }
-
-      // Return current user state if already set
-      if (this.currentUser) return this.currentUser;
-      throw err;
+    if (!password) {
+      throw new Error('Password is required');
     }
+
+    // Authoritative backend login. Invalid credentials MUST fail (no auto-signup,
+    // no local fallback) so the error surfaces to the user.
+    const res = await apiClient.post<AuthSessionResponse>('/auth/login', {
+      email: safeEmail,
+      password,
+    });
+
+    if (res.requires2FA && res.tempToken) {
+      return { requires2FA: true, tempToken: res.tempToken };
+    }
+
+    return this.handleAuthSuccess(res, safeEmail, namePrefix);
   }
 
-  public async signupWithBackend(email: string, name: string, password = 'DemoPassword123!'): Promise<User | { requires2FA: true, tempToken: string }> {
+  /**
+   * Provision a fresh demo account on the backend (server-generated random
+   * credentials) and establish a real authenticated session. Safe replacement for
+   * the previous shared hardcoded-password demo login.
+   */
+  public async demoLogin(): Promise<User> {
+    const res = await apiClient.post<AuthSessionResponse>('/auth/demo-session', {});
+    if (!res || !res.user) {
+      throw new Error('Failed to create demo session');
+    }
+    return this.handleAuthSuccess(res, res.user.email, res.user.displayName || 'Demo Trader');
+  }
+
+  public async signupWithBackend(email: string, name: string, password: string): Promise<User | { requires2FA: true, tempToken: string }> {
     const safeEmail = email.toLowerCase().trim();
     const displayName = name.trim() || safeEmail.split('@')[0];
+
+    if (!password) {
+      throw new Error('Password is required');
+    }
 
     const signupRes = await apiClient.post<AuthSessionResponse>('/auth/signup', {
       email: safeEmail,
@@ -286,9 +273,14 @@ export class UserService {
         return this.handleAuthSuccess(res, res.user.email, res.user.displayName || res.user.username || 'Trader');
       }
     } catch {
-      // Unauthenticated or backend unavailable
+      // Unauthenticated or backend unavailable — do NOT trust local state.
     }
-    return this.currentUser;
+    // Backend did not confirm a session: clear any cached local user so the UI
+    // never shows an authenticated state without backend confirmation.
+    this.currentUser = null;
+    apiClient.setSessionToken(null);
+    this.save();
+    return null;
   }
 
   public async verify2FA(tempToken: string, token: string): Promise<User> {

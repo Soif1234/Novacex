@@ -72,7 +72,14 @@ export class RedisClient implements IRedisConnection {
 
         const isTls = this.config.REDIS_URL.startsWith('rediss://');
         this.client = new Redis(this.config.REDIS_URL, {
-          tls: isTls ? { rejectUnauthorized: false } : undefined,
+          tls: isTls
+            ? {
+                rejectUnauthorized: this.config.REDIS_SSL_REJECT_UNAUTHORIZED,
+                ...(this.config.REDIS_CA_CERT
+                  ? { ca: this.config.REDIS_CA_CERT.replace(/\\n/g, '\n') }
+                  : {}),
+              }
+            : undefined,
           connectTimeout: this.config.REDIS_CONNECT_TIMEOUT_MS,
           maxRetriesPerRequest: null, // Critical for robust error handling without crashing
           retryStrategy: (times) => {

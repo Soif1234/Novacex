@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { authService } from '../services/auth/auth.service';
 import { sessionService } from '../services/auth/session.service';
@@ -104,6 +105,45 @@ export class AuthController {
     } catch (err) {
       next(err);
 
+    }
+  }
+
+  public static async demoSession(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      // Provision an isolated demo account with SERVER-generated random credentials.
+      // Replaces the previous shared hardcoded-password demo login.
+      const rand = crypto.randomBytes(16).toString('hex');
+      const email = `demo_${rand}@demo.mallickexchange.com`;
+      // 'Aa1!' prefix guarantees upper/lower/digit/special; body adds entropy.
+      const password = `Aa1!${crypto.randomBytes(24).toString('base64url')}`;
+
+      await authService.signup({ email, password, displayName: 'Demo Trader' });
+
+      const ipAddress = (req.ip as string) || req.socket.remoteAddress;
+      const userAgent = (req.headers['user-agent'] as string);
+      const result = await authService.login({ email, password, ipAddress, userAgent });
+
+      const isProduction = env.NODE_ENV === 'production';
+      const cookieOptions = {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: isProduction ? ('strict' as const) : ('lax' as const),
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+        path: '/'
+      };
+      res.cookie('mallick_session', result.sessionToken!, cookieOptions);
+      res.setHeader('Set-Cookie', `mallick_session=${result.sessionToken}; Path=/; Max-Age=${7 * 24 * 60 * 60}; HttpOnly; SameSite=${isProduction ? 'Strict' : 'Lax'}${isProduction ? '; Secure' : ''}`);
+
+      res.status(201).json({
+        success: true,
+        data: {
+          user: result.user,
+          accounts: result.user!.accounts,
+          sessionToken: result.sessionToken,
+        }
+      });
+    } catch (err) {
+      next(err);
     }
   }
 

@@ -1,4 +1,6 @@
 import { tradingPairRegistry } from './TradingPairRegistry';
+import { apiClient } from '../api/client';
+import { wsClient } from '../websocket/wsClient';
 
 export interface Ticker {
   symbol: string;
@@ -16,10 +18,9 @@ class TickerService {
   private spotTickers: Map<string, Ticker> = new Map();
   private futuresTickers: Map<string, Ticker> = new Map();
   private subscribers: Set<() => void> = new Set();
-  
-  private fapiWs: WebSocket | null = null;
-  private apiWs: WebSocket | null = null;
-  private reconnectTimeouts: Record<string, ReturnType<typeof setTimeout>> = {};
+
+  private wsUnsubs: Array<() => void> = [];
+  private initialized = false;
 
   constructor() {}
 
@@ -78,63 +79,13 @@ class TickerService {
     this.subscribers.forEach(cb => cb());
   }
 
-  public async initialize() {
-    await tradingPairRegistry.loadTop200();
-    await this.fetchInitialData();
-    this.connectWebSockets();
-  }
-
-  private async fetchInitialData() {
-    try {
-      const futuresPairs = tradingPairRegistry.getFuturesPairs();
-      const spotPairs = tradingPairRegistry.getSpotPairs();
-
-      const fetchPromises: Promise<void>[] = [];
-
-      if (futuresPairs.length > 0) {
-        fetchPromises.push(
-          fetch('https://fapi.binance.com/fapi/v1/ticker/24hr')
-            .then(res => res.json())
-            .then(data => {
-              if (Array.isArray(data)) {
-                data.forEach((item: any) => {
-                  const matchingPairs = futuresPairs.filter(p => (p.apiSymbol || p.symbol) === item.symbol);
-                  matchingPairs.forEach(p => {
-                    this.updateTickerFromRest('fapi', p.symbol, item);
-                  });
-                });
-              }
-            })
-            .catch(err => console.error('Failed to fetch initial futures ticker data', err))
-        );
-      }
-
-      if (spotPairs.length > 0) {
-        fetchPromises.push(
-          fetch('https://api.binance.com/api/v3/ticker/24hr')
-            .then(res => res.json())
-            .then(data => {
-              if (Array.isArray(data)) {
-                data.forEach((item: any) => {
-                  const matchingPairs = spotPairs.filter(p => (p.apiSymbol || p.symbol) === item.symbol);
-                  matchingPairs.forEach(p => {
-                    this.updateTickerFromRest('api', p.symbol, item);
-                  });
-                });
-              }
-            })
-            .catch(err => console.error('Failed to fetch initial spot ticker data', err))
-        );
-      }
-
-      await Promise.all(fetchPromises);
-      this.notify();
-    } catch (error) {
-      console.error('Error fetching initial ticker data', error);
-    }
-  }
-
-  private updateTickerFromRest(arg1: string, arg2: any, arg3?: any) {
+  /**
+   * Store a ticker from a REST-style payload. Accepts (symbolKey, item) or
+   * (type, symbolKey, item). Null-safe: missing/empty/NaN/Infinity numeric fields
+   * default to '0', and a missing item is ignored — this fixes the prior
+   * undefined-`lastPrice` crash. Retained as a seeding seam for tests / REST bridges.
+   */
+  public updateTickerFromRest(arg1: string, arg2: any, arg3?: any): void {
     let type: 'fapi' | 'api' = 'api';
     let symbolKey: string = arg1;
     let item: any = arg2;
@@ -145,83 +96,109 @@ class TickerService {
       item = arg3;
     }
 
-    const targetMap = type === 'fapi' ? this.futuresTickers : this.spotTickers;
-    targetMap.set(symbolKey, {
+    if (!symbolKey || !item || typeof item !== 'object') return;
+
+    const num = (v: any): string => {
+      if (v === undefined || v === null) return '0';
+      const s = String(v);
+      const n = Number(s);
+      return (s.trim() === '' || !isFinite(n)) ? '0' : s;
+    };
+
+    const ticker: Ticker = {
       symbol: symbolKey,
-      lastPrice: item.lastPrice,
-      priceChange: item.priceChange,
-      priceChangePercent: item.priceChangePercent,
-      high24h: item.highPrice,
-      low24h: item.lowPrice,
-      volume24h: item.volume,
-      quoteVolume24h: item.quoteVolume,
-      timestamp: item.closeTime || Date.now(),
-    });
+      lastPrice: num(item.lastPrice),
+      priceChange: num(item.priceChange ?? item.priceChange24h),
+      priceChangePercent: num(item.priceChangePercent ?? item.priceChangePercent24h),
+      high24h: num(item.highPrice ?? item.high24h),
+      low24h: num(item.lowPrice ?? item.low24h),
+      volume24h: num(item.volume ?? item.volume24h),
+      quoteVolume24h: num(item.quoteVolume ?? item.quoteVolume24h),
+      timestamp: Number(item.closeTime ?? item.timestamp ?? Date.now()),
+    };
+
+    const targetMap = type === 'fapi' ? this.futuresTickers : this.spotTickers;
+    targetMap.set(symbolKey, ticker);
+  }
+
+  public async initialize() {
+    if (this.initialized) return;
+    this.initialized = true;
+    await tradingPairRegistry.loadTop200();
+    await this.fetchInitialData();
+    this.connectWebSockets();
+  }
+
+  /**
+   * Normalize an authoritative backend TickerData payload into the frontend Ticker shape.
+   */
+  private mapBackendTicker(symbol: string, t: any): Ticker {
+    return {
+      symbol,
+      lastPrice: String(t.lastPrice ?? '0'),
+      priceChange: String(t.priceChange24h ?? t.priceChange ?? '0'),
+      priceChangePercent: String(t.priceChangePercent24h ?? t.priceChangePercent ?? '0'),
+      high24h: String(t.high24h ?? '0'),
+      low24h: String(t.low24h ?? '0'),
+      volume24h: String(t.volume24h ?? '0'),
+      quoteVolume24h: String(t.quoteVolume24h ?? '0'),
+      timestamp: Number(t.timestamp ?? Date.now()),
+    };
+  }
+
+  private storeTicker(symbolUpper: string, raw: any): void {
+    const futuresPair = tradingPairRegistry.getFuturesPair(symbolUpper);
+    const spotPair = tradingPairRegistry.getSpotPair(symbolUpper);
+
+    if (futuresPair) {
+      this.futuresTickers.set(futuresPair.symbol, this.mapBackendTicker(futuresPair.symbol, raw));
+    }
+    if (spotPair) {
+      this.spotTickers.set(spotPair.symbol, this.mapBackendTicker(spotPair.symbol, raw));
+    }
+    if (!futuresPair && !spotPair) {
+      this.spotTickers.set(symbolUpper, this.mapBackendTicker(symbolUpper, raw));
+    }
+  }
+
+  private async fetchInitialData() {
+    try {
+      // Authoritative backend tickers only. No external market-data provider.
+      const res = await apiClient.get<{ tickers: any[] }>('/market/tickers');
+      const list = (res && (res as any).tickers)
+        ? (res as any).tickers
+        : (Array.isArray(res) ? (res as any) : []);
+      for (const t of list) {
+        if (t && t.symbol) {
+          this.storeTicker(String(t.symbol).toUpperCase(), t);
+        }
+      }
+      this.notify();
+    } catch (error) {
+      console.error('Failed to fetch initial ticker data from backend', error);
+    }
   }
 
   private connectWebSockets() {
-    const futuresPairs = tradingPairRegistry.getFuturesPairs();
-    const fapiSymbols = Array.from(new Set(futuresPairs.map(p => p.apiSymbol || p.symbol)));
-    this.connectWs('fapi', 'wss://fstream.binance.com/ws/!ticker@arr', fapiSymbols, futuresPairs);
+    // Reset any previous subscriptions.
+    this.wsUnsubs.forEach(u => {
+      try { u(); } catch { /* noop */ }
+    });
+    this.wsUnsubs = [];
 
-    const spotPairs = tradingPairRegistry.getSpotPairs();
-    const apiSymbols = Array.from(new Set(spotPairs.map(p => p.apiSymbol || p.symbol)));
-    this.connectWs('api', 'wss://stream.binance.com:9443/ws/!ticker@arr', apiSymbols, spotPairs);
-  }
+    const symbols = new Set<string>();
+    tradingPairRegistry.getFuturesPairs().forEach(p => symbols.add((p.apiSymbol || p.symbol).toUpperCase()));
+    tradingPairRegistry.getSpotPairs().forEach(p => symbols.add((p.apiSymbol || p.symbol).toUpperCase()));
 
-  private connectWs(type: 'fapi' | 'api', url: string, relevantApiSymbols: string[], pairs: any[]) {
-    if (relevantApiSymbols.length === 0) return;
-    
-    let ws = new WebSocket(url);
-    if (type === 'fapi') this.fapiWs = ws;
-    else this.apiWs = ws;
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (Array.isArray(data)) {
-          let updated = false;
-          const targetMap = type === 'fapi' ? this.futuresTickers : this.spotTickers;
-          data.forEach((item: any) => {
-            const apiSymbol = item.s;
-            if (relevantApiSymbols.includes(apiSymbol)) {
-              const matchingPairs = pairs.filter(p => (p.apiSymbol || p.symbol) === apiSymbol);
-              matchingPairs.forEach(p => {
-                targetMap.set(p.symbol, {
-                  symbol: p.symbol,
-                  lastPrice: item.c,
-                  priceChange: item.p,
-                  priceChangePercent: item.P,
-                  high24h: item.h,
-                  low24h: item.l,
-                  volume24h: item.v,
-                  quoteVolume24h: item.q,
-                  timestamp: item.E || Date.now(),
-                });
-                updated = true;
-              });
-            }
-          });
-          if (updated) {
-            this.notify();
-          }
+    for (const sym of symbols) {
+      const unsub = wsClient.subscribe(`ticker:${sym}`, (data: any) => {
+        if (data) {
+          this.storeTicker(String(data.symbol || sym).toUpperCase(), data);
+          this.notify();
         }
-      } catch (err) {
-        console.error('Error parsing WS message', err);
-      }
-    };
-
-    ws.onclose = () => {
-      clearTimeout(this.reconnectTimeouts[type]);
-      this.reconnectTimeouts[type] = setTimeout(() => {
-        this.connectWs(type, url, relevantApiSymbols, pairs);
-      }, 5000);
-    };
-
-    ws.onerror = (err) => {
-      console.warn(`WebSocket warning on ${type} - will auto-reconnect`);
-      ws.close();
-    };
+      });
+      this.wsUnsubs.push(unsub);
+    }
   }
 }
 

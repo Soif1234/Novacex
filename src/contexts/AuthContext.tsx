@@ -8,11 +8,12 @@ interface AuthContextType {
   user: User | null;
   status: AuthStatus;
   isAuthenticated: boolean;
-  login: (email: string, password?: string) => Promise<boolean>;
+  login: (email: string, password: string) => Promise<boolean>;
+  demoLogin: () => Promise<boolean>;
   verify2FA: (totp: string) => Promise<boolean>;
   tempToken: string | null;
   cancel2FA: () => void;
-  signup: (email: string, name: string, password?: string) => Promise<void> | void;
+  signup: (email: string, name: string, password: string) => Promise<void> | void;
   logout: () => void;
 }
 
@@ -43,14 +44,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch (error) {
         console.warn('Failed to restore session:', error);
         if (mounted) {
-          const fallbackUser = userService.getCurrentUser();
-          if (fallbackUser) {
-            setUser(fallbackUser);
-            setStatus('AUTHENTICATED');
-          } else {
-            setUser(null);
-            setStatus('UNAUTHENTICATED');
-          }
+          // Do NOT fall back to local state — without backend confirmation the
+          // user is unauthenticated.
+          setUser(null);
+          setStatus('UNAUTHENTICATED');
         }
       }
     };
@@ -74,7 +71,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const login = async (email: string, password = 'DemoPassword123!') => {
+  const login = async (email: string, password: string) => {
     try {
       const res = await userService.loginWithBackend(email, password);
       if (res && 'requires2FA' in res && res.requires2FA) {
@@ -89,7 +86,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const signup = async (email: string, name: string, password = 'DemoPassword123!') => {
+  const demoLogin = async () => {
+    try {
+      await userService.demoLogin();
+      return true;
+    } catch (e) {
+      console.error('Demo login failed', e);
+      throw e;
+    }
+  };
+
+  const signup = async (email: string, name: string, password: string) => {
     try {
       const res = await userService.signupWithBackend(email, name, password);
       if (res && 'requires2FA' in res && res.requires2FA) {
@@ -140,10 +147,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     <AuthContext.Provider value={{ 
       user, 
       status, 
-      isAuthenticated: status === 'AUTHENTICATED', 
-      login, 
-      signup, 
-      logout, 
+      isAuthenticated: status === 'AUTHENTICATED',
+      login,
+      demoLogin,
+      signup,
+      logout,
       verify2FA, 
       tempToken, 
       cancel2FA 

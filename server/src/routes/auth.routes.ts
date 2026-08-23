@@ -7,6 +7,7 @@ const router = Router();
 // Public Authentication endpoints (rate limited)
 router.post('/signup', authRateLimiter(20, 60000), AuthController.signup);
 router.post('/login', authRateLimiter(20, 60000), AuthController.login);
+router.post('/demo-session', authRateLimiter(10, 60000), AuthController.demoSession);
 router.post('/2fa/verify-login', authRateLimiter(20, 60000), AuthController.verify2FALogin);
 router.post('/logout', AuthController.logout);
 

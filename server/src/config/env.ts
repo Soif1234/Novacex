@@ -23,6 +23,9 @@ export interface EnvironmentConfig {
   DB_CONNECTION_TIMEOUT_MS: number;
   DB_IDLE_TIMEOUT_MS: number;
   DB_QUERY_TIMEOUT_MS: number;
+  DB_SSL_MODE: 'auto' | 'require' | 'disable';
+  DB_SSL_REJECT_UNAUTHORIZED: boolean;
+  DB_CA_CERT?: string;
   REDIS_URL: string;
   REDIS_HOST: string;
   REDIS_PORT: number;
@@ -31,6 +34,8 @@ export interface EnvironmentConfig {
   REDIS_RECONNECT_MAX_RETRIES: number;
   REDIS_RECONNECT_BASE_DELAY_MS: number;
   REDIS_RECONNECT_MAX_DELAY_MS: number;
+  REDIS_SSL_REJECT_UNAUTHORIZED: boolean;
+  REDIS_CA_CERT?: string;
   RATE_LIMIT_ENABLED: boolean;
   RATE_LIMIT_GLOBAL_MAX: number;
   RATE_LIMIT_AUTH_MAX: number;
@@ -43,6 +48,7 @@ export interface EnvironmentConfig {
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
   SHUTDOWN_TIMEOUT_MS: number;
   API_KEY_ENCRYPTION_SECRET?: string;
+  AUTO_MIGRATE: boolean;
 }
 
 function parseNumber(val: string | undefined, fallback: number, name: string): number {
@@ -91,6 +97,17 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
 
   const shutdownTimeout = parseNumber(process.env.SHUTDOWN_TIMEOUT_MS, 10000, 'SHUTDOWN_TIMEOUT_MS');
 
+  const dbSslMode = (process.env.DB_SSL_MODE || 'auto').toLowerCase();
+  if (!['auto', 'require', 'disable'].includes(dbSslMode)) {
+    throw new Error(`Invalid DB_SSL_MODE: "${dbSslMode}". Must be 'auto', 'require', or 'disable'.`);
+  }
+  // TLS certificate validation defaults to ENABLED (secure). Operators of managed
+  // providers with self-signed/intermediate certs may set *_SSL_REJECT_UNAUTHORIZED=false
+  // as a conscious, documented choice, or supply *_CA_CERT for full verification.
+  const dbSslRejectUnauthorized = parseBoolean(process.env.DB_SSL_REJECT_UNAUTHORIZED, true);
+  const redisSslRejectUnauthorized = parseBoolean(process.env.REDIS_SSL_REJECT_UNAUTHORIZED, true);
+  const autoMigrate = parseBoolean(process.env.AUTO_MIGRATE, nodeEnv === 'production');
+
   const logLevel = (process.env.LOG_LEVEL || 'info').toLowerCase();
   if (!['debug', 'info', 'warn', 'error'].includes(logLevel)) {
     throw new Error(`Invalid LOG_LEVEL: "${logLevel}". Must be 'debug', 'info', 'warn', or 'error'.`);
@@ -132,6 +149,9 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     DB_CONNECTION_TIMEOUT_MS: dbConnTimeout,
     DB_IDLE_TIMEOUT_MS: dbIdleTimeout,
     DB_QUERY_TIMEOUT_MS: dbQueryTimeout,
+    DB_SSL_MODE: dbSslMode as 'auto' | 'require' | 'disable',
+    DB_SSL_REJECT_UNAUTHORIZED: dbSslRejectUnauthorized,
+    DB_CA_CERT: process.env.DB_CA_CERT || undefined,
     REDIS_URL: redisUrl,
     REDIS_HOST: redisHost,
     REDIS_PORT: redisPort,
@@ -140,6 +160,8 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     REDIS_RECONNECT_MAX_RETRIES: redisMaxRetries,
     REDIS_RECONNECT_BASE_DELAY_MS: redisBaseDelay,
     REDIS_RECONNECT_MAX_DELAY_MS: redisMaxDelay,
+    REDIS_SSL_REJECT_UNAUTHORIZED: redisSslRejectUnauthorized,
+    REDIS_CA_CERT: process.env.REDIS_CA_CERT || undefined,
     RATE_LIMIT_ENABLED: rateLimitEnabled,
     RATE_LIMIT_GLOBAL_MAX: rateLimitGlobalMax,
     RATE_LIMIT_AUTH_MAX: rateLimitAuthMax,
@@ -154,6 +176,7 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     API_KEY_ENCRYPTION_SECRET: (nodeEnv === 'production' && !process.env.API_KEY_ENCRYPTION_SECRET) 
     ? (() => { throw new Error('API_KEY_ENCRYPTION_SECRET must be provided in production'); })() 
     : process.env.API_KEY_ENCRYPTION_SECRET || undefined,
+    AUTO_MIGRATE: autoMigrate,
     ...overrides
   };
 
