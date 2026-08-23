@@ -143,8 +143,12 @@ describe('Phase 8.4: Redis Connection Reliability & Reconnect Fallback Unit Test
       idempotencyService.acquireKey('user-test-1', 'idem-key-84', fingerprint)
     ).rejects.toThrow('Idempotency unavailable due to backend coordination failure');
 
-    // 4. Trigger recovery
+    // 4. Trigger recovery and verify deterministic readiness
     await redisClient.triggerReconnect?.();
+    const health = await redisClient.healthCheck();
+    expect(redisClient.getStatus().mode).toBe('REDIS_CONNECTED');
+    expect(health.healthy).toBe(true);
+    expect(health.fallbackMode).toBe(false);
 
     // 5. Retry duplicate request after recovery -> cache HIT from restored Redis
     const acquire2 = await idempotencyService.acquireKey('user-test-1', 'idem-key-84', fingerprint);
@@ -161,5 +165,5 @@ describe('Phase 8.4: Redis Connection Reliability & Reconnect Fallback Unit Test
 
     // Clean up key
     await redisClient.del('idempotency:user-test-1:idem-key-84');
-  });
+  }, 15000);
 });

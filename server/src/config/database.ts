@@ -155,7 +155,7 @@ function resolveDbSsl(hostOrUrl: string): pg.PoolConfig['ssl'] {
 }
 
 export class PostgresDatabasePool implements IDatabaseConnection {
-  private pool: pg.Pool;
+  private pool!: pg.Pool;
   private isConnected = false;
   private connectionError: string | null = null;
   private poolConfig: pg.PoolConfig;
@@ -164,7 +164,7 @@ export class PostgresDatabasePool implements IDatabaseConnection {
     const baseConfig: pg.PoolConfig = env.DATABASE_URL
       ? {
           connectionString: env.DATABASE_URL,
-            ssl: resolveDbSsl(env.DATABASE_URL),
+          ssl: resolveDbSsl(env.DATABASE_URL),
           min: env.DB_POOL_MIN,
           max: env.DB_POOL_MAX,
           idleTimeoutMillis: env.DB_IDLE_TIMEOUT_MS,
@@ -188,6 +188,10 @@ export class PostgresDatabasePool implements IDatabaseConnection {
         };
 
     this.poolConfig = customConfig ? { ...baseConfig, ...customConfig } : baseConfig;
+    this.initPool();
+  }
+
+  private initPool(): void {
     this.pool = new pg.Pool(this.poolConfig);
 
     this.pool.on('error', (err: Error) => {
@@ -199,7 +203,7 @@ export class PostgresDatabasePool implements IDatabaseConnection {
     });
 
     this.pool.on('connect', () => {
-      if (this.pool.waitingCount > 0) {
+      if (this.pool && this.pool.waitingCount > 0) {
         logger.warn('PostgreSQL connection pool client waiting in queue', {
           waitingCount: this.pool.waitingCount,
           totalCount: this.pool.totalCount,
@@ -209,8 +213,17 @@ export class PostgresDatabasePool implements IDatabaseConnection {
     });
   }
 
+  private ensurePool(): pg.Pool {
+    if (!this.pool || (this.pool as any).ended || (this.pool as any).ending) {
+      this.initPool();
+      this.isConnected = false;
+    }
+    return this.pool;
+  }
+
   public async connect(): Promise<void> {
     try {
+      const pool = this.ensurePool();
       logger.info('Initializing PostgreSQL connection pool', {
         host: this.poolConfig.host || env.DB_HOST,
         port: this.poolConfig.port || env.DB_PORT,
@@ -223,7 +236,7 @@ export class PostgresDatabasePool implements IDatabaseConnection {
         queryTimeoutMillis: this.poolConfig.statement_timeout ?? env.DB_QUERY_TIMEOUT_MS,
       });
 
-      const client = await this.pool.connect();
+      const client = await pool.connect();
       try {
         await client.query('SELECT 1');
       } finally {
@@ -246,15 +259,16 @@ export class PostgresDatabasePool implements IDatabaseConnection {
     params: unknown[] = [],
     options?: QueryOptions
   ): Promise<QueryResult<T>> {
-    if (!this.isConnected && this.pool.totalCount === 0) {
+    const pool = this.ensurePool();
+    if (!this.isConnected && pool.totalCount === 0) {
       await this.connect().catch(() => {});
     }
 
-    if (this.pool.waitingCount > 0) {
+    if (pool.waitingCount > 0) {
       logger.warn('PostgreSQL pool queue depth high', {
-        waitingCount: this.pool.waitingCount,
-        totalCount: this.pool.totalCount,
-        idleCount: this.pool.idleCount,
+        waitingCount: pool.waitingCount,
+        totalCount: pool.totalCount,
+        idleCount: pool.idleCount,
         max: this.poolConfig.max,
       });
     }
@@ -274,7 +288,7 @@ export class PostgresDatabasePool implements IDatabaseConnection {
     });
 
     try {
-      const queryPromise = this.pool.query(sql, params);
+      const queryPromise = pool.query(sql, params);
       const res = await Promise.race([queryPromise, timeoutPromise]);
       return formatPgResult<T>(res);
     } catch (err: any) {
@@ -292,7 +306,8 @@ export class PostgresDatabasePool implements IDatabaseConnection {
     callback: (client: IDatabaseConnection) => Promise<T>,
     options?: QueryOptions
   ): Promise<T> {
-    const client = await this.pool.connect();
+    const pool = this.ensurePool();
+    const client = await pool.connect();
     const txClient = new PostgresTransactionClient(client, options);
 
     try {
@@ -316,7 +331,8 @@ export class PostgresDatabasePool implements IDatabaseConnection {
   public async healthCheck(): Promise<{ healthy: boolean; latencyMs: number; error?: string }> {
     const start = Date.now();
     try {
-      await this.pool.query('SELECT 1');
+      const pool = this.ensurePool();
+      await pool.query('SELECT 1');
       return { healthy: true, latencyMs: Date.now() - start };
     } catch (err: any) {
       return { healthy: false, latencyMs: Date.now() - start, error: err.message };
@@ -324,12 +340,13 @@ export class PostgresDatabasePool implements IDatabaseConnection {
   }
 
   public getStatus(): DatabaseStatus {
+    const pool = this.ensurePool();
     return {
       connected: this.isConnected,
-      poolSize: this.pool.totalCount,
-      activeConnections: Math.max(0, this.pool.totalCount - this.pool.idleCount),
-      idleConnections: this.pool.idleCount,
-      waitingClients: this.pool.waitingCount,
+      poolSize: pool.totalCount,
+      activeConnections: Math.max(0, pool.totalCount - pool.idleCount),
+      idleConnections: pool.idleCount,
+      waitingClients: pool.waitingCount,
       error: this.connectionError || undefined,
       config: {
         min: this.poolConfig.min ?? env.DB_POOL_MIN,
@@ -343,7 +360,9 @@ export class PostgresDatabasePool implements IDatabaseConnection {
 
   public async close(): Promise<void> {
     try {
-      await this.pool.end();
+      if (this.pool && !(this.pool as any).ended && !(this.pool as any).ending) {
+        await this.pool.end();
+      }
       this.isConnected = false;
       logger.info('PostgreSQL connection pool closed cleanly');
     } catch (err: any) {

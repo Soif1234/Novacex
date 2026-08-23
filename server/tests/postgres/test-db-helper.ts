@@ -18,7 +18,9 @@ export class TestDbHelper {
   }
 
   public async close(): Promise<void> {
-    await this.pool.close();
+    if (this.pool !== db) {
+      await this.pool.close();
+    }
     await db.close();
   }
 
