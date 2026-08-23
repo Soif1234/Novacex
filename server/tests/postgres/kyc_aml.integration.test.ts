@@ -37,19 +37,21 @@ describe('Phase 7.2: PostgreSQL KYC & AML Integration Tests', () => {
     walletService = new WalletService(pgPool, ledgerService, amlService);
 
     // Create user
+    const userUniq = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
     const userRes = await authService.signup({
-      email: `pg_kyc_user_${Date.now()}@test.exchange`,
+      email: `pg_kyc_user_${userUniq}_${Date.now()}@test.exchange`,
       password: 'Password123!SecurePg',
-      username: `pgkyc_${Date.now().toString().slice(-4)}`,
+      username: `pgkyc_${userUniq}`,
     });
     userId = userRes.user.id;
     accountId = userRes.user.accounts.find((a) => a.type === 'SPOT')!.id;
 
     // Create admin
+    const adminUniq = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
     const adminRes = await authService.signup({
-      email: `pg_kyc_admin_${Date.now()}@test.exchange`,
+      email: `pg_kyc_admin_${adminUniq}_${Date.now()}@test.exchange`,
       password: 'Password123!SecurePg',
-      username: `pgadm_${Date.now().toString().slice(-4)}`,
+      username: `pgadm_${adminUniq}`,
     });
     adminUserId = adminRes.user.id;
 

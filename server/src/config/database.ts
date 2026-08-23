@@ -309,13 +309,15 @@ export class PostgresDatabasePool implements IDatabaseConnection {
     const pool = this.ensurePool();
     const client = await pool.connect();
     const txClient = new PostgresTransactionClient(client, options);
+    let txError: Error | null = null;
 
     try {
       await client.query('BEGIN');
       const result = await callback(txClient);
       await client.query('COMMIT');
       return result;
-    } catch (err) {
+    } catch (err: any) {
+      txError = err instanceof Error ? err : new Error(String(err));
       try {
         await client.query('ROLLBACK');
       } catch (rollbackErr: any) {
@@ -324,7 +326,11 @@ export class PostgresDatabasePool implements IDatabaseConnection {
       // Note: Financial transactions are NEVER automatically retried to prevent double execution.
       throw err;
     } finally {
-      client.release();
+      if (txError) {
+        client.release(txError);
+      } else {
+        client.release();
+      }
     }
   }
 

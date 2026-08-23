@@ -28,10 +28,11 @@ describe('Phase 7.4: PostgreSQL System Circuit Breaker Integration Tests', () =>
     circuitBreakerService = new CircuitBreakerService(pgPool, auditService);
 
     // Create Admin User
+    const admUniq = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
     const adminRes = await authService.signup({
-      email: `pg_admin_74_${Date.now()}@test.exchange`,
+      email: `pg_admin_74_${admUniq}_${Date.now()}@test.exchange`,
       password: 'AdminPassword123!SecurePg',
-      username: `pgadm74_${Date.now().toString().slice(-4)}`,
+      username: `pgadm74_${admUniq}`,
     });
     adminUserId = adminRes.user.id;
     await pgPool.query("UPDATE users SET role = 'ADMIN' WHERE id = $1", [adminUserId]);

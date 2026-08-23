@@ -123,9 +123,12 @@ describe('Phase 6.1: Conditional Orders Integration', () => {
     expect(o1.rows[0].status).toBe('UNTRIGGERED');
 
     await eventBus.publish({ type: 'market.trade', payload: { symbol: 'BTCUSDT', price: '52000' } });
-    await new Promise((r) => setTimeout(r, 150));
-
-    const o2 = await db.query<any>('SELECT status FROM orders WHERE id = $1', [res.order.id]);
+    let o2: any;
+    for (let i = 0; i < 40; i++) {
+      o2 = await db.query<any>('SELECT status FROM orders WHERE id = $1', [res.order.id]);
+      if (o2.rows[0]?.status === 'NEW') break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
     expect(o2.rows[0].status).toBe('NEW');
   });
 
@@ -161,9 +164,12 @@ describe('Phase 6.1: Conditional Orders Integration', () => {
     expect(o1.rows[0].status).toBe('UNTRIGGERED');
 
     await eventBus.publish({ type: 'market.trade', payload: { symbol: 'BTCUSDT', price: '56000' } });
-    await new Promise((r) => setTimeout(r, 150));
-
-    const o2 = await db.query<any>('SELECT status FROM orders WHERE id = $1', [res.order.id]);
+    let o2: any;
+    for (let i = 0; i < 40; i++) {
+      o2 = await db.query<any>('SELECT status FROM orders WHERE id = $1', [res.order.id]);
+      if (o2.rows[0]?.status === 'NEW') break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
     expect(o2.rows[0].status).toBe('NEW');
   });
 

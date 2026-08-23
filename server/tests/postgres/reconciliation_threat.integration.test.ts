@@ -45,19 +45,21 @@ describe('Phase 7.5: PostgreSQL Automated Balance Reconciliation & Threat Alerti
     reconciliationService = new ReconciliationService(pgPool, auditService, threatAlertService, circuitBreakerService);
 
     // Create Admin User
+    const admUniq = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
     const adminRes = await authService.signup({
-      email: `pg_admin_75_${Date.now()}@test.exchange`,
+      email: `pg_admin_75_${admUniq}_${Date.now()}@test.exchange`,
       password: 'AdminPassword123!SecurePg',
-      username: `pgadm75_${Date.now().toString().slice(-4)}`,
+      username: `pgadm75_${admUniq}`,
     });
     adminUserId = adminRes.user.id;
     await pgPool.query("UPDATE users SET role = 'ADMIN' WHERE id = $1", [adminUserId]);
 
     // Create Regular User
+    const trdUniq = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
     const userRes = await authService.signup({
-      email: `pg_trader_75_${Date.now()}@test.exchange`,
+      email: `pg_trader_75_${trdUniq}_${Date.now()}@test.exchange`,
       password: 'TraderPassword123!SecurePg',
-      username: `pgtrd75_${Date.now().toString().slice(-4)}`,
+      username: `pgtrd75_${trdUniq}`,
     });
 
     const accRes = await pgPool.query<any>(

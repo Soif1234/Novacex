@@ -1,6 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { db } from '../../src/config/database';
 import { WorkerSupervisor } from '../../src/workers/WorkerSupervisor';
+import { liquidationWorker } from '../../src/workers/LiquidationWorker';
+import { fundingWorker } from '../../src/workers/FundingWorker';
+import { reconciliationWorker } from '../../src/workers/ReconciliationWorker';
+import { klineService } from '../../src/services/market/kline.service';
 
 describe('Phase 8.1: PostgreSQL Worker Supervisor Integration Tests', () => {
   let supervisor: WorkerSupervisor;
@@ -11,10 +15,24 @@ describe('Phase 8.1: PostgreSQL Worker Supervisor Integration Tests', () => {
     supervisor = new WorkerSupervisor();
   });
 
+  afterEach(async () => {
+    if (supervisor) {
+      await supervisor.stopAll();
+    }
+    liquidationWorker.stop();
+    fundingWorker.stop();
+    reconciliationWorker.stop();
+    await klineService.stop();
+  });
+
   afterAll(async () => {
     if (supervisor) {
       await supervisor.stopAll();
     }
+    liquidationWorker.stop();
+    fundingWorker.stop();
+    reconciliationWorker.stop();
+    await klineService.stop();
     await db.close();
   });
 

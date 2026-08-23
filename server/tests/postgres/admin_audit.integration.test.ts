@@ -35,19 +35,21 @@ describe('Phase 7.3: PostgreSQL Admin Audit Logging & Governance Integration Tes
     apiKeyService = new ApiKeyService(pgPool);
 
     // Create Admin User
+    const admUniq = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
     const adminRes = await authService.signup({
-      email: `pg_admin_73_${Date.now()}@test.exchange`,
+      email: `pg_admin_73_${admUniq}_${Date.now()}@test.exchange`,
       password: 'AdminPassword123!SecurePg',
-      username: `pgadm73_${Date.now().toString().slice(-4)}`,
+      username: `pgadm73_${admUniq}`,
     });
     adminUserId = adminRes.user.id;
     await pgPool.query("UPDATE users SET role = 'ADMIN' WHERE id = $1", [adminUserId]);
 
     // Create Target User
+    const trgUniq = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
     const userRes = await authService.signup({
-      email: `pg_target_73_${Date.now()}@test.exchange`,
+      email: `pg_target_73_${trgUniq}_${Date.now()}@test.exchange`,
       password: 'UserPassword123!SecurePg',
-      username: `pgtrg73_${Date.now().toString().slice(-4)}`,
+      username: `pgtrg73_${trgUniq}`,
     });
     targetUserId = userRes.user.id;
   });
