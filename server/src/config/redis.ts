@@ -110,11 +110,15 @@ export class RedisClient implements IRedisConnection {
           this.isConnected = true;
           this.mode = 'REDIS_CONNECTED';
           this.connectionError = null;
+          this.reconnectAttempts = 0;
           logger.info('Redis client connected successfully');
           resolve();
         });
 
         this.client.on('ready', () => {
+          this.isConnected = true;
+          this.mode = 'REDIS_CONNECTED';
+          this.connectionError = null;
           this.reconnectAttempts = 0; // Reset after successful connection and ready state
         });
 
@@ -151,26 +155,43 @@ export class RedisClient implements IRedisConnection {
     this.isConnected = false;
     this.mode = 'FALLBACK_MEMORY';
     this.connectionError = error?.message || 'Connection lost';
+    this.reconnectAttempts = Math.max(1, this.reconnectAttempts + 1);
     if (this.client) {
       this.client.disconnect();
     }
   }
 
   public async triggerReconnect(): Promise<void> {
-    if (this.client && this.client.status !== 'ready' && this.client.status !== 'connecting') {
+    if (this.isShuttingDown) return;
+    if (this.client) {
       try {
-        await this.client.connect();
-      } catch (e) {
-        // Will be handled by the 'error' listener
+        this.client.removeAllListeners();
+        this.client.disconnect();
+      } catch {
+        // Ignore
       }
+      this.client = null;
     }
+    await this.connect();
   }
 
   public async close(): Promise<void> {
     this.isShuttingDown = true;
     logger.info('Closing Redis connection');
     if (this.client) {
-      await this.client.quit();
+      try {
+        if (this.client.status === 'ready' || this.client.status === 'connect') {
+          await this.client.quit();
+        } else {
+          this.client.disconnect();
+        }
+      } catch {
+        try {
+          this.client.disconnect();
+        } catch {
+          // Ignore close errors during shutdown
+        }
+      }
     }
     this.isConnected = false;
     this.mode = 'DISCONNECTED';

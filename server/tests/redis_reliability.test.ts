@@ -122,6 +122,9 @@ describe('Phase 8.4: Redis Connection Reliability & Reconnect Fallback Unit Test
     const idempotencyService = new IdempotencyService(redisClient);
     await redisClient.connect();
 
+    // Clean up potential leftover key from earlier runs
+    await redisClient.del('idempotency:user-test-1:idem-key-84');
+
     const fingerprint = idempotencyService.computeFingerprint('POST', '/api/v1/spot/orders', { qty: '10' });
 
     // 1. Acquire key when Redis connected
@@ -133,7 +136,15 @@ describe('Phase 8.4: Redis Connection Reliability & Reconnect Fallback Unit Test
     // 2. Trigger Redis disconnect
     redisClient.triggerDisconnect?.(new Error('Redis broker failed'));
 
-    // 3. Retry duplicate request during Redis outage -> cache HIT from in-memory fallback
+    // 3. During outage, mutation acquisition fails closed to prevent unsafe duplicate execution
+    await expect(
+      idempotencyService.acquireKey('user-test-1', 'idem-key-84', fingerprint)
+    ).rejects.toThrow('Idempotency unavailable due to backend coordination failure');
+
+    // 4. Trigger recovery
+    await redisClient.triggerReconnect?.();
+
+    // 5. Retry duplicate request after recovery -> cache HIT from restored Redis
     const acquire2 = await idempotencyService.acquireKey('user-test-1', 'idem-key-84', fingerprint);
     expect(acquire2.status).toBe('HIT');
     if (acquire2.status === 'HIT') {
@@ -141,9 +152,12 @@ describe('Phase 8.4: Redis Connection Reliability & Reconnect Fallback Unit Test
       expect(acquire2.body.orderId).toBe('ord_84');
     }
 
-    // 4. Conflicting payload during outage is still rejected with CONFLICT
+    // 6. Conflicting payload after recovery is still rejected with CONFLICT
     const differentFingerprint = idempotencyService.computeFingerprint('POST', '/api/v1/spot/orders', { qty: '99' });
     const conflictResult = await idempotencyService.acquireKey('user-test-1', 'idem-key-84', differentFingerprint);
     expect(conflictResult.status).toBe('CONFLICT');
+
+    // Clean up key
+    await redisClient.del('idempotency:user-test-1:idem-key-84');
   });
 });

@@ -9,12 +9,13 @@ describe('Redis-backed Authentication Rate Limiter', () => {
   let res: Partial<Response>;
   let next: NextFunction;
 
+  let testIpCounter = 1;
   beforeEach(async () => {
-    // Clear mock redis memory store for clean state
     await redis.close();
     await redis.connect();
     
-    req = { ip: '192.168.1.1', socket: { remoteAddress: '192.168.1.1' } as any };
+    const testIp = `192.168.1.${testIpCounter++}`;
+    req = { ip: testIp, socket: { remoteAddress: testIp } as any };
     res = {};
     next = vi.fn();
     
