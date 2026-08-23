@@ -155,5 +155,9 @@ describe('Phase 7.1 — Two-Factor Authentication (TOTP) Unit Tests', () => {
       const user = await authService.getUserById(testUserId);
       expect(user?.twoFactorEnabled).toBe(false);
     });
+
+        it('6. Rejects login completion with invalid/expired temporary token', async () => {
+      await expect(authService.verify2FALogin('invalid_or_expired_token', '123456')).rejects.toThrow(/invalid/i);
+    });
   });
 });

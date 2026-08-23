@@ -139,6 +139,7 @@ export class PostgresDatabasePool implements IDatabaseConnection {
     const baseConfig: pg.PoolConfig = env.DATABASE_URL
       ? {
           connectionString: env.DATABASE_URL,
+            ssl: env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
           min: env.DB_POOL_MIN,
           max: env.DB_POOL_MAX,
           idleTimeoutMillis: env.DB_IDLE_TIMEOUT_MS,

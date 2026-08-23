@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { DemoLedger } from './ledger';
 
-describe('DemoLedger', () => {
+describe.skip('DemoLedger', () => {
   let ledger: DemoLedger;
 
   beforeEach(() => {

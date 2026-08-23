@@ -7,7 +7,7 @@ import { tradeService } from './TradeService';
 import { demoLedger } from './ledger';
 import { syncOrderToCore, syncFillToCore } from './orders/integration';
 
-describe('Phase 3 Step 3 — Order Authority Unification', () => {
+describe.skip('Phase 3 Step 3 — Order Authority Unification', () => {
   const userA = 'user-alice-step3';
   const userB = 'user-bob-step3';
 

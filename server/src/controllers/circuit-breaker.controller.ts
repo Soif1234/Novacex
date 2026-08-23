@@ -55,8 +55,8 @@ export class CircuitBreakerController {
         isFuturesTradingEnabled,
         isWithdrawalsEnabled,
         isDepositsEnabled,
-        ipAddress: req.ip,
-        userAgent: req.get('user-agent'),
+        ipAddress: (req.ip as string) as string,
+        userAgent: (req.get('user-agent') as string) as string,
       });
 
       res.status(200).json({
@@ -100,8 +100,8 @@ export class CircuitBreakerController {
         isFuturesTradingEnabled,
         isWithdrawalsEnabled,
         isDepositsEnabled,
-        ipAddress: req.ip,
-        userAgent: req.get('user-agent'),
+        ipAddress: (req.ip as string) as string,
+        userAgent: (req.get('user-agent') as string) as string,
       });
 
       res.status(200).json({

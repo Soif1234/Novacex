@@ -28,12 +28,14 @@ export interface SafeUser {
 }
 
 export interface AuthSessionResponse {
-  user: SafeUser;
-  accounts: Array<{
+  user?: SafeUser;
+  accounts?: Array<{
     id: string;
     type: 'SPOT' | 'FUTURES' | 'FUNDING';
   }>;
   sessionToken?: string;
+  requires2FA?: boolean;
+  tempToken?: string;
 }
 
 export interface SignupDto {

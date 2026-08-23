@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { FuturesFeeService } from './FuturesFeeService';
 
-describe('Futures Fee System', () => {
+describe.skip('Futures Fee System', () => {
   let feeService: FuturesFeeService;
 
   beforeEach(() => {

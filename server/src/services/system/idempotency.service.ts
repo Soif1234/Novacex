@@ -25,9 +25,6 @@ export class IdempotencyService {
 
   constructor(private redisClient: IRedisConnection = redis) {}
 
-  /**
-   * Sort object keys recursively to produce a canonical deterministic JSON string
-   */
   public canonicalize(obj: unknown): unknown {
     if (obj === null || typeof obj !== 'object') {
       return obj;
@@ -43,25 +40,16 @@ export class IdempotencyService {
     return result;
   }
 
-  /**
-   * Compute a deterministic SHA-256 request fingerprint
-   */
   public computeFingerprint(method: string, path: string, body: unknown): string {
     const canonicalBody = this.canonicalize(body ?? {});
     const payload = `${method.toUpperCase()}:${path}:${JSON.stringify(canonicalBody)}`;
     return crypto.createHash('sha256').update(payload).digest('hex');
   }
 
-  /**
-   * Derive the storage key scoped by user ID
-   */
   private getStorageKey(userId: string, idempotencyKey: string): string {
     return `idempotency:${userId}:${idempotencyKey}`;
   }
 
-  /**
-   * Attempt to acquire the idempotency key lock or retrieve cached response
-   */
   public async acquireKey(
     userId: string,
     key: string,
@@ -70,8 +58,24 @@ export class IdempotencyService {
   ): Promise<AcquireResult> {
     const storageKey = this.getStorageKey(userId, key);
 
+    const inFlightRecord: StoredIdempotencyRecord = {
+      status: 'PROCESSING',
+      userId,
+      key,
+      fingerprint,
+      startedAt: Date.now(),
+    };
+
     try {
-      // 1. Check existing record from Redis
+      // Step 1: ATOMIC ACQUISITION
+      // Will return true only if the key did NOT exist and was successfully set.
+      const acquired = await this.redisClient.setNX(storageKey, JSON.stringify(inFlightRecord), 60);
+      
+      if (acquired) {
+        return { status: 'ACQUIRED' };
+      }
+
+      // Step 2: KEY ALREADY EXISTS -> Retrieve and check it
       const raw = await this.redisClient.get(storageKey);
       if (raw) {
         const record: StoredIdempotencyRecord = JSON.parse(raw);
@@ -104,31 +108,26 @@ export class IdempotencyService {
           };
         }
       }
-
-      // 2. Not found in Redis: Store initial PROCESSING lock (60s in-flight lock)
-      const inFlightRecord: StoredIdempotencyRecord = {
-        status: 'PROCESSING',
-        userId,
-        key,
-        fingerprint,
-        startedAt: Date.now(),
+      
+      // If we got here, it means setNX failed because it existed, but then GET returned null
+      // (perhaps it expired in the exact millisecond between). We will just claim we couldn't get it.
+      return {
+        status: 'CONFLICT',
+        message: 'Idempotency state inconsistency - please retry',
       };
-
-      await this.redisClient.set(storageKey, JSON.stringify(inFlightRecord), 60);
-      return { status: 'ACQUIRED' };
+      
     } catch (err) {
-      logger.warn('Redis error in IdempotencyService acquireKey; falling back to in-memory store', {
+      logger.warn('Redis error in IdempotencyService acquireKey; failing closed to prevent duplicate transactions', {
         storageKey,
         error: (err as Error).message,
       });
 
-      return this.acquireMemoryFallback(storageKey, userId, key, fingerprint, ttlSeconds);
+      // NO MEMORY FALLBACK FOR ATOMIC IDEMPOTENCY
+      // If Redis is down, we must safely REJECT the mutation so it is not duplicated.
+      throw new Error('Idempotency unavailable due to backend coordination failure. Please retry later.');
     }
   }
 
-  /**
-   * Complete the request and store the final response with full TTL
-   */
   public async completeKey(
     userId: string,
     key: string,
@@ -155,91 +154,21 @@ export class IdempotencyService {
     try {
       await this.redisClient.set(storageKey, JSON.stringify(completedRecord), ttlSeconds);
     } catch (err) {
-      logger.warn('Redis error in completeKey; falling back to in-memory store', {
+      logger.error('Redis error in completeKey; failed to persist idempotency completion state', {
         storageKey,
         error: (err as Error).message,
       });
-      this.memoryFallback.set(storageKey, {
-        record: completedRecord,
-        expiresAt: Date.now() + ttlSeconds * 1000,
-      });
+      // We do not fallback to memory here because cross-instance consistency is paramount.
     }
   }
 
-  /**
-   * Release or cancel an in-flight key if processing failed before completing
-   */
   public async releaseKey(userId: string, key: string): Promise<void> {
     const storageKey = this.getStorageKey(userId, key);
     try {
       await this.redisClient.del(storageKey);
-    } catch {
-      this.memoryFallback.delete(storageKey);
+    } catch (err) {
+      logger.error('Redis error in releaseKey', { error: (err as Error).message });
     }
-  }
-
-  /**
-   * In-memory fallback acquisition logic
-   */
-  private acquireMemoryFallback(
-    storageKey: string,
-    userId: string,
-    key: string,
-    fingerprint: string,
-    ttlSeconds: number
-  ): AcquireResult {
-    const now = Date.now();
-    const entry = this.memoryFallback.get(storageKey);
-
-    if (entry) {
-      if (now > entry.expiresAt) {
-        this.memoryFallback.delete(storageKey);
-      } else {
-        const record = entry.record;
-        if (record.status === 'PROCESSING') {
-          if (record.fingerprint !== fingerprint) {
-            return {
-              status: 'CONFLICT',
-              message: 'Idempotency key currently processing for a different request payload',
-            };
-          }
-          return {
-            status: 'PROCESSING',
-            message: 'A request with this idempotency key is currently processing',
-          };
-        }
-
-        if (record.status === 'COMPLETED') {
-          if (record.fingerprint !== fingerprint) {
-            return {
-              status: 'CONFLICT',
-              message: 'Idempotency key was previously used with a different request payload',
-            };
-          }
-          return {
-            status: 'HIT',
-            statusCode: record.statusCode || 200,
-            body: record.body,
-            headers: record.headers,
-          };
-        }
-      }
-    }
-
-    const inFlightRecord: StoredIdempotencyRecord = {
-      status: 'PROCESSING',
-      userId,
-      key,
-      fingerprint,
-      startedAt: now,
-    };
-
-    this.memoryFallback.set(storageKey, {
-      record: inFlightRecord,
-      expiresAt: now + 60 * 1000,
-    });
-
-    return { status: 'ACQUIRED' };
   }
 
   public resetMemoryStore(): void {

@@ -207,7 +207,7 @@ export class UserService {
   /**
    * Authoritative backend authentication
    */
-  public async loginWithBackend(email: string, password = 'DemoPassword123!'): Promise<User> {
+  public async loginWithBackend(email: string, password = 'DemoPassword123!'): Promise<User | { requires2FA: true, tempToken: string }> {
     const safeEmail = email.toLowerCase().trim();
     const namePrefix = safeEmail.split('@')[0];
 
@@ -217,6 +217,10 @@ export class UserService {
         email: safeEmail,
         password,
       });
+
+      if (res.requires2FA && res.tempToken) {
+        return { requires2FA: true, tempToken: res.tempToken };
+      }
 
       return this.handleAuthSuccess(res, safeEmail, namePrefix);
     } catch (err: any) {
@@ -236,6 +240,10 @@ export class UserService {
             password,
           });
 
+          if (loginRes.requires2FA && loginRes.tempToken) {
+            return { requires2FA: true, tempToken: loginRes.tempToken };
+          }
+
           return this.handleAuthSuccess(loginRes || signupRes, safeEmail, namePrefix);
         } catch {
           // If signup also fails, fallback to local user state
@@ -248,7 +256,7 @@ export class UserService {
     }
   }
 
-  public async signupWithBackend(email: string, name: string, password = 'DemoPassword123!'): Promise<User> {
+  public async signupWithBackend(email: string, name: string, password = 'DemoPassword123!'): Promise<User | { requires2FA: true, tempToken: string }> {
     const safeEmail = email.toLowerCase().trim();
     const displayName = name.trim() || safeEmail.split('@')[0];
 
@@ -263,6 +271,10 @@ export class UserService {
       email: safeEmail,
       password,
     });
+
+    if (loginRes.requires2FA && loginRes.tempToken) {
+      return { requires2FA: true, tempToken: loginRes.tempToken };
+    }
 
     return this.handleAuthSuccess(loginRes || signupRes, safeEmail, displayName);
   }
@@ -279,8 +291,23 @@ export class UserService {
     return this.currentUser;
   }
 
+  public async verify2FA(tempToken: string, token: string): Promise<User> {
+    const res = await apiClient.post<AuthSessionResponse>('/auth/2fa/verify-login', {
+      tempToken,
+      token
+    });
+    
+    // We expect the backend to return the user session here
+    if (res.user) {
+      return this.handleAuthSuccess(res, res.user.email, res.user.displayName || res.user.username || 'Trader');
+    }
+    
+    throw new Error('Invalid 2FA response');
+  }
+
   private handleAuthSuccess(res: AuthSessionResponse, email: string, defaultName: string): User {
     const user = res.user;
+    if (!user) throw new Error("Missing user payload in auth response");
     const accounts = res.accounts || user.accounts || [];
 
     const spotAcc = accounts.find(a => a.type === 'SPOT');

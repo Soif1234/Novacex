@@ -1,15 +1,12 @@
 import { useState, useEffect } from 'react';
 import { walletService, Asset, WalletBalances } from '../services/wallet';
-import { demoLedger } from '../services/ledger';
-import { orderService } from '../services/OrderService';
-import { futuresOrderService } from '../services/futures/FuturesOrderService';
-import { tradeService } from '../services/TradeService';
 import { wsClient } from '../services/websocket/wsClient';
 
 export function useWallet(accountId: string = 'demo-user-1') {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [balances, setBalances] = useState<WalletBalances | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -23,9 +20,15 @@ export function useWallet(accountId: string = 'demo-user-1') {
         if (isMounted) {
           setAssets(a);
           setBalances(b);
+          setError(null);
         }
       } catch (e) {
         console.error('Failed to fetch wallet stats', e);
+        if (isMounted) {
+          setAssets([]);
+          setBalances(null);
+          setError('Failed to load balances');
+        }
       } finally {
         if (isMounted) setIsLoading(false);
       }
@@ -33,24 +36,16 @@ export function useWallet(accountId: string = 'demo-user-1') {
     
     fetchWallet();
 
-    const unsubLedger = demoLedger.subscribe(fetchWallet);
-    const unsubOrder = orderService.subscribe(fetchWallet);
-    const unsubFutures = futuresOrderService.subscribe(fetchWallet);
-    const unsubTrade = tradeService.subscribe(fetchWallet);
-    const unsubWs = wsClient.subscribe('user:balances', fetchWallet);
+                    const unsubWs = wsClient.subscribe('user:balances', fetchWallet);
     
     const interval = setInterval(fetchWallet, 10000);
 
     return () => {
       isMounted = false;
-      unsubLedger();
-      unsubOrder();
-      unsubFutures();
-      unsubTrade();
-      unsubWs();
+                              unsubWs();
       clearInterval(interval);
     };
   }, [accountId]);
 
-  return { assets, balances, isLoading };
+  return { assets, balances, isLoading, error };
 }

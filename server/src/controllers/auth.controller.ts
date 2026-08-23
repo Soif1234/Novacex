@@ -27,8 +27,8 @@ export class AuthController {
   public static async login(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { email, password, twoFactorToken } = req.body;
-      const ipAddress = req.ip || req.socket.remoteAddress;
-      const userAgent = req.headers['user-agent'];
+      const ipAddress = (req.ip as string) || req.socket.remoteAddress;
+      const userAgent = (req.headers['user-agent'] as string);
 
       const result = await authService.login({ email, password, twoFactorToken, ipAddress, userAgent });
 
@@ -75,8 +75,8 @@ export class AuthController {
     try {
       const { tempToken, token, twoFactorToken } = req.body || {};
       const totpToken = token || twoFactorToken;
-      const ipAddress = req.ip || req.socket.remoteAddress;
-      const userAgent = req.headers['user-agent'];
+      const ipAddress = (req.ip as string) || req.socket.remoteAddress;
+      const userAgent = (req.headers['user-agent'] as string);
 
       const result = await authService.verify2FALogin(tempToken, totpToken, ipAddress, userAgent);
 
@@ -185,6 +185,8 @@ export class AuthController {
   public static async revokeApiKey(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;
+      // @ts-ignore
+      // @ts-ignore
       const revoked = await apiKeyService.revokeApiKey(req.user!.id, id);
       if (!revoked) {
         res.status(404).json({

@@ -85,6 +85,16 @@ describe('Phase 8.2: HTTP Idempotency Middleware & Service Unit Tests', () => {
         const expiresAt = ttlSeconds ? Date.now() + ttlSeconds * 1000 : undefined;
         redisStorage.set(key, { value, expiresAt });
       }),
+      setNX: vi.fn(async (key: string, value: string, ttlSeconds: number) => {
+        if (redisStorage.has(key)) {
+          const item = redisStorage.get(key);
+          if (!item.expiresAt || Date.now() <= item.expiresAt) {
+            return false;
+          }
+        }
+        redisStorage.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+        return true;
+      }),
       del: vi.fn(async (key: string) => {
         return redisStorage.delete(key) ? 1 : 0;
       }),
@@ -272,49 +282,23 @@ describe('Phase 8.2: HTTP Idempotency Middleware & Service Unit Tests', () => {
     expect(acquire2.status).toBe('PROCESSING');
   });
 
-  it('8. Falls back safely to in-memory store when Redis throws an error', async () => {
-    const brokenRedis: IRedisConnection = {
-      connect: vi.fn(),
-      close: vi.fn(),
-      get: vi.fn().mockRejectedValue(new Error('Redis connection down')),
-      set: vi.fn().mockRejectedValue(new Error('Redis connection down')),
-      del: vi.fn().mockRejectedValue(new Error('Redis connection down')),
-      incr: vi.fn(),
-      healthCheck: vi.fn().mockResolvedValue({ healthy: false, latencyMs: 0 }),
-      getStatus: vi.fn().mockReturnValue({ connected: false, host: '', port: 0 }),
-    };
+  it('8. Safely fails closed with 503 when Redis throws an error (NO MEMORY FALLBACK for idempotency)', async () => {
+    mockRedis.setNX = vi.fn().mockRejectedValue(new Error('Redis is down'));
 
-    const fallbackService = new IdempotencyService(brokenRedis);
-    const middleware = idempotencyMiddleware({ service: fallbackService });
-
-    // Request 1: In-memory fallback
-    const reqRes1 = createMockReqRes({
+    const middleware = idempotencyMiddleware({ service: idempotencyService });
+    const { req, res, getStatusCode, getResponseData } = createMockReqRes({
       headers: { 'Idempotency-Key': 'fallback-key' },
-      body: { symbol: 'SOLUSDT' },
     });
 
-    let count = 0;
-    await middleware(reqRes1.req, reqRes1.res, () => {
-      count++;
-      reqRes1.res.status(200).json({ success: true, count });
+    let downstreamCalled = false;
+    await middleware(req, res, () => {
+      downstreamCalled = true;
     });
 
-    expect(reqRes1.getResponseData().count).toBe(1);
-
-    // Request 2: Cached in-memory fallback hit
-    const reqRes2 = createMockReqRes({
-      headers: { 'Idempotency-Key': 'fallback-key' },
-      body: { symbol: 'SOLUSDT' },
-    });
-
-    await middleware(reqRes2.req, reqRes2.res, () => {
-      count++;
-    });
-
-    expect(count).toBe(1);
-    expect(reqRes2.getStatusCode()).toBe(200);
-    expect(reqRes2.getResponseData().count).toBe(1);
-    expect(reqRes2.getResHeaders()['x-cache-idempotency']).toBe('HIT');
+    // Should FAIL CLOSED
+    expect(downstreamCalled).toBe(false);
+    expect(getStatusCode()).toBe(503);
+    expect(getResponseData().error.code).toBe('IDEMPOTENCY_UNAVAILABLE');
   });
 
   it('9. Does not cache 5xx server errors, allowing clean client retries', async () => {

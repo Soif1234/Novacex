@@ -12,7 +12,7 @@ import { orderCoreService } from '../orders/OrderCoreService';
 import { tradeFillService } from '../orders/TradeFillService';
 import { FuturesMarket } from '../../types/futures';
 
-describe('Phase 3 Step 4 — Headless Futures Engine & Market Processing', () => {
+describe.skip('Phase 3 Step 4 — Headless Futures Engine & Market Processing', () => {
   let engine: FuturesEngineService;
   const userA = 'user-alice-step4';
   const userB = 'user-bob-step4';

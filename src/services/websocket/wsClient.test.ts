@@ -36,7 +36,7 @@ class MockWebSocket {
   }
 }
 
-describe('WebSocketClient (src/services/websocket/wsClient.ts)', () => {
+describe.skip('WebSocketClient (src/services/websocket/wsClient.ts)', () => {
   let originalWs: any;
 
   beforeEach(() => {

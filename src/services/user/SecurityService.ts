@@ -145,60 +145,30 @@ class SecurityService {
   }
 
   public async generateTwoFactor(): Promise<{ secret: string; qrCodeUrl: string; recoveryCodes: string[] }> {
-    try {
-      const res = await apiClient.post<any>('/auth/2fa/setup');
-      return {
-        secret: res.secret,
-        qrCodeUrl: res.qrCodeUrl || res.otpauthUrl || `otpauth://totp/MallickExchange:user?secret=${res.secret}&issuer=MallickExchange`,
-        recoveryCodes: res.recoveryCodes || ['RECV-1111-2222', 'RECV-3333-4444', 'RECV-5555-6666'],
-      };
-    } catch {
-      // Fallback for offline / test mode
-      const mockSecret = 'MALLICKDEMO2FASECRETKEY';
-      return {
-        secret: mockSecret,
-        qrCodeUrl: `otpauth://totp/MallickExchange:user?secret=${mockSecret}&issuer=MallickExchange`,
-        recoveryCodes: ['RECV-1111-2222', 'RECV-3333-4444', 'RECV-5555-6666'],
-      };
-    }
+    const res = await apiClient.post<any>('/auth/2fa/setup');
+    return {
+      secret: res.secret,
+      qrCodeUrl: res.qrCodeUrl || res.otpauthUrl,
+      recoveryCodes: res.recoveryCodes,
+    };
   }
 
   public async enableTwoFactor(code: string): Promise<boolean> {
-    try {
-      await apiClient.post('/auth/2fa/enable', { token: code });
-      this.status.twoFactorEnabled = true;
-      this.updateStatus();
-      this.save();
-      this.notify();
-      return true;
-    } catch {
-      // Fallback: accept 6 digit code in demo/test mode
-      if (code.length === 6) {
-        this.status.twoFactorEnabled = true;
-        this.updateStatus();
-        this.save();
-        this.notify();
-        return true;
-      }
-      throw new Error('Invalid 6-digit TOTP code');
-    }
+    await apiClient.post('/auth/2fa/enable', { token: code });
+    this.status.twoFactorEnabled = true;
+    this.updateStatus();
+    this.save();
+    this.notify();
+    return true;
   }
 
   public async disableTwoFactor(code: string): Promise<boolean> {
-    try {
-      await apiClient.post('/auth/2fa/disable', { token: code });
-      this.status.twoFactorEnabled = false;
-      this.updateStatus();
-      this.save();
-      this.notify();
-      return true;
-    } catch {
-      this.status.twoFactorEnabled = false;
-      this.updateStatus();
-      this.save();
-      this.notify();
-      return true;
-    }
+    await apiClient.post('/auth/2fa/disable', { token: code });
+    this.status.twoFactorEnabled = false;
+    this.updateStatus();
+    this.save();
+    this.notify();
+    return true;
   }
 
   public async fetchApiKeys(): Promise<any[]> {

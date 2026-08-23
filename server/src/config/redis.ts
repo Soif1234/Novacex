@@ -1,3 +1,4 @@
+import Redis from 'ioredis';
 import { env, EnvironmentConfig } from './env';
 import { logger } from './logger';
 
@@ -9,9 +10,8 @@ export interface RedisStatus {
   port: number;
   mode: RedisConnectionMode;
   reconnectAttempts: number;
-  lastPingMs?: number;
   error?: string;
-  config?: {
+  config: {
     maxRetries: number;
     baseDelayMs: number;
     maxDelayMs: number;
@@ -24,22 +24,26 @@ export interface IRedisConnection {
   close(): Promise<void>;
   get(key: string): Promise<string | null>;
   set(key: string, value: string, ttlSeconds?: number): Promise<void>;
+  setNX(key: string, value: string, ttlSeconds: number): Promise<boolean>;
   del(key: string): Promise<number>;
   incr(key: string, ttlSeconds?: number): Promise<number>;
   healthCheck(): Promise<{ healthy: boolean; latencyMs: number; error?: string; fallbackMode?: boolean }>;
   getStatus(): RedisStatus;
-  triggerDisconnect?(error?: Error): void;
-  triggerReconnect?(): Promise<void>;
+  triggerDisconnect(error?: Error): void;
+  triggerReconnect(): Promise<void>;
+  setSimulatedFailure(failed: boolean): void;
 }
 
 export class RedisClient implements IRedisConnection {
+  private client: Redis | null = null;
   private isConnected = false;
   private connectionError: string | null = null;
   private mode: RedisConnectionMode = 'DISCONNECTED';
   private reconnectAttempts = 0;
-  private reconnectTimer: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
   private simulatedFailure = false;
+  
+  // Safe local fallback for non-critical coordination (e.g. basic rate limiting if allowed)
   private memoryStore = new Map<string, { value: string; expiresAt?: number }>();
 
   constructor(private config: EnvironmentConfig = env) {}
@@ -53,35 +57,86 @@ export class RedisClient implements IRedisConnection {
 
   public async connect(): Promise<void> {
     this.isShuttingDown = false;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-
+    
     logger.info('Initializing Redis connection', {
-      host: this.config.REDIS_HOST,
-      port: this.config.REDIS_PORT,
+      url: this.config.REDIS_URL,
       connectTimeoutMs: this.config.REDIS_CONNECT_TIMEOUT_MS,
       maxRetries: this.config.REDIS_RECONNECT_MAX_RETRIES,
     });
 
-    try {
-      if (this.simulatedFailure) {
-        throw new Error('Simulated connection failure');
+    return new Promise((resolve) => {
+      try {
+        if (this.simulatedFailure) {
+          throw new Error('Simulated connection failure');
+        }
+
+        const isTls = this.config.REDIS_URL.startsWith('rediss://');
+        this.client = new Redis(this.config.REDIS_URL, {
+          tls: isTls ? { rejectUnauthorized: false } : undefined,
+          connectTimeout: this.config.REDIS_CONNECT_TIMEOUT_MS,
+          maxRetriesPerRequest: null, // Critical for robust error handling without crashing
+          retryStrategy: (times) => {
+            if (this.isShuttingDown) return null;
+            if (times > this.config.REDIS_RECONNECT_MAX_RETRIES) {
+              logger.error('Redis max reconnection attempts reached, maintaining in-memory fallback', {
+                maxRetries: this.config.REDIS_RECONNECT_MAX_RETRIES,
+              });
+              return null; // Stop retrying
+            }
+            this.reconnectAttempts = times;
+            const jitter = Math.floor(Math.random() * 50);
+            const delay = Math.min(
+              this.config.REDIS_RECONNECT_MAX_DELAY_MS,
+              this.config.REDIS_RECONNECT_BASE_DELAY_MS * Math.pow(2, times - 1) + jitter
+            );
+            
+            logger.warn('Redis connection lost; operating in fallback mode and scheduling reconnect', {
+              attempt: times,
+              maxRetries: this.config.REDIS_RECONNECT_MAX_RETRIES,
+              delayMs: Math.round(delay),
+            });
+            return delay;
+          }
+        });
+
+        this.client.on('connect', () => {
+          this.isConnected = true;
+          this.mode = 'REDIS_CONNECTED';
+          this.connectionError = null;
+          logger.info('Redis client connected successfully');
+          resolve();
+        });
+
+        this.client.on('ready', () => {
+          this.reconnectAttempts = 0; // Reset after successful connection and ready state
+        });
+
+        this.client.on('error', (error) => {
+          this.isConnected = false;
+          this.mode = 'FALLBACK_MEMORY';
+          this.connectionError = error.message;
+          logger.error('Redis connection error', { error: error.message });
+          // If this is the initial connect attempt, resolve it to allow the app to boot in fallback mode
+          resolve(); 
+        });
+
+        this.client.on('close', () => {
+          if (!this.isShuttingDown) {
+            this.isConnected = false;
+            this.mode = 'FALLBACK_MEMORY';
+            logger.warn('Redis connection closed unexpectedly');
+          }
+        });
+
+      } catch (err) {
+        const error = err as Error;
+        this.isConnected = false;
+        this.connectionError = error.message;
+        this.mode = 'FALLBACK_MEMORY';
+        logger.error('Failed to initialize Redis client, switching to in-memory fallback', {}, error);
+        resolve();
       }
-      this.isConnected = true;
-      this.mode = 'REDIS_CONNECTED';
-      this.connectionError = null;
-      this.reconnectAttempts = 0;
-      logger.info('Redis client connected successfully');
-    } catch (err) {
-      const error = err as Error;
-      this.isConnected = false;
-      this.connectionError = error.message;
-      this.mode = 'FALLBACK_MEMORY';
-      logger.error('Failed to connect to Redis, switching to in-memory fallback', {}, error);
-      this.scheduleReconnect(error);
-    }
+    });
   }
 
   public triggerDisconnect(error?: Error): void {
@@ -89,87 +144,27 @@ export class RedisClient implements IRedisConnection {
     this.isConnected = false;
     this.mode = 'FALLBACK_MEMORY';
     this.connectionError = error?.message || 'Connection lost';
-    this.scheduleReconnect(error);
+    if (this.client) {
+      this.client.disconnect();
+    }
   }
 
   public async triggerReconnect(): Promise<void> {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    await this.reconnect();
-  }
-
-  private scheduleReconnect(error?: Error): void {
-    if (this.isShuttingDown) return;
-
-    if (this.reconnectAttempts < this.config.REDIS_RECONNECT_MAX_RETRIES) {
-      this.reconnectAttempts++;
-      const jitter = Math.floor(Math.random() * 50);
-      const delay = Math.min(
-        this.config.REDIS_RECONNECT_MAX_DELAY_MS,
-        this.config.REDIS_RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1) + jitter
-      );
-
-      logger.warn('Redis connection lost; operating in fallback mode and scheduling reconnect', {
-        attempt: this.reconnectAttempts,
-        maxRetries: this.config.REDIS_RECONNECT_MAX_RETRIES,
-        delayMs: Math.round(delay),
-        error: error?.message || this.connectionError,
-      });
-
-      this.reconnectTimer = setTimeout(() => {
-        this.reconnect().catch((err) => {
-          logger.error('Redis reconnect attempt error', { error: (err as Error).message });
-        });
-      }, delay);
-    } else {
-      logger.error('Redis max reconnection attempts reached, maintaining in-memory fallback', {
-        maxRetries: this.config.REDIS_RECONNECT_MAX_RETRIES,
-      });
-    }
-  }
-
-  private async reconnect(): Promise<void> {
-    if (this.isShuttingDown) return;
-
-    logger.info('Attempting Redis reconnection...', {
-      attempt: this.reconnectAttempts,
-      host: this.config.REDIS_HOST,
-      port: this.config.REDIS_PORT,
-    });
-
-    try {
-      if (this.simulatedFailure) {
-        throw new Error('Persistent Redis network error');
+    if (this.client && this.client.status !== 'ready' && this.client.status !== 'connecting') {
+      try {
+        await this.client.connect();
+      } catch (e) {
+        // Will be handled by the 'error' listener
       }
-      this.isConnected = true;
-      this.mode = 'REDIS_CONNECTED';
-      this.connectionError = null;
-      const totalAttempts = this.reconnectAttempts;
-      this.reconnectAttempts = 0;
-      if (this.reconnectTimer) {
-        clearTimeout(this.reconnectTimer);
-        this.reconnectTimer = null;
-      }
-      logger.info('Redis connection re-established successfully', {
-        resolvedAfterAttempts: totalAttempts,
-      });
-    } catch (err) {
-      this.isConnected = false;
-      this.mode = 'FALLBACK_MEMORY';
-      this.connectionError = (err as Error).message;
-      this.scheduleReconnect(err as Error);
     }
   }
 
   public async close(): Promise<void> {
     this.isShuttingDown = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
     logger.info('Closing Redis connection');
+    if (this.client) {
+      await this.client.quit();
+    }
     this.isConnected = false;
     this.mode = 'DISCONNECTED';
     this.memoryStore.clear();
@@ -177,9 +172,15 @@ export class RedisClient implements IRedisConnection {
   }
 
   public async get(key: string): Promise<string | null> {
-    if (this.mode === 'DISCONNECTED' && !this.isConnected) {
-      throw new Error('Redis is not connected');
+    if (this.mode === 'REDIS_CONNECTED' && this.client && !this.simulatedFailure) {
+      try {
+        return await this.client.get(key);
+      } catch (e) {
+        logger.warn('Redis GET failed, falling back', { error: (e as Error).message });
+      }
     }
+    
+    // Memory fallback logic
     const item = this.memoryStore.get(key);
     if (!item) return null;
     if (item.expiresAt && Date.now() > item.expiresAt) {
@@ -190,24 +191,70 @@ export class RedisClient implements IRedisConnection {
   }
 
   public async set(key: string, value: string, ttlSeconds?: number): Promise<void> {
-    if (this.mode === 'DISCONNECTED' && !this.isConnected) {
-      throw new Error('Redis is not connected');
+    if (this.mode === 'REDIS_CONNECTED' && this.client && !this.simulatedFailure) {
+      try {
+        if (ttlSeconds) {
+          await this.client.set(key, value, 'EX', ttlSeconds);
+        } else {
+          await this.client.set(key, value);
+        }
+        return;
+      } catch (e) {
+        logger.warn('Redis SET failed, falling back', { error: (e as Error).message });
+      }
     }
+    
     const expiresAt = ttlSeconds ? Date.now() + ttlSeconds * 1000 : undefined;
     this.memoryStore.set(key, { value, expiresAt });
   }
 
+  /**
+   * IMPORTANT: setNX does NOT fall back to memory because atomic idempotency / distributed locking
+   * CANNOT be safely simulated in memory across multiple instances. 
+   * If Redis is down, it MUST throw an error and fail closed to prevent financial duplication.
+   */
+  public async setNX(key: string, value: string, ttlSeconds: number): Promise<boolean> {
+    if (this.simulatedFailure) {
+      throw new Error('Redis is offline (simulated) - Atomic setNX cannot safely proceed');
+    }
+    if (this.mode !== 'REDIS_CONNECTED' || !this.client) {
+      throw new Error('Redis is offline - Atomic setNX cannot safely proceed');
+    }
+    
+    const result = await this.client.set(key, value, 'EX', ttlSeconds, 'NX');
+    return result === 'OK';
+  }
+
   public async del(key: string): Promise<number> {
-    if (this.mode === 'DISCONNECTED' && !this.isConnected) {
-      throw new Error('Redis is not connected');
+    if (this.mode === 'REDIS_CONNECTED' && this.client && !this.simulatedFailure) {
+      try {
+        return await this.client.del(key);
+      } catch (e) {
+        logger.warn('Redis DEL failed, falling back', { error: (e as Error).message });
+      }
     }
     return this.memoryStore.delete(key) ? 1 : 0;
   }
 
   public async incr(key: string, ttlSeconds?: number): Promise<number> {
-    if (this.mode === 'DISCONNECTED' && !this.isConnected) {
-      throw new Error('Redis is not connected');
+    if (this.mode === 'REDIS_CONNECTED' && this.client && !this.simulatedFailure) {
+      try {
+        if (ttlSeconds) {
+          const pipeline = this.client.pipeline();
+          pipeline.incr(key);
+          pipeline.expire(key, ttlSeconds);
+          const results = await pipeline.exec();
+          if (results && results[0] && !results[0][0]) {
+            return results[0][1] as number;
+          }
+        } else {
+          return await this.client.incr(key);
+        }
+      } catch (e) {
+        logger.warn('Redis INCR failed, falling back', { error: (e as Error).message });
+      }
     }
+    
     let item = this.memoryStore.get(key);
     let count = 1;
     if (item) {
@@ -234,13 +281,17 @@ export class RedisClient implements IRedisConnection {
         };
       }
 
-      if (this.mode === 'FALLBACK_MEMORY') {
+      if (this.mode === 'FALLBACK_MEMORY' || this.simulatedFailure) {
         return {
-          healthy: true,
+          healthy: true, // Degraded healthy
           latencyMs: Date.now() - start,
-          error: this.connectionError ? `Degraded (in-memory fallback): ${this.connectionError}` : undefined,
+          error: `Degraded (in-memory fallback): ${this.connectionError || 'simulated failure'}`,
           fallbackMode: true,
         };
+      }
+
+      if (this.client) {
+        await this.client.ping();
       }
 
       const latencyMs = Date.now() - start;
@@ -262,10 +313,10 @@ export class RedisClient implements IRedisConnection {
 
   public getStatus(): RedisStatus {
     return {
-      connected: this.isConnected,
+      connected: this.isConnected && !this.simulatedFailure,
       host: this.config.REDIS_HOST,
       port: this.config.REDIS_PORT,
-      mode: this.mode,
+      mode: this.simulatedFailure ? 'FALLBACK_MEMORY' : this.mode,
       reconnectAttempts: this.reconnectAttempts,
       error: this.connectionError || undefined,
       config: {

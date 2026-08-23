@@ -42,7 +42,12 @@ export class ApiClient {
 
   constructor(baseURL?: string) {
     // In browser/Vite: VITE_API_BASE_URL or fallback to http://localhost:4000/api/v1
+    const isProd = typeof import.meta !== 'undefined' && (import.meta as any).env?.PROD;
     const envBase = typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE_URL;
+    
+    if (isProd && !envBase && !baseURL) {
+      throw new Error('VITE_API_BASE_URL must be configured in production');
+    }
     this.baseURL = (baseURL || envBase || 'http://localhost:4000/api/v1').replace(/\/+$/, '');
   }
 

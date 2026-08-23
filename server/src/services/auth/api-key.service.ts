@@ -16,8 +16,15 @@ export class ApiKeyService {
   private seenNonces: Map<string, number> = new Map(); // keyId:nonce -> expiryTime
 
   constructor(private database: IDatabaseConnection = db) {
-    // Derive 32-byte encryption key for AES-256-GCM from API_KEY_ENCRYPTION_SECRET or fallback
-    this.encryptionKey = crypto.createHash('sha256').update(env.API_KEY_ENCRYPTION_SECRET || 'default_mallick_api_encryption_key_change_in_prod').digest();
+    let secret = env.API_KEY_ENCRYPTION_SECRET;
+    if (!secret) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error('FATAL: API_KEY_ENCRYPTION_SECRET must be set in production environment');
+      } else {
+        secret = 'default_mallick_api_encryption_key_change_in_prod';
+      }
+    }
+    this.encryptionKey = crypto.createHash('sha256').update(secret).digest();
   }
 
   /**

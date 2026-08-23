@@ -2,13 +2,16 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { userService } from '../services/user/UserService';
 import { User } from '../services/user/types';
 
-export type AuthStatus = 'INITIALIZING' | 'AUTHENTICATED' | 'UNAUTHENTICATED';
+export type AuthStatus = 'INITIALIZING' | 'AUTHENTICATED' | 'UNAUTHENTICATED' | 'AWAITING_2FA';
 
 interface AuthContextType {
   user: User | null;
   status: AuthStatus;
   isAuthenticated: boolean;
-  login: (email: string, password?: string) => Promise<void> | void;
+  login: (email: string, password?: string) => Promise<boolean>;
+  verify2FA: (totp: string) => Promise<boolean>;
+  tempToken: string | null;
+  cancel2FA: () => void;
   signup: (email: string, name: string, password?: string) => Promise<void> | void;
   logout: () => void;
 }
@@ -18,6 +21,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [status, setStatus] = useState<AuthStatus>('INITIALIZING');
+  const [tempToken, setTempToken] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -72,19 +76,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (email: string, password = 'DemoPassword123!') => {
     try {
-      await userService.loginWithBackend(email, password);
-    } catch {
-      userService.login(email);
+      const res = await userService.loginWithBackend(email, password);
+      if (res && 'requires2FA' in res && res.requires2FA) {
+        setTempToken(res.tempToken);
+        setStatus('AWAITING_2FA');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      console.error('Login failed', e);
+      throw e;
     }
   };
 
   const signup = async (email: string, name: string, password = 'DemoPassword123!') => {
     try {
-      await userService.signupWithBackend(email, name, password);
-    } catch {
-      userService.login(email);
-      userService.updateProfile({ displayName: name, username: name });
+      const res = await userService.signupWithBackend(email, name, password);
+      if (res && 'requires2FA' in res && res.requires2FA) {
+        setTempToken(res.tempToken);
+        setStatus('AWAITING_2FA');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      console.error('Signup failed', e);
+      throw e;
     }
+  };
+
+
+  const verify2FA = async (totp: string) => {
+    if (!tempToken) throw new Error("No temp token");
+    try {
+      await userService.verify2FA(tempToken, totp);
+      setTempToken(null);
+      setStatus('AUTHENTICATED');
+      return true;
+    } catch (e) {
+      console.error('2FA verification failed', e);
+      throw e;
+    }
+  };
+
+  const cancel2FA = () => {
+    setTempToken(null);
+    setStatus('UNAUTHENTICATED');
   };
 
   const logout = () => {
@@ -107,7 +143,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isAuthenticated: status === 'AUTHENTICATED', 
       login, 
       signup, 
-      logout 
+      logout, 
+      verify2FA, 
+      tempToken, 
+      cancel2FA 
     }}>
       {children}
     </AuthContext.Provider>

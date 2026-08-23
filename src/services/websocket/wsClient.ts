@@ -29,7 +29,12 @@ export class WebSocketClient {
   private isExplicitlyClosed = false;
 
   constructor(url?: string) {
+    const isProd = typeof import.meta !== 'undefined' && (import.meta as any).env?.PROD;
     const envWs = typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_WS_URL;
+    
+    if (isProd && !envWs && !url) {
+      throw new Error('VITE_WS_URL must be configured in production');
+    }
     this.url = url || envWs || 'ws://localhost:4000/ws';
   }
 

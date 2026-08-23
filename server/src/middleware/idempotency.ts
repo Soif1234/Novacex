@@ -138,7 +138,15 @@ export function idempotencyMiddleware(options: IdempotencyOptions = {}) {
         userId,
         error: err.message,
       });
-      next();
+      // FAIL CLOSED: If we cannot guarantee idempotency, we must not execute the request.
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'IDEMPOTENCY_UNAVAILABLE',
+          message: 'Idempotency service is currently unavailable. Request safely rejected.',
+          requestId: req.id,
+        },
+      });
     }
   };
 }

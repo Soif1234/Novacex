@@ -1,4 +1,5 @@
 import { Server as HttpServer, IncomingMessage } from 'http';
+import { env } from '../config/env';
 import { Duplex } from 'stream';
 import crypto from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
@@ -76,6 +77,15 @@ export class WebSocketGateway {
     server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
       const url = new URL(request.url || '', `http://${request.headers.host || 'localhost'}`);
       if (url.pathname === path || url.pathname.startsWith(`${path}/`)) {
+        const origin = request.headers.origin;
+        if (env.NODE_ENV === 'production' && origin) {
+          const allowedOrigins = env.CORS_ORIGIN.split(',').map(o => o.trim());
+          if (!allowedOrigins.includes(origin) && !allowedOrigins.includes('*')) {
+            socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+            socket.destroy();
+            return;
+          }
+        }
         this.wss!.handleUpgrade(request, socket, head, (ws: WebSocket) => {
           this.wss!.emit('connection', ws, request);
         });

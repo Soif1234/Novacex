@@ -7,6 +7,7 @@ import { sessionService, SessionService } from './session.service';
 import { totpService, TotpService, TotpSetupResult } from './totp.service';
 import { AppError } from '../../middleware/errorHandler';
 import { logger } from '../../config/logger';
+import { redis } from '../../config/redis';
 
 export interface SignupDto {
   email: string;
@@ -276,7 +277,12 @@ export class AuthService {
       throw new AppError('Invalid Two-Factor Authentication code', 401, 'INVALID_2FA_TOKEN');
     }
 
-    this.temp2faTokens.delete(tempToken);
+    try {
+      await redis.del(`auth:2fa:temp:${tempToken}`);
+    } catch (err) {
+      // Background deletion failure shouldn't block login
+      logger.warn('Failed to delete 2FA temp token from Redis', { error: (err as Error).message });
+    }
 
     const { sessionToken } = await this.sessions.createSession(entry.userId, ipAddress, userAgent);
     const safeUser = await this.getUserById(entry.userId);

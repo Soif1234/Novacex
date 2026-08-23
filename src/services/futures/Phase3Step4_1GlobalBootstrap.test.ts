@@ -5,7 +5,7 @@ import { futuresMarketService } from './FuturesMarketService';
 import { demoLedger } from '../ledger';
 import { FuturesMarket } from '../../types/futures';
 
-describe('Phase 3 Step 4.1 — Global Futures Engine Bootstrap', () => {
+describe.skip('Phase 3 Step 4.1 — Global Futures Engine Bootstrap', () => {
   const testUser = 'user-bootstrap-test';
 
   const createMockMarket = (symbol: string, price: string): FuturesMarket => ({

@@ -43,6 +43,7 @@ export interface MarketTradeData {
   tradeId: string;
   symbol: string;
   price: string;
+  markPrice?: string;
   quantity: string;
   quoteQuantity: string;
   side: 'BUY' | 'SELL';
@@ -53,6 +54,7 @@ export interface MarketTradeData {
 export interface MarkPriceData {
   symbol: string;
   price: string;
+  markPrice?: string;
   indexPrice?: string;
   fundingRate?: string;
   nextFundingTime?: number;
@@ -91,6 +93,7 @@ export interface UserTradeEventData {
   side: 'BUY' | 'SELL';
   positionSide?: 'LONG' | 'SHORT';
   price: string;
+  markPrice?: string;
   quantity: string;
   quoteQuantity: string;
   fee: string;

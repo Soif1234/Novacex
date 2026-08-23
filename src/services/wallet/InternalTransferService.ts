@@ -1,4 +1,3 @@
-import { demoLedger } from '../ledger';
 import { Decimal } from 'decimal.js';
 import { walletService } from './WalletService';
 import { WalletType } from './types';
@@ -22,15 +21,11 @@ export interface InternalTransfer {
 }
 
 export class InternalTransferService {
-  private transfers: InternalTransfer[] = [];
-  private persistKey = 'demo_transfers_state';
-  private subscribers: Set<() => void> = new Set();
-
-  constructor(private persist: boolean = true) {
-    if (this.persist) {
-      this.load();
-    }
-  }
+  private persistKey = 'demo_transfers';
+  private persist() {}
+  private subscribers = new Set<any>();
+  private transfers: any[] = [];
+    constructor() {}
 
   private load() {
     try {
@@ -78,126 +73,36 @@ export class InternalTransferService {
     return this.transfers.find(t => t.id === id);
   }
 
-  public async validateTransfer(
+    public async createTransfer(
     asset: string,
     amount: string,
     fromWallet: WalletType,
     toWallet: WalletType,
     accountId: string = 'demo-user-1'
-  ): Promise<{ valid: boolean; error?: string }> {
+  ): Promise<any> {
     if (fromWallet === toWallet) {
-      return { valid: false, error: 'Cannot transfer to the same wallet' };
+      throw new Error('Cannot transfer to the same wallet');
     }
-
-    if (asset !== 'USDT') {
-      return { valid: false, error: 'This asset cannot be transferred between these wallets.' };
-    }
-
     const amt = new Decimal(amount);
-    if (amt.lte(0)) {
-      return { valid: false, error: 'Transfer amount must be greater than zero' };
+    if (amt.lte(0)) throw new Error('Transfer amount must be greater than zero');
+
+    if (typeof window !== 'undefined') {
+      const spotAccId = userService.getSpotAccountId();
+      const futuresAccId = userService.getFuturesAccountId();
+      const fromAccId = fromWallet === 'SPOT' ? spotAccId : futuresAccId;
+      const toAccId = toWallet === 'SPOT' ? spotAccId : futuresAccId;
+
+      const res = await apiClient.post('/wallet/transfer', {
+        fromAccountId: fromAccId,
+        toAccountId: toAccId,
+        asset,
+        amount,
+        referenceId: Math.random().toString(36).substring(2, 11),
+        description: `Internal Transfer from ${fromWallet} to ${toWallet}`,
+      });
+      return res;
     }
-
-    const balances = await walletService.getWalletBalances(accountId);
-    const available = new Decimal(fromWallet === 'SPOT' ? balances.spotAvailable : balances.futuresAvailable);
-
-    if (available.lt(amt)) {
-      return { valid: false, error: 'Insufficient balance for transfer' };
-    }
-
-    return { valid: true };
+    throw new Error('Transfer requires browser environment');
   }
-
-  public async createTransfer(
-    asset: string,
-    amount: string,
-    fromWallet: WalletType,
-    toWallet: WalletType,
-    accountId: string = 'demo-user-1'
-  ): Promise<InternalTransfer> {
-    const validation = await this.validateTransfer(asset, amount, fromWallet, toWallet, accountId);
-
-    if (!validation.valid) {
-      throw new Error(validation.error);
-    }
-
-    const transfer: InternalTransfer = {
-      id: Math.random().toString(36).substring(2, 11),
-      accountId,
-      asset,
-      amount,
-      fromWallet,
-      toWallet,
-      status: 'PENDING',
-      createdAt: Date.now()
-    };
-
-    this.transfers.push(transfer);
-    this.save();
-    this.notify();
-
-    // Execute immediately for demo
-    await this.executeTransfer(transfer.id);
-
-    return transfer;
-  }
-
-  public async executeTransfer(id: string): Promise<void> {
-    const transfer = this.getTransfer(id);
-    if (!transfer || transfer.status !== 'PENDING') {
-      throw new Error('Transfer not found or not in PENDING state');
-    }
-
-    const accountId = transfer.accountId || 'demo-user-1';
-    const validation = await this.validateTransfer(transfer.asset, transfer.amount, transfer.fromWallet, transfer.toWallet, accountId);
-    
-    if (!validation.valid) {
-      transfer.status = 'FAILED';
-      transfer.completedAt = Date.now();
-      this.save();
-      this.notify();
-      throw new Error(validation.error);
-    }
-
-    try {
-      const fromAsset = transfer.fromWallet === 'FUTURES' ? 'FUTURES_USDT' : 'USDT';
-      const toAsset = transfer.toWallet === 'FUTURES' ? 'FUTURES_USDT' : 'USDT';
-      
-      const reason = `Internal Transfer from ${transfer.fromWallet} to ${transfer.toWallet}`;
-      
-      if (typeof window !== 'undefined') {
-        const spotAccId = userService.getSpotAccountId();
-        const futuresAccId = userService.getFuturesAccountId();
-        const fromAccId = transfer.fromWallet === 'SPOT' ? spotAccId : futuresAccId;
-        const toAccId = transfer.toWallet === 'SPOT' ? spotAccId : futuresAccId;
-
-        apiClient.post('/wallet/transfer', {
-          fromAccountId: fromAccId,
-          toAccountId: toAccId,
-          asset: transfer.asset,
-          amount: transfer.amount,
-          referenceId: transfer.id,
-          description: reason,
-        }).catch(() => {});
-      }
-
-      demoLedger.debit(fromAsset, transfer.amount, reason, 'TRANSFER', transfer.id, accountId);
-      demoLedger.credit(toAsset, transfer.amount, reason, 'TRANSFER', transfer.id, accountId);
-      
-      transfer.status = 'COMPLETED';
-      transfer.completedAt = Date.now();
-      
-      this.save();
-      this.notify();
-    } catch (e: any) {
-      transfer.status = 'FAILED';
-      transfer.completedAt = Date.now();
-      this.save();
-      this.notify();
-      throw new Error(`Transfer failed: ${e.message}`);
-    }
-  }
-
 }
-
-export const internalTransferService = new InternalTransferService(typeof window !== 'undefined');
+export const internalTransferService = new InternalTransferService();

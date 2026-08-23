@@ -1,4 +1,3 @@
-import { demoLedger } from '../ledger';
 import { Decimal } from 'decimal.js';
 import { safeParseArray, isValidFinancialString } from '../storageUtil';
 import { apiClient } from '../api/client';
@@ -22,15 +21,11 @@ export interface DemoTransaction {
 }
 
 export class DemoTransactionService {
-  private transactions: DemoTransaction[] = [];
-  private persistKey = 'demo_transactions_state';
-  private subscribers: Set<() => void> = new Set();
-
-  constructor(private persist: boolean = true) {
-    if (this.persist) {
-      this.load();
-    }
-  }
+  private persistKey = 'demo_txs';
+  private persist() {}
+  private subscribers = new Set<any>();
+  private transactions: any[] = [];
+    constructor() {}
 
   private load() {
     try {
@@ -89,120 +84,46 @@ export class DemoTransactionService {
     }
   }
 
-  public async createDeposit(asset: string, amount: string, accountId: string = 'demo-user-1'): Promise<DemoTransaction> {
+    public async createDeposit(asset: string, amount: string, accountId: string = 'demo-user-1'): Promise<any> {
     const val = this.validateAmount(amount);
     if (!val.valid) throw new Error(val.error);
 
-    const tx: DemoTransaction = {
-      id: Math.random().toString(36).substring(2, 11),
-      accountId,
-      type: 'DEPOSIT',
-      asset,
-      amount,
-      status: 'PENDING',
-      createdAt: Date.now(),
-      method: 'DEMO'
-    };
-    
-    this.transactions.push(tx);
-    this.save();
-    this.notify();
-
-    // Execute immediately for demo
-    return this.executeDeposit(tx.id);
-  }
-
-  private executeDeposit(id: string): DemoTransaction {
-    const tx = this.transactions.find(t => t.id === id);
-    if (!tx || tx.type !== 'DEPOSIT') throw new Error('Deposit not found');
-    
-    const accountId = tx.accountId || 'demo-user-1';
-    
     if (typeof window !== 'undefined') {
       const spotAccId = userService.getSpotAccountId();
-      apiClient.post('/wallet/admin/paper-deposit', {
+      const res = await apiClient.post('/wallet/admin/paper-deposit', {
         targetAccountId: spotAccId,
-        asset: tx.asset,
-        amount: tx.amount,
-        referenceId: tx.id,
-        description: 'Simulated balance top-up',
-      }).catch(() => {});
+        asset,
+        amount,
+        referenceId: Math.random().toString(36).substring(2, 11),
+        description: 'Demo Deposit',
+      });
+      return res;
     }
-
-    try {
-      demoLedger.credit(tx.asset, tx.amount, 'Demo Deposit', 'DEPOSIT', tx.id, accountId);
-      tx.status = 'COMPLETED';
-      tx.completedAt = Date.now();
-    } catch (e: any) {
-      tx.status = 'FAILED';
-      tx.completedAt = Date.now();
-    }
-    
-    this.save();
-    this.notify();
-    return tx;
+    throw new Error('Paper deposit requires browser environment');
   }
 
-  public async createWithdrawal(asset: string, amount: string, destinationLabel: string, availableBalance: string, accountId: string = 'demo-user-1'): Promise<DemoTransaction> {
+  public async createWithdrawal(asset: string, amount: string, destinationLabel: string, availableBalance: string, accountId: string = 'demo-user-1'): Promise<any> {
     const val = this.validateAmount(amount);
     if (!val.valid) throw new Error(val.error);
 
-    if (new Decimal(amount).gt(new Decimal(availableBalance))) {
+    const amt = new Decimal(amount);
+    if (amt.gt(new Decimal(availableBalance))) {
       throw new Error('Insufficient available balance');
     }
 
-    const tx: DemoTransaction = {
-      id: Math.random().toString(36).substring(2, 11),
-      accountId,
-      type: 'WITHDRAWAL',
-      asset,
-      amount,
-      destinationLabel,
-      status: 'PENDING',
-      createdAt: Date.now(),
-      method: 'DEMO'
-    };
-
-    this.transactions.push(tx);
-    this.save();
-    this.notify();
-
-    // Execute immediately
-    return this.executeWithdrawal(tx.id);
-  }
-
-  private executeWithdrawal(id: string): DemoTransaction {
-    const tx = this.transactions.find(t => t.id === id);
-    if (!tx || tx.type !== 'WITHDRAWAL') throw new Error('Withdrawal not found');
-
-    const accountId = tx.accountId || 'demo-user-1';
-
     if (typeof window !== 'undefined') {
       const spotAccId = userService.getSpotAccountId();
-      apiClient.post('/wallet/withdraw', {
+      const res = await apiClient.post('/wallet/withdraw', {
         accountId: spotAccId,
-        asset: tx.asset,
-        amount: tx.amount,
-        referenceId: tx.id,
-        destinationAddress: tx.destinationLabel,
+        asset,
+        amount,
+        referenceId: Math.random().toString(36).substring(2, 11),
+        destinationAddress: destinationLabel,
         description: 'User withdrawal',
-      }).catch(() => {});
+      });
+      return res;
     }
-
-    try {
-      demoLedger.debit(tx.asset, tx.amount, 'Demo Withdrawal', 'WITHDRAWAL', tx.id, accountId);
-      tx.status = 'COMPLETED';
-      tx.completedAt = Date.now();
-    } catch (e: any) {
-      tx.status = 'FAILED';
-      tx.completedAt = Date.now();
-    }
-
-    this.save();
-    this.notify();
-    return tx;
+    throw new Error('Withdrawal requires browser environment');
   }
-
 }
-
-export const demoTransactionService = new DemoTransactionService(typeof window !== 'undefined');
+export const demoTransactionService = new DemoTransactionService();

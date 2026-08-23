@@ -154,7 +154,7 @@ export class MarketDataService {
     return {
       symbol: cleanSym,
       price,
-      markPrice: price,
+      
       indexPrice,
       timestamp: Date.now(),
     };

@@ -100,9 +100,15 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
   const dbName = process.env.DB_NAME || 'mallick_exchange';
   const dbUser = process.env.DB_USER || 'mallick';
   const dbPassword = process.env.DB_PASSWORD || 'mallick_pass';
+  if (nodeEnv === 'production' && !process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL must be provided in production');
+  }
   const databaseUrl = process.env.DATABASE_URL || `postgresql://${dbUser}:${dbPassword}@${dbHost}:${dbPort}/${dbName}`;
 
   const redisHost = process.env.REDIS_HOST || 'localhost';
+  if (nodeEnv === 'production' && !process.env.REDIS_URL) {
+    throw new Error('REDIS_URL must be provided in production');
+  }
   const redisUrl = process.env.REDIS_URL || `redis://${redisHost}:${redisPort}`;
 
   const config: EnvironmentConfig = {
@@ -112,7 +118,9 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     API_PREFIX: process.env.API_PREFIX || '/api/v1',
     APP_NAME: process.env.APP_NAME || 'mallick-exchange-backend',
     APP_VERSION: process.env.APP_VERSION || '1.0.0',
-    CORS_ORIGIN: process.env.CORS_ORIGIN || 'http://localhost:3000,http://127.0.0.1:3000',
+    CORS_ORIGIN: (nodeEnv === 'production' && (!process.env.CORS_ORIGIN || process.env.CORS_ORIGIN.includes('*'))) 
+    ? (() => { throw new Error('CORS_ORIGIN must be explicitly configured without wildcards in production'); })() 
+    : process.env.CORS_ORIGIN || 'http://localhost:3000,http://127.0.0.1:3000',
     DATABASE_URL: databaseUrl,
     DB_HOST: dbHost,
     DB_PORT: dbPort,
@@ -143,7 +151,9 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     LOAD_SHEDDING_DB_WAITING_THRESHOLD: loadSheddingDbWaitingThreshold,
     LOG_LEVEL: logLevel as 'debug' | 'info' | 'warn' | 'error',
     SHUTDOWN_TIMEOUT_MS: shutdownTimeout,
-    API_KEY_ENCRYPTION_SECRET: process.env.API_KEY_ENCRYPTION_SECRET || undefined,
+    API_KEY_ENCRYPTION_SECRET: (nodeEnv === 'production' && !process.env.API_KEY_ENCRYPTION_SECRET) 
+    ? (() => { throw new Error('API_KEY_ENCRYPTION_SECRET must be provided in production'); })() 
+    : process.env.API_KEY_ENCRYPTION_SECRET || undefined,
     ...overrides
   };
 

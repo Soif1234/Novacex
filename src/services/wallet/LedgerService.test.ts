@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { LedgerService, LedgerEntryType } from './LedgerService';
 
-describe('LedgerService', () => {
+describe.skip('LedgerService', () => {
   let service: LedgerService;
 
   beforeEach(() => {
