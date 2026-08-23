@@ -3,6 +3,9 @@ import { env } from './config/env';
 import { logger } from './config/logger';
 import { requestIdMiddleware } from './middleware/requestId';
 import { securityHeadersMiddleware, corsMiddleware } from './middleware/security';
+import { telemetryMiddleware } from './middleware/telemetry';
+import { loadSheddingMiddleware } from './middleware/loadShedding';
+import { globalRateLimiter } from './middleware/rateLimit';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { apiRouter } from './routes';
 
@@ -21,8 +24,11 @@ export function createApp(options: AppOptions = { enableLogging: true }): Expres
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
-  // 3. Request identification
+  // 3. Request identification, telemetry, load shedding & global rate limiting
   app.use(requestIdMiddleware);
+  app.use(telemetryMiddleware);
+  app.use(loadSheddingMiddleware);
+  app.use(globalRateLimiter());
 
   // 4. Request logging
   if (options.enableLogging) {

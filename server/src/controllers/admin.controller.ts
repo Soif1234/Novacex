@@ -149,4 +149,37 @@ export class AdminController {
       next(err);
     }
   }
+
+  /**
+   * GET /api/v1/admin/metrics
+   * Internal/Admin Telemetry snapshot in JSON format
+   */
+  public static async getMetrics(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { telemetryService } = await import('../services/system/telemetry.service');
+      const metrics = await telemetryService.getMetricsJSON();
+      res.status(200).json({
+        success: true,
+        data: metrics,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /**
+   * GET /api/v1/admin/metrics/prometheus
+   * Internal/Admin Telemetry export in Prometheus exposition format
+   */
+  public static async getPrometheusMetrics(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { telemetryService } = await import('../services/system/telemetry.service');
+      const text = await telemetryService.getPrometheusFormat();
+      res.setHeader('Content-Type', 'text/plain; version=0.0.4');
+      res.status(200).send(text);
+    } catch (err) {
+      next(err);
+    }
+  }
 }
+

@@ -23,6 +23,13 @@ export interface DatabaseStatus {
   waitingClients?: number;
   lastPingMs?: number;
   error?: string;
+  config?: {
+    min: number;
+    max: number;
+    idleTimeoutMillis: number;
+    connectionTimeoutMillis: number;
+    queryTimeoutMillis: number;
+  };
 }
 
 export interface QueryResult<T = unknown> {
@@ -30,18 +37,21 @@ export interface QueryResult<T = unknown> {
   rowCount: number;
 }
 
+export interface QueryOptions {
+  timeoutMs?: number;
+}
+
 export interface IDatabaseConnection {
   connect(): Promise<void>;
   close(): Promise<void>;
-  query<T = unknown>(sql: string, params?: unknown[]): Promise<QueryResult<T>>;
-  transaction<T = unknown>(callback: (client: IDatabaseConnection) => Promise<T>): Promise<T>;
+  query<T = unknown>(sql: string, params?: unknown[], options?: QueryOptions): Promise<QueryResult<T>>;
+  transaction<T = unknown>(callback: (client: IDatabaseConnection) => Promise<T>, options?: QueryOptions): Promise<T>;
   healthCheck(): Promise<{ healthy: boolean; latencyMs: number; error?: string }>;
   getStatus(): DatabaseStatus;
   reset?(): void;
 }
 
 function formatPgResult<T>(res: any): QueryResult<T> {
-
   if (!res) {
     return { rows: [], rowCount: 0 };
   }
@@ -61,19 +71,41 @@ function formatPgResult<T>(res: any): QueryResult<T> {
 
 /**
  * Real PostgreSQL Transaction Client.
- * Wraps an acquired pg.PoolClient for atomic multi-statement transactions.
+ * Wraps an acquired pg.PoolClient for atomic multi-statement transactions with query timeout protection.
  */
 export class PostgresTransactionClient implements IDatabaseConnection {
-  constructor(private client: pg.PoolClient) {}
+  constructor(private client: pg.PoolClient, private defaultOptions?: QueryOptions) {}
 
   public async connect(): Promise<void> {}
   public async close(): Promise<void> {}
 
-  public async query<T = unknown>(sql: string, params: unknown[] = []): Promise<QueryResult<T>> {
-    const res = await this.client.query(sql, params);
-    return formatPgResult<T>(res);
-  }
+  public async query<T = unknown>(
+    sql: string,
+    params: unknown[] = [],
+    options?: QueryOptions
+  ): Promise<QueryResult<T>> {
+    const timeoutMs = options?.timeoutMs ?? this.defaultOptions?.timeoutMs ?? env.DB_QUERY_TIMEOUT_MS;
 
+    let timer: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const timeoutErr = new Error(`QUERY_TIMEOUT: PostgreSQL query exceeded execution timeout of ${timeoutMs}ms`);
+        logger.error('PostgreSQL transaction query timeout exceeded', {
+          timeoutMs,
+          sql: sql.substring(0, 120),
+        });
+        reject(timeoutErr);
+      }, timeoutMs);
+    });
+
+    try {
+      const queryPromise = this.client.query(sql, params);
+      const res = await Promise.race([queryPromise, timeoutPromise]);
+      return formatPgResult<T>(res);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 
   public async transaction<T = unknown>(callback: (client: IDatabaseConnection) => Promise<T>): Promise<T> {
     return callback(this);
@@ -95,53 +127,73 @@ export class PostgresTransactionClient implements IDatabaseConnection {
 
 /**
  * Real PostgreSQL Database Pool using 'pg.Pool'.
- * Production and runtime database adapter.
+ * Production and runtime database adapter with resilience, queue monitoring, and query timeouts.
  */
 export class PostgresDatabasePool implements IDatabaseConnection {
   private pool: pg.Pool;
   private isConnected = false;
   private connectionError: string | null = null;
+  private poolConfig: pg.PoolConfig;
 
   constructor(customConfig?: pg.PoolConfig) {
-    const config: pg.PoolConfig = customConfig || (
-      env.DATABASE_URL
-        ? {
-            connectionString: env.DATABASE_URL,
-            min: env.DB_POOL_MIN,
-            max: env.DB_POOL_MAX,
-            idleTimeoutMillis: 30000,
-            connectionTimeoutMillis: 5000,
-          }
-        : {
-            host: env.DB_HOST,
-            port: env.DB_PORT,
-            database: env.DB_NAME,
-            user: env.DB_USER,
-            password: env.DB_PASSWORD,
-            min: env.DB_POOL_MIN,
-            max: env.DB_POOL_MAX,
-            idleTimeoutMillis: 30000,
-            connectionTimeoutMillis: 5000,
-          }
-    );
+    const baseConfig: pg.PoolConfig = env.DATABASE_URL
+      ? {
+          connectionString: env.DATABASE_URL,
+          min: env.DB_POOL_MIN,
+          max: env.DB_POOL_MAX,
+          idleTimeoutMillis: env.DB_IDLE_TIMEOUT_MS,
+          connectionTimeoutMillis: env.DB_CONNECTION_TIMEOUT_MS,
+          statement_timeout: env.DB_QUERY_TIMEOUT_MS,
+          query_timeout: env.DB_QUERY_TIMEOUT_MS,
+        }
+      : {
+          host: env.DB_HOST,
+          port: env.DB_PORT,
+          database: env.DB_NAME,
+          user: env.DB_USER,
+          password: env.DB_PASSWORD,
+          min: env.DB_POOL_MIN,
+          max: env.DB_POOL_MAX,
+          idleTimeoutMillis: env.DB_IDLE_TIMEOUT_MS,
+          connectionTimeoutMillis: env.DB_CONNECTION_TIMEOUT_MS,
+          statement_timeout: env.DB_QUERY_TIMEOUT_MS,
+          query_timeout: env.DB_QUERY_TIMEOUT_MS,
+        };
 
-    this.pool = new pg.Pool(config);
+    this.poolConfig = customConfig ? { ...baseConfig, ...customConfig } : baseConfig;
+    this.pool = new pg.Pool(this.poolConfig);
 
-    this.pool.on('error', (err) => {
-      logger.error('Unexpected error on idle PostgreSQL client', { error: err.message });
+    this.pool.on('error', (err: Error) => {
+      logger.error('Unexpected error on idle PostgreSQL client in connection pool', {
+        error: err.message,
+        stack: err.stack,
+      });
       this.connectionError = err.message;
+    });
+
+    this.pool.on('connect', () => {
+      if (this.pool.waitingCount > 0) {
+        logger.warn('PostgreSQL connection pool client waiting in queue', {
+          waitingCount: this.pool.waitingCount,
+          totalCount: this.pool.totalCount,
+          max: this.poolConfig.max,
+        });
+      }
     });
   }
 
   public async connect(): Promise<void> {
     try {
       logger.info('Initializing PostgreSQL connection pool', {
-        host: env.DB_HOST,
-        port: env.DB_PORT,
-        database: env.DB_NAME,
-        user: env.DB_USER,
-        min: env.DB_POOL_MIN,
-        max: env.DB_POOL_MAX,
+        host: this.poolConfig.host || env.DB_HOST,
+        port: this.poolConfig.port || env.DB_PORT,
+        database: this.poolConfig.database || env.DB_NAME,
+        user: this.poolConfig.user || env.DB_USER,
+        min: this.poolConfig.min ?? env.DB_POOL_MIN,
+        max: this.poolConfig.max ?? env.DB_POOL_MAX,
+        connectionTimeoutMillis: this.poolConfig.connectionTimeoutMillis ?? env.DB_CONNECTION_TIMEOUT_MS,
+        idleTimeoutMillis: this.poolConfig.idleTimeoutMillis ?? env.DB_IDLE_TIMEOUT_MS,
+        queryTimeoutMillis: this.poolConfig.statement_timeout ?? env.DB_QUERY_TIMEOUT_MS,
       });
 
       const client = await this.pool.connect();
@@ -162,24 +214,59 @@ export class PostgresDatabasePool implements IDatabaseConnection {
     }
   }
 
-  public async query<T = unknown>(sql: string, params: unknown[] = []): Promise<QueryResult<T>> {
+  public async query<T = unknown>(
+    sql: string,
+    params: unknown[] = [],
+    options?: QueryOptions
+  ): Promise<QueryResult<T>> {
     if (!this.isConnected && this.pool.totalCount === 0) {
       await this.connect().catch(() => {});
     }
 
+    if (this.pool.waitingCount > 0) {
+      logger.warn('PostgreSQL pool queue depth high', {
+        waitingCount: this.pool.waitingCount,
+        totalCount: this.pool.totalCount,
+        idleCount: this.pool.idleCount,
+        max: this.poolConfig.max,
+      });
+    }
+
+    const timeoutMs = options?.timeoutMs ?? (this.poolConfig.statement_timeout as number) ?? env.DB_QUERY_TIMEOUT_MS;
+
+    let timer: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const timeoutErr = new Error(`QUERY_TIMEOUT: PostgreSQL query exceeded execution timeout of ${timeoutMs}ms`);
+        logger.error('PostgreSQL query timeout exceeded', {
+          timeoutMs,
+          sql: sql.substring(0, 120),
+        });
+        reject(timeoutErr);
+      }, timeoutMs);
+    });
+
     try {
-      const res = await this.pool.query(sql, params);
+      const queryPromise = this.pool.query(sql, params);
+      const res = await Promise.race([queryPromise, timeoutPromise]);
       return formatPgResult<T>(res);
     } catch (err: any) {
-
-      logger.error('PostgreSQL query execution error', { error: err.message, sql: sql.substring(0, 120) });
+      logger.error('PostgreSQL query execution error', {
+        error: err.message,
+        sql: sql.substring(0, 120),
+      });
       throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
-  public async transaction<T = unknown>(callback: (client: IDatabaseConnection) => Promise<T>): Promise<T> {
+  public async transaction<T = unknown>(
+    callback: (client: IDatabaseConnection) => Promise<T>,
+    options?: QueryOptions
+  ): Promise<T> {
     const client = await this.pool.connect();
-    const txClient = new PostgresTransactionClient(client);
+    const txClient = new PostgresTransactionClient(client, options);
 
     try {
       await client.query('BEGIN');
@@ -192,6 +279,7 @@ export class PostgresDatabasePool implements IDatabaseConnection {
       } catch (rollbackErr: any) {
         logger.error('Error during transaction rollback', { error: rollbackErr.message });
       }
+      // Note: Financial transactions are NEVER automatically retried to prevent double execution.
       throw err;
     } finally {
       client.release();
@@ -216,6 +304,13 @@ export class PostgresDatabasePool implements IDatabaseConnection {
       idleConnections: this.pool.idleCount,
       waitingClients: this.pool.waitingCount,
       error: this.connectionError || undefined,
+      config: {
+        min: this.poolConfig.min ?? env.DB_POOL_MIN,
+        max: this.poolConfig.max ?? env.DB_POOL_MAX,
+        idleTimeoutMillis: this.poolConfig.idleTimeoutMillis ?? env.DB_IDLE_TIMEOUT_MS,
+        connectionTimeoutMillis: this.poolConfig.connectionTimeoutMillis ?? env.DB_CONNECTION_TIMEOUT_MS,
+        queryTimeoutMillis: (this.poolConfig.statement_timeout as number) ?? env.DB_QUERY_TIMEOUT_MS,
+      },
     };
   }
 
@@ -2763,7 +2858,15 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       poolSize: this.totalPoolSize,
       activeConnections: this.activeClients,
       idleConnections: Math.max(0, this.totalPoolSize - this.activeClients),
-      error: this.connectionError || undefined
+      waitingClients: 0,
+      error: this.connectionError || undefined,
+      config: {
+        min: this.config.DB_POOL_MIN,
+        max: this.config.DB_POOL_MAX,
+        idleTimeoutMillis: this.config.DB_IDLE_TIMEOUT_MS,
+        connectionTimeoutMillis: this.config.DB_CONNECTION_TIMEOUT_MS,
+        queryTimeoutMillis: this.config.DB_QUERY_TIMEOUT_MS,
+      },
     };
   }
 }

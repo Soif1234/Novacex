@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { HealthController } from '../src/controllers/health.controller';
 import { db } from '../src/config/database';
 import { redis } from '../src/config/redis';
+import { workerSupervisor } from '../src/workers/WorkerSupervisor';
+import { circuitBreakerService } from '../src/services/system/circuit-breaker.service';
 import { Request, Response } from 'express';
 
 describe('Readiness Controller (server/src/controllers/health.controller.ts)', () => {
@@ -11,7 +13,15 @@ describe('Readiness Controller (server/src/controllers/health.controller.ts)', (
 
   it('1. Returns HTTP 200 ready when all services are healthy', async () => {
     vi.spyOn(db, 'healthCheck').mockResolvedValue({ healthy: true, latencyMs: 2 });
-    vi.spyOn(redis, 'healthCheck').mockResolvedValue({ healthy: true, latencyMs: 1 });
+    vi.spyOn(redis, 'healthCheck').mockResolvedValue({ healthy: true, latencyMs: 1, fallbackMode: false });
+    vi.spyOn(workerSupervisor, 'getStatuses').mockReturnValue({
+      LiquidationWorker: { name: 'LiquidationWorker', isRunning: true, errorCount: 0 },
+    });
+    vi.spyOn(circuitBreakerService, 'getPublicStatus').mockResolvedValue({
+      mode: 'SYSTEM_ACTIVE',
+      isSpotTradingEnabled: true,
+      isFuturesTradingEnabled: true,
+    } as any);
 
     const req = {} as Request;
     let responseStatus = 0;
@@ -25,7 +35,7 @@ describe('Readiness Controller (server/src/controllers/health.controller.ts)', (
       json: (data: any) => {
         responseJson = data;
         return res;
-      }
+      },
     } as unknown as Response;
 
     await HealthController.getReadiness(req, res);
@@ -35,11 +45,13 @@ describe('Readiness Controller (server/src/controllers/health.controller.ts)', (
     expect(responseJson.data.status).toBe('ready');
     expect(responseJson.data.checks.database.status).toBe('pass');
     expect(responseJson.data.checks.redis.status).toBe('pass');
+    expect(responseJson.data.checks.workers.status).toBe('pass');
+    expect(responseJson.data.checks.circuitBreaker.mode).toBe('SYSTEM_ACTIVE');
   });
 
   it('2. Returns HTTP 503 unready when database is unhealthy', async () => {
     vi.spyOn(db, 'healthCheck').mockResolvedValue({ healthy: false, latencyMs: 5, error: 'Connection refused' });
-    vi.spyOn(redis, 'healthCheck').mockResolvedValue({ healthy: true, latencyMs: 1 });
+    vi.spyOn(redis, 'healthCheck').mockResolvedValue({ healthy: true, latencyMs: 1, fallbackMode: false });
 
     const req = {} as Request;
     let responseStatus = 0;
@@ -53,7 +65,7 @@ describe('Readiness Controller (server/src/controllers/health.controller.ts)', (
       json: (data: any) => {
         responseJson = data;
         return res;
-      }
+      },
     } as unknown as Response;
 
     await HealthController.getReadiness(req, res);
@@ -66,9 +78,9 @@ describe('Readiness Controller (server/src/controllers/health.controller.ts)', (
     expect(responseJson.data.checks.redis.status).toBe('pass');
   });
 
-  it('3. Returns HTTP 503 unready when Redis is unhealthy', async () => {
+  it('3. Returns HTTP 503 unready when Redis is completely disconnected', async () => {
     vi.spyOn(db, 'healthCheck').mockResolvedValue({ healthy: true, latencyMs: 2 });
-    vi.spyOn(redis, 'healthCheck').mockResolvedValue({ healthy: false, latencyMs: 10, error: 'Redis host unreachable' });
+    vi.spyOn(redis, 'healthCheck').mockResolvedValue({ healthy: false, latencyMs: 10, error: 'Redis host unreachable', fallbackMode: false });
 
     const req = {} as Request;
     let responseStatus = 0;
@@ -82,7 +94,7 @@ describe('Readiness Controller (server/src/controllers/health.controller.ts)', (
       json: (data: any) => {
         responseJson = data;
         return res;
-      }
+      },
     } as unknown as Response;
 
     await HealthController.getReadiness(req, res);
@@ -93,4 +105,65 @@ describe('Readiness Controller (server/src/controllers/health.controller.ts)', (
     expect(responseJson.data.checks.database.status).toBe('pass');
     expect(responseJson.data.checks.redis.status).toBe('fail');
   });
+
+  it('4. Returns HTTP 200 degraded when Redis is operating in in-memory fallback mode', async () => {
+    vi.spyOn(db, 'healthCheck').mockResolvedValue({ healthy: true, latencyMs: 2 });
+    vi.spyOn(redis, 'healthCheck').mockResolvedValue({
+      healthy: true,
+      latencyMs: 1,
+      fallbackMode: true,
+      error: 'Degraded (in-memory fallback): ECONNRESET',
+    });
+
+    const req = {} as Request;
+    let responseStatus = 0;
+    let responseJson: any = null;
+
+    const res = {
+      status: (code: number) => {
+        responseStatus = code;
+        return res;
+      },
+      json: (data: any) => {
+        responseJson = data;
+        return res;
+      },
+    } as unknown as Response;
+
+    await HealthController.getReadiness(req, res);
+
+    expect(responseStatus).toBe(200);
+    expect(responseJson.success).toBe(true);
+    expect(responseJson.data.status).toBe('degraded');
+    expect(responseJson.data.checks.redis.status).toBe('warn');
+    expect(responseJson.data.checks.redis.mode).toBe('FALLBACK_MEMORY');
+  });
+
+  it('5. Handles slow dependency with timeout protection instead of hanging indefinitely', async () => {
+    // Hang forever
+    vi.spyOn(db, 'healthCheck').mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(redis, 'healthCheck').mockResolvedValue({ healthy: true, latencyMs: 1 });
+
+    const req = {} as Request;
+    let responseStatus = 0;
+    let responseJson: any = null;
+
+    const res = {
+      status: (code: number) => {
+        responseStatus = code;
+        return res;
+      },
+      json: (data: any) => {
+        responseJson = data;
+        return res;
+      },
+    } as unknown as Response;
+
+    await HealthController.getReadiness(req, res);
+
+    expect(responseStatus).toBe(503);
+    expect(responseJson.success).toBe(false);
+    expect(responseJson.data.status).toBe('unready');
+    expect(responseJson.data.checks.database.status).toBe('fail');
+  }, 10000);
 });

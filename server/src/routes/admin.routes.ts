@@ -30,4 +30,9 @@ router.get('/reconciliation/reports', ReconciliationController.getReports);
 router.get('/reconciliation/alerts', ReconciliationController.getAlerts);
 router.post('/reconciliation/alerts/:alertId/resolve', ReconciliationController.resolveAlert);
 
+// Operational Metrics & System Telemetry (Phase 8.4.1)
+router.get('/metrics', AdminController.getMetrics);
+router.get('/metrics/prometheus', AdminController.getPrometheusMetrics);
+
 export const adminRoutes = router;
+

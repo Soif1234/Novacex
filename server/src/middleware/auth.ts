@@ -239,34 +239,7 @@ export function require2FA(req: Request, res: Response, next: NextFunction): voi
   }
 }
 
-/**
- * Rate Limiter for Authentication Endpoints (Sliding window via Redis)
- */
-export function authRateLimiter(maxRequests = 20, windowMs = 60000) {
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const ip = req.ip || req.socket.remoteAddress || 'unknown-ip';
-      const windowId = Math.floor(Date.now() / windowMs);
-      const key = `rate-limit:auth:${ip}:${windowId}`;
+export { authRateLimiter } from './rateLimit';
 
-      let currentCount: number;
-      try {
-        currentCount = await redis.incr(key, Math.ceil(windowMs / 1000) + 1);
-      } catch (err) {
-        logger.error('Redis rate limit incr failed', { ip, error: err });
-        return next();
-      }
-
-      if (currentCount > maxRequests) {
-        logger.warn('Auth Rate limit exceeded', { ip, count: currentCount });
-        return next(new AppError('Too many authentication attempts. Please wait a moment.', 429, 'RATE_LIMIT_EXCEEDED'));
-      }
-
-      next();
-    } catch (err) {
-      next(err);
-    }
-  };
-}
 
 

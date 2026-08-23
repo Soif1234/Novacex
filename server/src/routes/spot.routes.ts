@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireAuth, requireAuthOrApiKey } from '../middleware/auth';
 import { requireCircuitBreaker } from '../middleware/circuitBreaker';
 import { idempotencyMiddleware } from '../middleware/idempotency';
+import { mutationRateLimiter } from '../middleware/rateLimit';
 import {
   createOrder,
   cancelOrder,
@@ -30,9 +31,9 @@ const router = Router();
  *   GET    /api/v1/spot/orderbook/:symbol    — Public order book depth
  */
 
-router.post('/orders', requireCircuitBreaker('SPOT_TRADING'), requireAuthOrApiKey('TRADE'), idempotencyMiddleware(), createOrder);
-router.post('/orders/:orderId/cancel', requireAuthOrApiKey('TRADE'), cancelOrder);
-router.delete('/orders/:orderId', requireAuthOrApiKey('TRADE'), cancelOrder);
+router.post('/orders', requireCircuitBreaker('SPOT_TRADING'), requireAuthOrApiKey('TRADE'), mutationRateLimiter(), idempotencyMiddleware(), createOrder);
+router.post('/orders/:orderId/cancel', requireAuthOrApiKey('TRADE'), mutationRateLimiter(), cancelOrder);
+router.delete('/orders/:orderId', requireAuthOrApiKey('TRADE'), mutationRateLimiter(), cancelOrder);
 router.get('/orders/open', requireAuthOrApiKey('READ'), getOpenOrders);
 router.get('/orders/:orderId', requireAuthOrApiKey('READ'), getOrder);
 router.get('/orders', requireAuthOrApiKey('READ'), getOrderHistory);
