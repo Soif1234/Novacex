@@ -1,6 +1,9 @@
 import { demoLedger } from '../ledger';
 import { Decimal } from 'decimal.js';
 import { safeParseArray, isValidFinancialString } from '../storageUtil';
+import { apiClient } from '../api/client';
+import { userService } from '../user/UserService';
+
 
 export type TransactionStatus = 'PENDING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 export type TransactionType = 'DEPOSIT' | 'WITHDRAWAL';
@@ -114,6 +117,18 @@ export class DemoTransactionService {
     if (!tx || tx.type !== 'DEPOSIT') throw new Error('Deposit not found');
     
     const accountId = tx.accountId || 'demo-user-1';
+    
+    if (typeof window !== 'undefined') {
+      const spotAccId = userService.getSpotAccountId();
+      apiClient.post('/wallet/admin/paper-deposit', {
+        targetAccountId: spotAccId,
+        asset: tx.asset,
+        amount: tx.amount,
+        referenceId: tx.id,
+        description: 'Simulated balance top-up',
+      }).catch(() => {});
+    }
+
     try {
       demoLedger.credit(tx.asset, tx.amount, 'Demo Deposit', 'DEPOSIT', tx.id, accountId);
       tx.status = 'COMPLETED';
@@ -152,7 +167,7 @@ export class DemoTransactionService {
     this.save();
     this.notify();
 
-    // Execute immediately for demo
+    // Execute immediately
     return this.executeWithdrawal(tx.id);
   }
 
@@ -161,6 +176,19 @@ export class DemoTransactionService {
     if (!tx || tx.type !== 'WITHDRAWAL') throw new Error('Withdrawal not found');
 
     const accountId = tx.accountId || 'demo-user-1';
+
+    if (typeof window !== 'undefined') {
+      const spotAccId = userService.getSpotAccountId();
+      apiClient.post('/wallet/withdraw', {
+        accountId: spotAccId,
+        asset: tx.asset,
+        amount: tx.amount,
+        referenceId: tx.id,
+        destinationAddress: tx.destinationLabel,
+        description: 'User withdrawal',
+      }).catch(() => {});
+    }
+
     try {
       demoLedger.debit(tx.asset, tx.amount, 'Demo Withdrawal', 'WITHDRAWAL', tx.id, accountId);
       tx.status = 'COMPLETED';
@@ -174,6 +202,7 @@ export class DemoTransactionService {
     this.notify();
     return tx;
   }
+
 }
 
 export const demoTransactionService = new DemoTransactionService(typeof window !== 'undefined');

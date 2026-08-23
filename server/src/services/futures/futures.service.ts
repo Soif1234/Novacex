@@ -316,18 +316,26 @@ export class FuturesService {
     const orderPrice = cleanPrice || markPrice;
     let requiredMargin = decimalZero();
 
+    let collateralAsset = 'FUTURES_USDT';
     // 4. Reserve initial margin for opening orders
     if (isOpening) {
       requiredMargin = this.risk.calculateInitialMargin(cleanQty, orderPrice, dto.leverage);
-      const balance = await this.ledger.getBalance(dto.accountId, 'FUTURES_USDT');
+      let balance = await this.ledger.getBalance(dto.accountId, 'FUTURES_USDT');
+      if (decimalCompare(balance.availableBalance, requiredMargin) < 0) {
+        const usdtBal = await this.ledger.getBalance(dto.accountId, 'USDT');
+        if (decimalCompare(usdtBal.availableBalance, requiredMargin) >= 0) {
+          balance = usdtBal;
+          collateralAsset = 'USDT';
+        }
+      }
 
       if (!this.risk.hasSufficientMargin(balance.availableBalance, requiredMargin)) {
-        throw new InsufficientCollateralError(requiredMargin, balance.availableBalance, 'FUTURES_USDT');
+        throw new InsufficientCollateralError(requiredMargin, balance.availableBalance, collateralAsset);
       }
 
       await this.ledger.reserve(
         dto.accountId,
-        'FUTURES_USDT',
+        collateralAsset,
         requiredMargin,
         'FUTURES_MARGIN_LOCK',
         `FUTURES-LOCK-${orderId}`,
@@ -352,12 +360,13 @@ export class FuturesService {
       filledQuantity: '0',
       remainingQuantity: cleanQty,
       lockedAmount: requiredMargin,
-      lockedAsset: 'FUTURES_USDT',
+      lockedAsset: collateralAsset,
       status: initialStatus,
       timeInForce: dto.timeInForce || 'GTC',
       createdAt: new Date(),
       updatedAt: new Date(),
     };
+
 
     const futuresOrder: FuturesOrderEntity = {
       id: crypto.randomUUID(),
@@ -802,13 +811,14 @@ export class FuturesService {
     if (decimalCompare(order.lockedAmount, '0') > 0) {
       await this.ledger.release(
         order.accountId,
-        'FUTURES_USDT',
+        order.lockedAsset || 'FUTURES_USDT',
         order.lockedAmount,
         'FUTURES_MARGIN_RELEASE',
         `FUTURES-UNLOCK-${order.id}`,
         `Cancel Futures order: ${order.symbol} ${order.side} ${order.quantity}`
       );
     }
+
 
     order.status = 'CANCELLED';
     order.updatedAt = new Date();

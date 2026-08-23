@@ -39,8 +39,9 @@ describe('Phase 7.1: PostgreSQL 2FA & API Key Integration Tests', () => {
     const signupRes = await authService.signup({
       email: testEmail,
       password: testPassword,
-      username: `pguser71_${Date.now().toString().slice(-4)}`
+      username: `pguser71_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`
     });
+
 
     userId = signupRes.user.id;
     expect(userId).toBeDefined();

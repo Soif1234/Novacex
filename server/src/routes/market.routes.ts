@@ -5,6 +5,7 @@ import {
   getOrderBook,
   getRecentTrades,
   getMarkPrice,
+  getKLines,
 } from '../controllers/market.controller';
 
 const router = Router();
@@ -18,6 +19,7 @@ const router = Router();
  *   GET /api/v1/market/orderbook/:symbol  — Retrieve orderbook snapshot for symbol
  *   GET /api/v1/market/trades/:symbol     — Retrieve recent trades for symbol
  *   GET /api/v1/market/mark-price/:symbol — Retrieve mark price for symbol
+ *   GET /api/v1/market/klines             — Retrieve OHLCV candlestick historical klines
  */
 
 router.get('/tickers', getTickers);
@@ -25,5 +27,7 @@ router.get('/ticker/:symbol', getTicker);
 router.get('/orderbook/:symbol', getOrderBook);
 router.get('/trades/:symbol', getRecentTrades);
 router.get('/mark-price/:symbol', getMarkPrice);
+router.get('/klines', getKLines);
 
 export const marketRoutes = router;
+

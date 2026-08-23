@@ -1,5 +1,5 @@
 import React from 'react';
-import { Home, LineChart, ArrowLeftRight, Activity, Wallet, User } from 'lucide-react';
+import { Home, BarChart3, ArrowLeftRight, TrendingUp, Wallet } from 'lucide-react';
 
 interface BottomNavProps {
   activeTab: string;
@@ -9,15 +9,15 @@ interface BottomNavProps {
 export function BottomNav({ activeTab, onChange }: BottomNavProps) {
   const tabs = [
     { id: 'home', icon: Home, label: 'Home' },
-    { id: 'markets', icon: LineChart, label: 'Markets' },
-    { id: 'trade', icon: ArrowLeftRight, label: 'Trade' },
-    { id: 'futures', icon: Activity, label: 'Futures' },
+    { id: 'markets', icon: BarChart3, label: 'Markets' },
+    { id: 'trade', icon: ArrowLeftRight, label: 'Spot' },
+    { id: 'futures', icon: TrendingUp, label: 'Futures' },
     { id: 'assets', icon: Wallet, label: 'Assets' },
   ];
 
   return (
-    <div className="bg-gray-950 border-t border-gray-800 pb-[env(safe-area-inset-bottom)] z-50 flex-none">
-      <div className="flex items-center justify-around px-2 py-2">
+    <nav className="bg-gray-950/95 backdrop-blur-xl border-t border-gray-800/90 pb-[calc(env(safe-area-inset-bottom)+4px)] pt-1.5 z-50 flex-none sticky bottom-0">
+      <div className="flex items-center justify-around px-2 max-w-lg mx-auto">
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -26,16 +26,25 @@ export function BottomNav({ activeTab, onChange }: BottomNavProps) {
             <button
               key={tab.id}
               onClick={() => onChange(tab.id)}
-              className={`flex flex-col items-center justify-center w-16 h-12 gap-1 transition-colors ${
-                isActive ? 'text-blue-500' : 'text-gray-500 hover:text-gray-400'
+              aria-label={tab.label}
+              className={`relative flex flex-col items-center justify-center w-16 h-12 gap-1 transition-all select-none cursor-pointer rounded-xl ${
+                isActive 
+                  ? 'text-cyan-400 font-extrabold' 
+                  : 'text-gray-400 hover:text-gray-200 font-medium'
               }`}
             >
-              <Icon size={20} strokeWidth={isActive ? 2.5 : 2} />
-              <span className="text-[10px] font-medium">{tab.label}</span>
+              {isActive && (
+                <span className="absolute -top-1.5 w-7 h-1 bg-gradient-to-r from-cyan-400 to-blue-500 rounded-full shadow-md shadow-cyan-400/60 animate-fadeIn" />
+              )}
+              <div className={`transition-transform duration-150 ${isActive ? 'scale-110' : 'scale-100'}`}>
+                <Icon size={20} strokeWidth={isActive ? 2.5 : 2} />
+              </div>
+              <span className="text-[10px] tracking-tight">{tab.label}</span>
             </button>
           );
         })}
       </div>
-    </div>
+    </nav>
   );
 }
+

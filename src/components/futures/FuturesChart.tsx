@@ -3,6 +3,8 @@ import { createChart, IChartApi, ISeriesApi, CandlestickData, Time, ColorType } 
 import { FuturesMarket } from '../../types/futures';
 import { updateMarketPriceLocally } from '../../hooks/useFuturesMarketData';
 import { preferencesService } from '../../services/user/PreferencesService';
+import { apiClient } from '../../services/api/client';
+
 
 interface FuturesChartProps {
   market: FuturesMarket;
@@ -116,21 +118,37 @@ export function FuturesChart({ market }: FuturesChartProps) {
       setError(null);
       
       try {
-        // 1. Fetch historical data
-        const res = await fetch(marketType === 'SPOT' ? `https://api.binance.com/api/v3/klines?symbol=${apiSym}&interval=${binanceInterval}&limit=500` : `https://fapi.binance.com/fapi/v1/klines?symbol=${apiSym}&interval=${binanceInterval}&limit=500`);
-        if (!res.ok) throw new Error('Failed to fetch historical klines');
-        
-        const data = await res.json();
+        // 1. Fetch historical data from authoritative backend /market/klines first
+        let data: any = null;
+        try {
+          const backendKlines = await apiClient.get<any[]>('/market/klines', {
+            symbol: apiSym,
+            interval: binanceInterval,
+            limit: 500,
+          });
+          if (Array.isArray(backendKlines) && backendKlines.length > 0) {
+            data = backendKlines.map(k => [k.openTime || k.time, k.open, k.high, k.low, k.close, k.volume]);
+          }
+        } catch {
+          // Backend klines not available or offline, fallback to external stream
+        }
+
+        if (!data) {
+          const res = await fetch(marketType === 'SPOT' ? `https://api.binance.com/api/v3/klines?symbol=${apiSym}&interval=${binanceInterval}&limit=500` : `https://fapi.binance.com/fapi/v1/klines?symbol=${apiSym}&interval=${binanceInterval}&limit=500`);
+          if (!res.ok) throw new Error('Failed to fetch historical klines');
+          data = await res.json();
+        }
         
         if (!isMounted) return;
 
         const formattedData: CandlestickData<Time>[] = data.map((d: any) => ({
-          time: (d[0] / 1000) as Time,
+          time: ((typeof d[0] === 'number' && d[0] > 10000000000 ? d[0] / 1000 : d[0])) as Time,
           open: parseFloat(d[1]),
           high: parseFloat(d[2]),
           low: parseFloat(d[3]),
           close: parseFloat(d[4]),
         }));
+
 
         // Filter out any invalid candles
         const validData = formattedData.filter(d => 

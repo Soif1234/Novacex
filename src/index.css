@@ -1,20 +1,46 @@
 @import "tailwindcss";
 
 @theme {
-  --color-gray-950: #0B0E11;
-  --color-gray-900: #181A20;
-  --color-gray-800: #2B3139;
-  --color-gray-700: #474D57;
-  --color-gray-600: #5E6673;
-  --color-gray-500: #848E9C;
-  --color-gray-400: #B7BDC6;
-  --color-gray-300: #EAECEF;
-  --color-emerald-500: #2EBD85;
-  --color-emerald-600: #28A775;
-  --color-red-500: #F6465D;
-  --color-red-600: #D93B50;
-  --color-blue-500: #3366FF;
-  --color-blue-600: #2952CC;
+  --color-nova-bg: #080B11;
+  --color-nova-surface: #0E131F;
+  --color-nova-card: #141A29;
+  --color-nova-elevated: #1B2236;
+  --color-nova-border: #1E293B;
+  --color-nova-border-subtle: #162032;
+  
+  --color-nova-cyan: #00F0FF;
+  --color-nova-cyan-hover: #00D8E6;
+  
+  --color-nova-indigo: #6366F1;
+  --color-nova-indigo-hover: #4F46E5;
+  
+  --color-nova-green: #00E676;
+  --color-nova-green-hover: #00C853;
+  
+  --color-nova-red: #FF3366;
+  --color-nova-red-hover: #E6004C;
+  
+  --color-nova-amber: #FFB300;
+
+  --color-gray-950: #080B11;
+  --color-gray-900: #0E131F;
+  --color-gray-850: #141A29;
+  --color-gray-800: #1B2236;
+  --color-gray-700: #2C374E;
+  --color-gray-600: #4B5563;
+  --color-gray-500: #6B7280;
+  --color-gray-400: #9CA3AF;
+  --color-gray-300: #D1D5DB;
+  --color-gray-200: #E5E7EB;
+  --color-gray-100: #F3F4F6;
+  
+  --color-emerald-500: #00E676;
+  --color-emerald-600: #00C853;
+  --color-red-500: #FF3366;
+  --color-red-600: #E6004C;
+  --color-blue-500: #00F0FF;
+  --color-blue-600: #0284C7;
+  --color-amber-500: #FFB300;
 }
 
 @layer utilities {
@@ -25,4 +51,30 @@
   .hide-scrollbar::-webkit-scrollbar {
     display: none; /* Chrome, Safari and Opera */
   }
+
+  .glass-panel {
+    background: rgba(14, 19, 31, 0.75);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .glass-card {
+    background: linear-gradient(135deg, rgba(20, 26, 41, 0.85) 0%, rgba(14, 19, 31, 0.95) 100%);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .glow-cyan {
+    box-shadow: 0 0 20px rgba(0, 240, 255, 0.18);
+  }
+
+  .glow-green {
+    box-shadow: 0 0 16px rgba(0, 230, 118, 0.18);
+  }
+
+  .glow-red {
+    box-shadow: 0 0 16px rgba(255, 51, 102, 0.18);
+  }
 }
+

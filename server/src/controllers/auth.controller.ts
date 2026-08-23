@@ -13,12 +13,16 @@ export class AuthController {
 
       res.status(201).json({
         success: true,
-        data: result
+        data: {
+          user: result.user,
+          accounts: result.user.accounts,
+        }
       });
     } catch (err) {
       next(err);
     }
   }
+
 
   public static async login(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -33,11 +37,13 @@ export class AuthController {
         res.status(200).json({
           success: true,
           requires2FA: true,
+          twoFactorRequired: true,
           tempToken: result.tempToken,
           message: 'Two-factor authentication code required',
         });
         return;
       }
+
 
       // Set secure HttpOnly session cookie
       const isProduction = env.NODE_ENV === 'production';
@@ -56,7 +62,8 @@ export class AuthController {
         success: true,
         data: {
           user: result.user,
-          accounts: result.user!.accounts
+          accounts: result.user!.accounts,
+          sessionToken: result.sessionToken,
         }
       });
     } catch (err) {
@@ -66,11 +73,13 @@ export class AuthController {
 
   public static async verify2FALogin(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { tempToken, token } = req.body;
+      const { tempToken, token, twoFactorToken } = req.body || {};
+      const totpToken = token || twoFactorToken;
       const ipAddress = req.ip || req.socket.remoteAddress;
       const userAgent = req.headers['user-agent'];
 
-      const result = await authService.verify2FALogin(tempToken, token, ipAddress, userAgent);
+      const result = await authService.verify2FALogin(tempToken, totpToken, ipAddress, userAgent);
+
 
       const isProduction = env.NODE_ENV === 'production';
       const cookieOptions = {
@@ -88,11 +97,13 @@ export class AuthController {
         success: true,
         data: {
           user: result.user,
-          accounts: result.user.accounts
+          accounts: result.user.accounts,
+          sessionToken: result.sessionToken,
         }
       });
     } catch (err) {
       next(err);
+
     }
   }
 

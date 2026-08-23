@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import { marketDataService } from '../services/market/market.service';
+import { klineService, Interval } from '../services/market/kline.service';
 import { AppError } from '../middleware/errorHandler';
+
 
 /**
  * GET /api/v1/market/tickers
@@ -89,3 +91,25 @@ export async function getMarkPrice(req: Request, res: Response, next: NextFuncti
     next(err);
   }
 }
+
+/**
+ * GET /api/v1/market/klines
+ */
+export async function getKLines(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const symbol = (req.query.symbol as string || 'BTCUSDT').trim().toUpperCase();
+    const market = ((req.query.market as string || 'SPOT').trim().toUpperCase()) as 'SPOT' | 'FUTURES';
+    const interval = (req.query.interval as Interval || '1m');
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 500;
+    const endTime = req.query.endTime ? parseInt(req.query.endTime as string, 10) : undefined;
+
+    const klines = await klineService.getHistoricalKLines(market, symbol, interval, limit, endTime);
+    res.json({
+      success: true,
+      data: klines,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+

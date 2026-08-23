@@ -208,8 +208,19 @@ export class WalletService {
           lockedBalance: b.lockedBalance,
           totalBalance: b.totalBalance,
         });
+        if (b.asset === 'FUTURES_USDT') {
+          results.push({
+            accountId: acc.id,
+            accountType: acc.type,
+            asset: 'USDT',
+            availableBalance: b.availableBalance,
+            lockedBalance: b.lockedBalance,
+            totalBalance: b.totalBalance,
+          });
+        }
       }
     }
+
 
     // 5. Deterministic sorting: accountType ASC, then asset ASC
     const typeOrder: Record<AccountType, number> = {
@@ -472,6 +483,8 @@ export class WalletService {
         toType: toAcc.type,
       }
     );
+
+
 
     logger.info('Internal transfer completed', {
       userId: dto.userId,

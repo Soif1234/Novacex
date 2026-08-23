@@ -14,7 +14,8 @@ export class WalletService {
     // 1. Attempt authoritative backend query
     try {
       if (typeof window !== 'undefined') {
-        const backendBalances = await apiClient.get<WalletBalancesMap>('/wallet/balances', { accountId });
+        const backendRes = await apiClient.get<any>('/wallet/balances', { accountId });
+        const backendBalances: WalletBalancesMap = backendRes?.balances || backendRes;
         if (backendBalances && typeof backendBalances === 'object' && Object.keys(backendBalances).length > 0) {
           return this.mapBackendBalancesToAssets(backendBalances);
         }
@@ -22,6 +23,7 @@ export class WalletService {
     } catch {
       // Backend unavailable or unauthenticated, fallback to local calculation
     }
+
 
     // 2. Local fallback calculation for offline / in-memory tests
     const balances = demoLedger.getAllBalances(accountId);

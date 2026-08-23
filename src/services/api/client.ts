@@ -73,6 +73,13 @@ export class ApiClient {
     return `req-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
   }
 
+  private generateIdempotencyKey(): string {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return `idemp-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  }
+
   private async request<T>(
     method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
     endpoint: string,
@@ -87,6 +94,11 @@ export class ApiClient {
       'X-Request-ID': this.generateRequestId(),
       ...options.headers,
     };
+
+    // Automatically inject Idempotency-Key on mutating requests to protect against network retry duplicate execution
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !headers['Idempotency-Key']) {
+      headers['Idempotency-Key'] = this.generateIdempotencyKey();
+    }
 
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
@@ -124,15 +136,18 @@ export class ApiClient {
 
       if (!response.ok) {
         const statusCode = response.status;
-        const errorCode = json?.code || json?.error || `HTTP_${statusCode}`;
-        const errorMessage = json?.message || json?.error || response.statusText || `Request failed with status ${statusCode}`;
+        const retryAfter = (response.headers && typeof response.headers.get === 'function') ? response.headers.get('Retry-After') : null;
+        const errorCode = (json as any)?.code || (json as any)?.error?.code || (typeof (json as any)?.error === 'string' ? (json as any).error : null) || `HTTP_${statusCode}`;
+        const errorMessage = (json as any)?.message || (json as any)?.error?.message || (typeof (json as any)?.error === 'string' ? (json as any).error : null) || response.statusText || `Request failed with status ${statusCode}`;
+        const details = (json as any)?.error?.details || (json as any)?.details || (retryAfter ? { retryAfterSeconds: Number(retryAfter) } : undefined);
 
         if (statusCode === 401 && this.onUnauthorizedCallback) {
           this.onUnauthorizedCallback();
         }
 
-        throw new ApiClientError(errorMessage, statusCode, errorCode, json?.details);
+        throw new ApiClientError(errorMessage, statusCode, errorCode, details);
       }
+
 
       // If backend wrapped in { success: true, data: ... }
       if (json && typeof json === 'object' && 'success' in json && 'data' in json) {
@@ -176,9 +191,18 @@ export class ApiClient {
     return this.request<T>('POST', endpoint, body, options);
   }
 
+  public async put<T>(endpoint: string, body?: unknown, options?: RequestOptions): Promise<T> {
+    return this.request<T>('PUT', endpoint, body, options);
+  }
+
+  public async patch<T>(endpoint: string, body?: unknown, options?: RequestOptions): Promise<T> {
+    return this.request<T>('PATCH', endpoint, body, options);
+  }
+
   public async delete<T>(endpoint: string, options?: RequestOptions): Promise<T> {
     return this.request<T>('DELETE', endpoint, undefined, options);
   }
 }
 
 export const apiClient = new ApiClient();
+

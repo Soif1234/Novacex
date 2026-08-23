@@ -3,6 +3,9 @@ import { Decimal } from 'decimal.js';
 import { walletService } from './WalletService';
 import { WalletType } from './types';
 import { safeParseArray, isValidFinancialString } from '../storageUtil';
+import { apiClient } from '../api/client';
+import { userService } from '../user/UserService';
+
 
 export type TransferStatus = 'PENDING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 
@@ -162,6 +165,22 @@ export class InternalTransferService {
       
       const reason = `Internal Transfer from ${transfer.fromWallet} to ${transfer.toWallet}`;
       
+      if (typeof window !== 'undefined') {
+        const spotAccId = userService.getSpotAccountId();
+        const futuresAccId = userService.getFuturesAccountId();
+        const fromAccId = transfer.fromWallet === 'SPOT' ? spotAccId : futuresAccId;
+        const toAccId = transfer.toWallet === 'SPOT' ? spotAccId : futuresAccId;
+
+        apiClient.post('/wallet/transfer', {
+          fromAccountId: fromAccId,
+          toAccountId: toAccId,
+          asset: transfer.asset,
+          amount: transfer.amount,
+          referenceId: transfer.id,
+          description: reason,
+        }).catch(() => {});
+      }
+
       demoLedger.debit(fromAsset, transfer.amount, reason, 'TRANSFER', transfer.id, accountId);
       demoLedger.credit(toAsset, transfer.amount, reason, 'TRANSFER', transfer.id, accountId);
       
@@ -178,6 +197,7 @@ export class InternalTransferService {
       throw new Error(`Transfer failed: ${e.message}`);
     }
   }
+
 }
 
 export const internalTransferService = new InternalTransferService(typeof window !== 'undefined');

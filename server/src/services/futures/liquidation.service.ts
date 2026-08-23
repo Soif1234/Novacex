@@ -61,8 +61,35 @@ export class FuturesLiquidationService {
 
       pos.markPrice = mark;
 
-      const balRowInitial = await txClient.query<any>('SELECT available_balance FROM wallet_balances WHERE account_id = $1 AND asset = $2', [pos.accountId, 'FUTURES_USDT']);
-      let currentAvail = balRowInitial.rows[0] ? String(balRowInitial.rows[0].available_balance) : '0';
+      const [usdtRowRes, futRowRes] = await Promise.all([
+        txClient.query<any>('SELECT available_balance, locked_balance FROM wallet_balances WHERE account_id = $1 AND asset = $2', [pos.accountId, 'USDT']),
+        txClient.query<any>('SELECT available_balance, locked_balance FROM wallet_balances WHERE account_id = $1 AND asset = $2', [pos.accountId, 'FUTURES_USDT']),
+      ]);
+
+      const usdtRow = usdtRowRes.rows[0];
+      const futRow = futRowRes.rows[0];
+      let collateralAsset = 'FUTURES_USDT';
+      let currentAvail = '0';
+
+      const usdtLocked = usdtRow ? String(usdtRow.locked_balance ?? usdtRow.lockedBalance ?? '0') : '0';
+      const futLocked = futRow ? String(futRow.locked_balance ?? futRow.lockedBalance ?? '0') : '0';
+
+      if (usdtRow && decimalCompare(usdtLocked, '0') > 0) {
+        collateralAsset = 'USDT';
+        currentAvail = String(usdtRow.available_balance ?? usdtRow.availableBalance ?? '0');
+      } else if (futRow && decimalCompare(futLocked, '0') > 0) {
+        collateralAsset = 'FUTURES_USDT';
+        currentAvail = String(futRow.available_balance ?? futRow.availableBalance ?? '0');
+      } else if (usdtRow && decimalCompare(String(usdtRow.available_balance ?? usdtRow.availableBalance ?? '0'), '0') > 0) {
+        collateralAsset = 'USDT';
+        currentAvail = String(usdtRow.available_balance ?? usdtRow.availableBalance ?? '0');
+      } else if (futRow) {
+        collateralAsset = 'FUTURES_USDT';
+        currentAvail = String(futRow.available_balance ?? futRow.availableBalance ?? '0');
+      }
+
+
+
 
       const isEligible = this.risk.checkLiquidation(pos, currentAvail);
       if (!isEligible) {
@@ -178,21 +205,26 @@ export class FuturesLiquidationService {
         let adlDraw = '0';
       if (decimalCompare(totalReleasedIM, '0') > 0) {
           entries.push(
-              { accountId: pos.accountId, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: totalReleasedIM, balancePool: 'locked' },
-              { accountId: pos.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: totalReleasedIM, balancePool: 'available' }
+              { accountId: pos.accountId, asset: collateralAsset, direction: 'DEBIT', amount: totalReleasedIM, balancePool: 'locked' },
+              { accountId: pos.accountId, asset: collateralAsset, direction: 'CREDIT', amount: totalReleasedIM, balancePool: 'available' }
           );
       }
       if (decimalCompare(totalUserCredit, '0') > 0) {
-          entries.push({ accountId: pos.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: totalUserCredit, balancePool: 'available' });
+          entries.push({ accountId: pos.accountId, asset: collateralAsset, direction: 'CREDIT', amount: totalUserCredit, balancePool: 'available' });
       }
       if (decimalCompare(totalUserDeduction, '0') > 0) {
-          entries.push({ accountId: pos.accountId, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: totalUserDeduction, balancePool: 'available' });
+          entries.push({ accountId: pos.accountId, asset: collateralAsset, direction: 'DEBIT', amount: totalUserDeduction, balancePool: 'available' });
+          const userLoss = decimalSubtract(totalUserDeduction, totalFee);
+          if (decimalCompare(userLoss, '0') > 0) {
+            entries.push({ accountId: '11111111-1111-1111-1111-111111111111', asset: collateralAsset, direction: 'CREDIT', amount: userLoss, balancePool: 'available' });
+          }
       }
       if (decimalCompare(totalFee, '0') > 0) {
-          entries.push({ accountId: INSURANCE_FUND_ACCOUNT_ID, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: totalFee, balancePool: 'available' });
+          entries.push({ accountId: INSURANCE_FUND_ACCOUNT_ID, asset: collateralAsset, direction: 'CREDIT', amount: totalFee, balancePool: 'available' });
       }
+
       if (decimalCompare(totalDeficitToInsurance, '0') > 0) {
-          const vaultRes = await txClient.query<any>('SELECT available_balance FROM wallet_balances WHERE account_id = $1 AND asset = $2', [INSURANCE_FUND_ACCOUNT_ID, 'FUTURES_USDT']);
+          const vaultRes = await txClient.query<any>('SELECT available_balance FROM wallet_balances WHERE account_id = $1 AND asset = $2', [INSURANCE_FUND_ACCOUNT_ID, collateralAsset]);
           const vaultBal = vaultRes.rows[0]?.available_balance || '0';
             let ifDraw = totalDeficitToInsurance;
             adlDraw = '0';
@@ -201,13 +233,15 @@ export class FuturesLiquidationService {
               adlDraw = decimalSubtract(totalDeficitToInsurance, vaultBal);
           }
           if (decimalCompare(ifDraw, '0') > 0) {
-              entries.push({ accountId: INSURANCE_FUND_ACCOUNT_ID, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: ifDraw, balancePool: 'available' });
+              entries.push({ accountId: INSURANCE_FUND_ACCOUNT_ID, asset: collateralAsset, direction: 'DEBIT', amount: ifDraw, balancePool: 'available' });
           }
           if (decimalCompare(adlDraw, '0') > 0) {
-              entries.push({ accountId: ADL_SUSPENSE_ACCOUNT_ID, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: adlDraw, balancePool: 'available' });
-              
+              entries.push({ accountId: ADL_SUSPENSE_ACCOUNT_ID, asset: collateralAsset, direction: 'DEBIT', amount: adlDraw, balancePool: 'available' });
           }
+          entries.push({ accountId: '11111111-1111-1111-1111-111111111111', asset: collateralAsset, direction: 'CREDIT', amount: totalDeficitToInsurance, balancePool: 'available' });
       }
+
+
       
       if (entries.length > 0) {
           const liqStepRef = `FUTURES-LIQ-${pos.id}-${new Date(pos.updatedAt || Date.now()).getTime()}`;

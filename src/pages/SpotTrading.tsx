@@ -21,6 +21,7 @@ import { MarketSelector } from '../components/MarketSelector';
 import { tradingPairRegistry } from '../services/market/TradingPairRegistry';
 import { PriceAlertModal } from '../components/alerts/PriceAlertModal';
 import { FuturesChart } from '../components/futures/FuturesChart';
+import { CoinAvatar } from '../components/ui/CoinAvatar';
 
 export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavigate }: { selectedSymbol?: string, onNavigate?: (tab: string, symbol?: string) => void }) {
   const { user } = useAuth();
@@ -194,255 +195,309 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
   return (
     <div className="pb-6 flex flex-col min-h-screen relative">
       {/* Trading Pair Header */}
-      <div className="px-4 py-3 flex items-center justify-between border-b border-gray-900 bg-gray-950">
-        <div className="flex items-center gap-2 relative">
-          <Menu size={20} className="text-gray-400" />
-          <h1 
-            className="text-lg font-bold text-white flex items-center gap-1 cursor-pointer hover:text-gray-200"
+      <div className="px-4 py-3 flex items-center justify-between border-b border-gray-800/80 bg-gray-950/95 sticky top-0 z-30">
+        <div className="flex items-center gap-2.5 relative">
+          <button
+            type="button"
+            className="flex items-center gap-1.5 p-1 rounded-xl hover:bg-gray-850 transition-colors cursor-pointer group"
             onClick={() => setShowPairs(!showPairs)}
           >
-            {market.baseAsset}/{market.quoteAsset} <ChevronDown size={16} className="text-gray-500" />
-          </h1>
-          <span className={`text-sm font-medium ${isPositive ? 'text-emerald-500' : 'text-red-500'}`}>
-            {isPositive ? '+' : ''}{currentChange.toFixed(2)}%</span>
-          
-          {/* Pair Selector Dropdown */}
-          <MarketSelector isOpen={showPairs} onClose={() => setShowPairs(false)} onSelect={(symbol) => { const pair = tradingPairRegistry.getPair(symbol); if (pair?.marketType === 'FUTURES') { if (onNavigate) onNavigate('futures', symbol); } else { setSelectedSymbol(symbol); } setShowPairs(false); }} />
-        </div>
-        <div>
-          <button onClick={() => setShowAlerts(true)} className="p-2 text-gray-400 hover:text-white rounded-full hover:bg-gray-800 transition-colors">
-            <Bell size={20} />
+            <CoinAvatar symbol={market.baseAsset} size="sm" />
+            <h1 className="text-base md:text-lg font-black text-white flex items-center gap-1">
+              <span>{market.baseAsset}/{market.quoteAsset}</span>
+              <ChevronDown size={15} className="text-gray-400 group-hover:text-cyan-400 transition-colors" />
+            </h1>
           </button>
-          {false && (
-            <div className="absolute top-10 left-6 w-48 bg-gray-900 border border-gray-800 rounded-lg shadow-xl z-50 overflow-hidden">
-              {markets.map(m => (
-                <div 
-                  key={m.id}
-                  className="px-4 py-2 hover:bg-gray-800 cursor-pointer flex justify-between items-center"
-                  onClick={() => {
-                    setSelectedSymbol(`${m.baseAsset}USDT`);
-                    setShowPairs(false);
-                  }}
-                >
-                  <span className="font-bold text-gray-200">{m.baseAsset}/{m.quoteAsset}</span>
-                  <span className={`text-xs ${m.change24h >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                    {m.change24h >= 0 ? '+' : ''}{m.change24h}%
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+
+          <span className={`text-xs font-mono font-black px-2 py-0.5 rounded-lg flex items-center gap-0.5 ${
+            isPositive ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/15 text-red-400 border border-red-500/20'
+          }`}>
+            {isPositive ? '+' : ''}{currentChange.toFixed(2)}%
+          </span>
+          
+          <MarketSelector 
+            isOpen={showPairs} 
+            onClose={() => setShowPairs(false)} 
+            onSelect={(symbol) => { 
+              const pair = tradingPairRegistry.getPair(symbol); 
+              if (pair?.marketType === 'FUTURES') { 
+                if (onNavigate) onNavigate('futures', symbol); 
+              } else { 
+                setSelectedSymbol(symbol); 
+              } 
+              setShowPairs(false); 
+            }} 
+          />
         </div>
-        <div className="flex flex-col items-end">
-          <div className="text-[10px] font-bold text-blue-400 px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/20">
-            DEMO TRADING
-          </div>
+
+        <div className="flex items-center gap-2">
+          <button 
+            type="button"
+            aria-label="Price Alert"
+            onClick={() => setShowAlerts(true)} 
+            className="w-8 h-8 rounded-xl bg-gray-900 border border-gray-800 flex items-center justify-center text-gray-400 hover:text-white transition-colors cursor-pointer"
+          >
+            <Bell size={16} />
+          </button>
+          <span className="text-[10px] font-black text-cyan-400 px-2 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/20 uppercase tracking-wider">
+            SPOT
+          </span>
         </div>
       </div>
 
-      {/* Market Stats */}
-      <div className="px-4 py-2 flex items-center gap-6 border-b border-gray-900 bg-gray-950/80 text-[11px] font-medium text-gray-500 overflow-x-auto hide-scrollbar whitespace-nowrap">
+      {/* Market Stats Ribbon */}
+      <div className="px-4 py-2 flex items-center gap-6 border-b border-gray-800/60 bg-gray-950/80 text-[11px] font-mono overflow-x-auto hide-scrollbar whitespace-nowrap">
         <div className="flex flex-col">
-          <span>24h High</span>
-          <span className="text-gray-200">{market.high24h?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) || '--'}</span>
+          <span className="text-gray-500 text-[10px] font-sans">24h High</span>
+          <span className="text-white font-bold">{market.high24h?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) || '--'}</span>
         </div>
         <div className="flex flex-col">
-          <span>24h Low</span>
-          <span className="text-gray-200">{market.low24h?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) || '--'}</span>
+          <span className="text-gray-500 text-[10px] font-sans">24h Low</span>
+          <span className="text-white font-bold">{market.low24h?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) || '--'}</span>
         </div>
         <div className="flex flex-col">
-          <span>24h Vol({market.baseAsset})</span>
-          <span className="text-gray-200">{(market.volume).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+          <span className="text-gray-500 text-[10px] font-sans">24h Vol({market.baseAsset})</span>
+          <span className="text-white font-bold">{(market.volume).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+        </div>
+        <div className="flex flex-col">
+          <span className="text-gray-500 text-[10px] font-sans">24h Turnover</span>
+          <span className="text-gray-400">${((market.volume * currentPrice) / 1000000).toFixed(2)}M</span>
         </div>
       </div>
 
-      {/* Chart Section */}
-      <div className="w-full h-[250px] bg-gray-950 border-b border-gray-900 flex-shrink-0">
+      {/* Candlestick Chart Section */}
+      <div className="w-full h-[240px] bg-gray-950 border-b border-gray-800/80 flex-shrink-0">
         <FuturesChart market={market!} />
       </div>
 
       {/* Main Trading Area */}
       <div className="flex flex-1 px-4 py-4 gap-4">
-        {/* Left Col: Order Form */}
-        <div className="w-[60%] flex flex-col pr-2">
-          {/* Buy/Sell Tabs */}
-          <div className="flex bg-gray-900 rounded-lg p-1 mb-4">
+        {/* Left Col: Order Ticket Form */}
+        <div className="w-[58%] flex flex-col pr-1">
+          {/* Buy/Sell Segmented Switcher */}
+          <div className="flex bg-gray-950 p-1 border border-gray-800/90 rounded-xl mb-3.5">
             <button 
-              className={`flex-1 py-1.5 text-sm font-bold rounded-md transition-all ${
-                orderSide === 'BUY' ? 'bg-emerald-500 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'
+              type="button"
+              className={`flex-1 py-2 text-xs font-black rounded-lg transition-all cursor-pointer ${
+                orderSide === 'BUY' 
+                  ? 'bg-emerald-500 text-gray-950 shadow-md shadow-emerald-500/20' 
+                  : 'text-gray-400 hover:text-gray-200'
               }`}
               onClick={() => setOrderSide('BUY')}
             >
-              Buy
+              BUY
             </button>
             <button 
-              className={`flex-1 py-1.5 text-sm font-bold rounded-md transition-all ${
-                orderSide === 'SELL' ? 'bg-red-500 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'
+              type="button"
+              className={`flex-1 py-2 text-xs font-black rounded-lg transition-all cursor-pointer ${
+                orderSide === 'SELL' 
+                  ? 'bg-red-500 text-white shadow-md shadow-red-500/20' 
+                  : 'text-gray-400 hover:text-gray-200'
               }`}
               onClick={() => setOrderSide('SELL')}
             >
-              Sell
+              SELL
             </button>
           </div>
 
-          {/* Order Type */}
-          <div 
-            className="flex items-center gap-1 mb-4 text-sm text-gray-400 font-medium cursor-pointer hover:text-gray-200"
-            onClick={() => setOrderType(orderType === 'LIMIT' ? 'MARKET' : 'LIMIT')}
-          >
-            <span>{orderType === 'LIMIT' ? 'Limit Order' : 'Market Order'}</span>
-            <ChevronDown size={14} />
-          </div>
-
-          {/* Price Input */}
-          <div className={`bg-gray-900 border border-gray-800 focus-within:border-gray-600 transition-colors rounded-lg flex items-center px-3 py-2.5 mb-2 ${orderType === 'MARKET' ? 'opacity-50 pointer-events-none' : ''}`}>
-            <span className="text-gray-500 text-sm mr-2">-</span>
-            <input 
-              type="number" 
-              step="any"
-              className="bg-transparent flex-1 w-full text-gray-100 text-sm focus:outline-none text-center font-bold"
-              value={orderType === 'LIMIT' ? priceInput : currentPrice.toFixed(2)}
-              onChange={(e) => setPriceInput(e.target.value)}
-              placeholder="Price"
-              readOnly={orderType === 'MARKET'}
-            />
-            <span className="text-gray-500 text-sm ml-2">+</span>
-          </div>
-          <div className="text-[11px] text-gray-500 text-right mb-4">≈ ${currentPrice.toFixed(2)}</div>
-
-          {/* Amount Input */}
-          <div className="bg-gray-900 border border-gray-800 focus-within:border-gray-600 transition-colors rounded-lg flex items-center px-3 py-2.5 mb-3 relative">
-            <input 
-              type="number" 
-              step="any"
-              className="bg-transparent flex-1 w-full text-gray-100 text-sm font-bold focus:outline-none"
-              placeholder="Amount"
-              value={amountInput}
-              onChange={(e) => setAmountInput(e.target.value)}
-            />
-            <span className="text-gray-500 text-sm font-medium">{market.baseAsset}</span>
-          </div>
-
-          {/* Slider Mock */}
-          <div className="flex items-center justify-between mb-6 px-1 relative before:absolute before:inset-0 before:top-1 before:h-[2px] before:bg-gray-800 before:z-0">
-            {[25, 50, 75, 100].map((percent) => (
-              <div 
-                key={percent} 
-                onClick={() => setPercentage(percent)}
-                className="w-2.5 h-2.5 rounded-full bg-gray-700 z-10 ring-2 ring-gray-950 cursor-pointer hover:bg-gray-400 transition-colors"
-              ></div>
+          {/* Order Type Selector */}
+          <div className="flex items-center gap-1.5 mb-3">
+            {(['LIMIT', 'MARKET'] as const).map(type => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => setOrderType(type)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  orderType === type
+                    ? 'bg-gray-800 text-white border border-gray-700'
+                    : 'text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                {type === 'LIMIT' ? 'Limit' : 'Market'}
+              </button>
             ))}
           </div>
 
-          {/* Total */}
-          <div className="bg-gray-900 border border-gray-800 focus-within:border-gray-600 transition-colors rounded-lg flex items-center px-3 py-2.5 mb-2 relative opacity-70">
-            <input 
-              type="text" 
-              className="bg-transparent flex-1 w-full text-gray-100 text-sm font-bold focus:outline-none"
-              placeholder="Total"
-              value={estimatedTotal > 0 ? estimatedTotal.toFixed(2) : ''}
-              readOnly
-            />
-            <span className="text-gray-500 text-sm font-medium">{market.quoteAsset}</span>
+          {/* Price Input */}
+          <div className="mb-2">
+            <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Order Price</label>
+            <div className={`bg-gray-950 border border-gray-800 focus-within:border-cyan-500/80 focus-within:ring-1 focus-within:ring-cyan-500/30 transition-all rounded-xl flex items-center px-3 py-2 ${orderType === 'MARKET' ? 'opacity-50 pointer-events-none' : ''}`}>
+              <input 
+                type="number" 
+                step="any"
+                className="bg-transparent flex-1 w-full text-white text-sm font-mono font-bold focus:outline-none tabular-nums"
+                value={orderType === 'LIMIT' ? priceInput : currentPrice.toFixed(2)}
+                onChange={(e) => setPriceInput(e.target.value)}
+                placeholder="Price"
+                readOnly={orderType === 'MARKET'}
+              />
+              <span className="text-gray-400 text-xs font-bold font-mono ml-2">{market.quoteAsset}</span>
+            </div>
+            <div className="text-[10px] text-gray-500 text-right mt-1 font-mono">≈ ${currentPrice.toFixed(2)}</div>
+          </div>
+
+          {/* Amount Input */}
+          <div className="mb-2.5">
+            <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Quantity</label>
+            <div className="bg-gray-950 border border-gray-800 focus-within:border-cyan-500/80 focus-within:ring-1 focus-within:ring-cyan-500/30 transition-all rounded-xl flex items-center px-3 py-2">
+              <input 
+                type="number" 
+                step="any"
+                className="bg-transparent flex-1 w-full text-white text-sm font-mono font-bold focus:outline-none tabular-nums"
+                placeholder="0.00"
+                value={amountInput}
+                onChange={(e) => setAmountInput(e.target.value)}
+              />
+              <span className="text-gray-400 text-xs font-bold font-mono ml-2">{market.baseAsset}</span>
+            </div>
+          </div>
+
+          {/* Percentage Fast Pills */}
+          <div className="grid grid-cols-4 gap-1 mb-3.5">
+            {[25, 50, 75, 100].map((percent) => (
+              <button 
+                key={percent} 
+                type="button"
+                onClick={() => setPercentage(percent)}
+                className="py-1 rounded-lg bg-gray-900 hover:bg-gray-800 border border-gray-800/80 text-[11px] font-bold font-mono text-gray-400 hover:text-white transition-all cursor-pointer"
+              >
+                {percent}%
+              </button>
+            ))}
+          </div>
+
+          {/* Total Value */}
+          <div className="bg-gray-950/60 border border-gray-850 rounded-xl p-2.5 mb-3 flex items-center justify-between text-xs font-mono">
+            <span className="text-gray-500 font-sans text-[11px]">Order Value</span>
+            <span className="font-bold text-white tabular-nums">
+              {estimatedTotal > 0 ? estimatedTotal.toFixed(2) : '0.00'} {market.quoteAsset}
+            </span>
           </div>
           
-          {/* Fee & Balance info */}
-          <div className="flex justify-between text-[11px] text-gray-500 mb-1 font-medium">
-            <span>Est. Fee (0.1%)</span>
-            <span className="text-gray-400">{estimatedFee ? `${parseFloat(estimatedFee).toLocaleString(undefined, {maximumFractionDigits: 6})} ${feeAsset}` : '--'}</span>
-          </div>
-          <div className="flex justify-between text-[11px] text-gray-500 mb-4 font-medium">
-            <span>Available</span>
-            <span className="text-gray-200">{available.toLocaleString(undefined, { maximumFractionDigits: 6 })} {availableAsset}</span>
+          {/* Fee & Balance Details */}
+          <div className="space-y-1 mb-4 text-[11px]">
+            <div className="flex justify-between text-gray-500">
+              <span>Fee Rate (0.1%)</span>
+              <span className="font-mono text-gray-400">{estimatedFee ? `${parseFloat(estimatedFee).toLocaleString(undefined, {maximumFractionDigits: 6})} ${feeAsset}` : '--'}</span>
+            </div>
+            <div className="flex justify-between text-gray-500">
+              <span>Available Balance</span>
+              <span className="font-mono text-cyan-400 font-bold">{available.toLocaleString(undefined, { maximumFractionDigits: 4 })} {availableAsset}</span>
+            </div>
           </div>
 
-          {errorMsg && <div className="text-xs font-bold text-red-500 mb-2">{errorMsg}</div>}
-          {successMsg && <div className="text-xs font-bold text-emerald-500 mb-2">{successMsg}</div>}
+          {errorMsg && (
+            <div className="text-xs font-bold text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl p-2.5 mb-3 animate-fadeIn">
+              {errorMsg}
+            </div>
+          )}
+          {successMsg && (
+            <div className="text-xs font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-2.5 mb-3 animate-fadeIn">
+              {successMsg}
+            </div>
+          )}
 
           <Button 
-            className={`py-3 shadow-md ${orderSide === 'BUY' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-red-500 hover:bg-red-600'}`}
+            variant={orderSide === 'BUY' ? 'buy' : 'sell'}
             fullWidth
+            isLoading={isSubmitting}
             onClick={handleSubmit}
             disabled={isSubmitting || !amountInput || (orderType === 'LIMIT' && !priceInput) || (amountInput ? new Decimal(amountInput).lte(0) : true)}
           >
-            {isSubmitting ? 'Processing...' : (orderSide === 'BUY' ? `Buy ${market.baseAsset}` : `Sell ${market.baseAsset}`)}
+            {orderSide === 'BUY' ? `Buy ${market.baseAsset}` : `Sell ${market.baseAsset}`}
           </Button>
         </div>
 
-        {/* Right Col: Order Book */}
-      <div className="w-[40%] flex flex-col text-[11px] font-medium relative">
-        <div className="absolute top-0 right-0 p-1 opacity-50 z-10 pointer-events-none mt-[-24px]">
-          <div className="text-[9px] font-bold text-blue-400 px-1 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 shadow-sm">
-            DEMO BOOK
-          </div>
-        </div>
-        <div className="flex justify-between text-gray-500 mb-2 font-medium">
+        {/* Right Col: Live Order Book Depth */}
+        <div className="w-[42%] flex flex-col text-[11px] font-mono">
+          <div className="flex justify-between text-gray-500 mb-1.5 font-bold text-[10px] uppercase tracking-wider font-sans">
             <span>Price</span>
-            <span>Amount</span>
+            <span>Size</span>
           </div>
           
-          {/* Asks (Sell Orders) */}
-          <div className="flex flex-col gap-[2px] mb-2">
-            {orderBook.asks.map((ask, i) => (
-            <div 
-              key={`ask-${i}`} 
-              className="flex justify-between relative text-red-500 py-[2px] cursor-pointer hover:bg-gray-900/50"
-              onClick={() => { if (orderType === 'LIMIT') setPriceInput(ask.price.toFixed(4)); }}
-            >
-              <div className="absolute right-0 top-0 bottom-0 bg-red-500/10 z-0" style={{ width: `${(ask.total / maxTotal) * 100}%` }}></div>
-              <span className="z-10 relative font-bold">{ask.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</span>
-              <span className="text-gray-300 z-10 relative">{ask.quantity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</span>
-            </div>
-          ))}
+          {/* Asks (Sell Orders - Crimson) */}
+          <div className="flex flex-col gap-[1.5px] mb-2">
+            {orderBook.asks.slice(-7).map((ask, i) => (
+              <div 
+                key={`ask-${i}`} 
+                className="flex justify-between relative text-red-400 py-[2px] px-1 rounded hover:bg-gray-850/60 transition-colors cursor-pointer group"
+                onClick={() => { if (orderType === 'LIMIT') setPriceInput(ask.price.toFixed(4)); }}
+              >
+                <div 
+                  className="absolute right-0 top-0 bottom-0 bg-red-500/15 rounded-r z-0 transition-all duration-300" 
+                  style={{ width: `${(ask.total / maxTotal) * 100}%` }} 
+                />
+                <span className="z-10 relative font-bold tabular-nums">{ask.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</span>
+                <span className="text-gray-400 z-10 relative tabular-nums">{ask.quantity.toFixed(2)}</span>
+              </div>
+            ))}
           </div>
 
-          {/* Current Price */}
-          <div className="py-2 flex flex-col items-center gap-0.5 mb-2 cursor-pointer" onClick={() => { if (orderType === 'LIMIT') setPriceInput(currentPrice.toString()); }}>
+          {/* Mid Market Price Indicator */}
+          <div 
+            className="py-2.5 px-2 bg-gray-950 border-y border-gray-850/80 my-1 flex flex-col items-center justify-center cursor-pointer rounded-lg hover:border-cyan-500/40 transition-all" 
+            onClick={() => { if (orderType === 'LIMIT') setPriceInput(currentPrice.toString()); }}
+          >
             <div className="flex items-center gap-1">
-              <span className={`text-lg font-bold ${isPositive ? 'text-emerald-500' : 'text-red-500'}`}>
+              <span className={`text-base font-black tabular-nums ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
                 {currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
               </span>
-              {isPositive ? <ArrowUpRight size={16} className="text-emerald-500" /> : <ArrowDownRight size={16} className="text-red-500" />}
+              {isPositive ? <ArrowUpRight size={15} className="text-emerald-400" /> : <ArrowDownRight size={15} className="text-red-400" />}
             </div>
-            <span className="text-gray-500 text-[10px]">≈ ${currentPrice.toFixed(2)}</span>
+            <span className="text-gray-500 text-[10px] font-mono">≈ ${currentPrice.toFixed(2)}</span>
           </div>
 
-          {/* Bids (Buy Orders) */}
-          <div className="flex flex-col gap-[2px]">
-            {orderBook.bids.map((bid, i) => (
-            <div 
-              key={`bid-${i}`} 
-              className="flex justify-between relative text-emerald-500 py-[2px] cursor-pointer hover:bg-gray-900/50"
-              onClick={() => { if (orderType === 'LIMIT') setPriceInput(bid.price.toFixed(4)); }}
-            >
-              <div className="absolute right-0 top-0 bottom-0 bg-emerald-500/10 z-0" style={{ width: `${(bid.total / maxTotal) * 100}%` }}></div>
-              <span className="z-10 relative font-bold">{bid.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</span>
-              <span className="text-gray-300 z-10 relative">{bid.quantity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</span>
-            </div>
-          ))}
+          {/* Bids (Buy Orders - Emerald) */}
+          <div className="flex flex-col gap-[1.5px]">
+            {orderBook.bids.slice(0, 7).map((bid, i) => (
+              <div 
+                key={`bid-${i}`} 
+                className="flex justify-between relative text-emerald-400 py-[2px] px-1 rounded hover:bg-gray-850/60 transition-colors cursor-pointer group"
+                onClick={() => { if (orderType === 'LIMIT') setPriceInput(bid.price.toFixed(4)); }}
+              >
+                <div 
+                  className="absolute right-0 top-0 bottom-0 bg-emerald-500/15 rounded-r z-0 transition-all duration-300" 
+                  style={{ width: `${(bid.total / maxTotal) * 100}%` }} 
+                />
+                <span className="z-10 relative font-bold tabular-nums">{bid.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</span>
+                <span className="text-gray-400 z-10 relative tabular-nums">{bid.quantity.toFixed(2)}</span>
+              </div>
+            ))}
           </div>
         </div>
       </div>
 
-      {/* History Section */}
-      <div className="px-4 mt-4 pb-20">
-        <div className="flex items-center justify-between border-b border-gray-800 pb-2 mb-4">
-          <div className="flex gap-4 text-sm font-bold overflow-x-auto hide-scrollbar whitespace-nowrap">
+      {/* Orders & Activity History Section */}
+      <div className="px-4 mt-2 pb-20">
+        <div className="border-b border-gray-800/80 pb-2 mb-4">
+          <div className="flex gap-4 text-xs md:text-sm font-extrabold overflow-x-auto hide-scrollbar whitespace-nowrap">
             <button 
+              type="button"
               onClick={() => setHistoryTab('open')}
-              className={`pb-2 ${historyTab === 'open' ? 'text-white border-b-2 border-white' : 'text-gray-500 hover:text-gray-300'}`}
+              className={`pb-2.5 transition-all flex items-center gap-1.5 cursor-pointer ${
+                historyTab === 'open' ? 'text-cyan-400 border-b-2 border-cyan-400' : 'text-gray-400 hover:text-gray-200'
+              }`}
             >
-              Open Orders ({pendingOrders.length})
+              <span>Open Orders</span>
+              <span className="px-1.5 py-0.2 bg-cyan-500/20 text-cyan-400 rounded-full text-[10px] font-mono">
+                {pendingOrders.length}
+              </span>
             </button>
             <button 
+              type="button"
               onClick={() => setHistoryTab('orders')}
-              className={`pb-2 ${historyTab === 'orders' ? 'text-white border-b-2 border-white' : 'text-gray-500 hover:text-gray-300'}`}
+              className={`pb-2.5 transition-all cursor-pointer ${
+                historyTab === 'orders' ? 'text-cyan-400 border-b-2 border-cyan-400' : 'text-gray-400 hover:text-gray-200'
+              }`}
             >
               Order History
             </button>
             <button 
+              type="button"
               onClick={() => setHistoryTab('trades')}
-              className={`pb-2 ${historyTab === 'trades' ? 'text-white border-b-2 border-white' : 'text-gray-500 hover:text-gray-300'}`}
+              className={`pb-2.5 transition-all cursor-pointer ${
+                historyTab === 'trades' ? 'text-cyan-400 border-b-2 border-cyan-400' : 'text-gray-400 hover:text-gray-200'
+              }`}
             >
               Trade History
             </button>
@@ -450,12 +505,12 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
         </div>
         
         {historyTab === 'open' && <OpenOrders symbol={selectedSymbol} />}
-        
         {historyTab === 'orders' && <OrderHistory />}
-
         {historyTab === 'trades' && <TradeHistory />}
       </div>
+      
       <PriceAlertModal isOpen={showAlerts} onClose={() => setShowAlerts(false)} defaultSymbol={selectedSymbol} />
     </div>
   );
 }
+

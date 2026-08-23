@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Eye, Clock, Download, Upload, ArrowRightLeft, CreditCard, X, 
   ArrowUpRight, ArrowDownRight, Filter, FileText, CheckCircle2, AlertCircle
@@ -9,10 +9,13 @@ import { useTransactionHistory } from '../hooks/useTransactionHistory';
 import { 
   Asset, internalTransferService, WalletType, demoTransactionService
 } from '../services/wallet';
+import { securityService } from '../services/user/SecurityService';
 import { TransactionType, Transaction } from '../services/transactions';
 import { safeFormatDate } from '../services/storageUtil';
 
+
 import { ErrorBoundary } from '../components/ErrorBoundary';
+import { Button } from '../components/ui/Button';
 
 const ASSET_DETAILS: Record<string, { name: string, color: string }> = {
   USDT: { name: 'Tether US', color: 'bg-[#26A17B]' },
@@ -107,41 +110,63 @@ export function Assets() {
   };
 
   return (
-    <div className="pb-6">
-      <div className="px-4 py-4 bg-gray-900 rounded-b-3xl pb-8 relative overflow-hidden">
-        {/* Banner */}
-        <div className="absolute top-0 right-0 p-2 opacity-50">
-          <div className="text-[10px] font-bold text-blue-400 px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/20">
-            DEMO TRADING
+    <div className="pb-8 space-y-4">
+      {/* Portfolio Top Surface Card */}
+      <div className="px-4 pt-3">
+        <div className="relative overflow-hidden bg-gradient-to-br from-gray-900 via-gray-900/90 to-gray-950 border border-gray-800/90 rounded-3xl p-5 shadow-xl shadow-black/40">
+          <div className="absolute top-0 right-0 w-48 h-48 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none" />
+
+          <div className="relative z-10">
+            <div className="flex justify-between items-center mb-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Total Net Assets</span>
+              </div>
+              <span className="text-[10px] font-black text-cyan-400 px-2 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/20 uppercase tracking-wider">
+                SIMULATED WALLET
+              </span>
+            </div>
+
+            <div className="flex items-baseline gap-2 mb-4">
+              <span className="text-3xl md:text-4xl font-black text-white font-mono tabular-nums tracking-tight">
+                ${Number(balances.total).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+              <span className="text-xs font-mono font-bold text-gray-400">USDT</span>
+            </div>
+
+            {/* Quick Actions Ribbon */}
+            <div className="grid grid-cols-3 gap-2.5">
+              <Button 
+                variant="primary" 
+                size="sm" 
+                className="rounded-xl font-black text-xs" 
+                onClick={() => setShowDeposit(true)}
+              >
+                <Download size={14} className="shrink-0" /> Deposit
+              </Button>
+              <Button 
+                variant="secondary" 
+                size="sm" 
+                className="rounded-xl font-bold text-xs" 
+                onClick={() => setShowWithdraw(true)}
+              >
+                <Upload size={14} className="shrink-0" /> Withdraw
+              </Button>
+              <Button 
+                variant="nova" 
+                size="sm" 
+                className="rounded-xl font-bold text-xs" 
+                onClick={() => setShowTransfer(true)}
+              >
+                <ArrowRightLeft size={14} className="shrink-0" /> Transfer
+              </Button>
+            </div>
           </div>
-        </div>
-        
-        <div className="flex justify-between items-center mb-6 mt-2">
-          <h1 className="text-xl font-bold text-white">Assets</h1>
-          <div className="flex gap-4 text-gray-400">
-            <Eye size={20} />
-            <Clock size={20} />
-          </div>
-        </div>
-        
-        <div className="text-gray-400 text-sm mb-1">Total Demo Value (USDT)</div>
-        <div className="flex items-end gap-2 mb-2">
-          <span className="text-3xl font-bold text-white">
-            {Number(balances.total).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </span>
-        </div>
-        
-        <div className="flex gap-2 mt-6">
-          <ActionButton icon={Download} label="Deposit" onClick={() => setShowDeposit(true)} />
-          <ActionButton icon={Upload} label="Withdraw" onClick={() => setShowWithdraw(true)} />
-          <ActionButton icon={ArrowRightLeft} label="Transfer" onClick={() => setShowTransfer(true)} />
-          <ActionButton icon={CreditCard} label="Buy" disabled />
         </div>
       </div>
 
-      <div className="px-4 mt-6">
-        {/* Tabs */}
-        <div className="flex gap-6 border-b border-gray-800 mb-4 overflow-x-auto hide-scrollbar">
+      {/* Wallet Navigation Tabs */}
+      <div className="px-4">
+        <div className="flex gap-6 border-b border-gray-800/80 mb-3 overflow-x-auto hide-scrollbar">
           <Tab active={activeTab === 'overview'} onClick={() => setActiveTab('overview')}>Overview</Tab>
           <Tab active={activeTab === 'spot'} onClick={() => setActiveTab('spot')}>Spot</Tab>
           <Tab active={activeTab === 'futures'} onClick={() => setActiveTab('futures')}>Futures</Tab>
@@ -164,6 +189,7 @@ export function Assets() {
     </div>
   );
 }
+
 
 function HistoryTab() {
   const { user } = useAuth();
@@ -353,9 +379,10 @@ function ActionButton({ icon: Icon, label, disabled = false, onClick }: { icon: 
 function Tab({ active, onClick, children }: { active: boolean, onClick: () => void, children: React.ReactNode }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className={`py-2 text-sm font-bold border-b-2 whitespace-nowrap transition-colors ${
-        active ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-500 hover:text-gray-300'
+      className={`pb-2.5 text-xs md:text-sm font-extrabold border-b-2 whitespace-nowrap transition-all cursor-pointer ${
+        active ? 'border-cyan-400 text-cyan-400 shadow-sm' : 'border-transparent text-gray-400 hover:text-gray-200'
       }`}
     >
       {children}
@@ -364,29 +391,39 @@ function Tab({ active, onClick, children }: { active: boolean, onClick: () => vo
 }
 
 function AssetRow({ asset, details, showLocked = false }: { asset: Asset, details: { name: string, color: string }, showLocked?: boolean }) {
+  const baseAsset = asset.asset === 'FUTURES_USDT' ? 'USDT' : asset.asset;
   return (
-    <div className="flex flex-col py-3 px-3 hover:bg-gray-900/40 rounded-xl cursor-pointer transition-colors border border-gray-800/50 bg-gray-900/20">
+    <div className="flex flex-col py-3 px-3.5 hover:bg-gray-850/60 rounded-2xl cursor-pointer transition-colors border border-gray-800/80 bg-gray-900/40">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className={`w-9 h-9 rounded-full ${details.color} flex items-center justify-center font-bold text-white text-xs shadow-inner`}>
-            {asset.asset.charAt(0)}
+          <div className={`w-9 h-9 rounded-xl border border-white/10 ${details.color} flex items-center justify-center font-black text-white text-xs shadow-sm`}>
+            {baseAsset.slice(0, 3)}
           </div>
           <div>
-            <div className="font-bold text-gray-100 flex items-center gap-2">
-              {asset.asset} 
-              {showLocked && Number(asset.lockedBalance) > 0 && <span className="text-[9px] bg-gray-800 px-1 py-0.5 rounded text-gray-400 font-medium">LOCKED: {Number(asset.lockedBalance).toFixed(4)}</span>}
+            <div className="font-extrabold text-white flex items-center gap-2 text-sm">
+              <span>{asset.asset}</span> 
+              {showLocked && Number(asset.lockedBalance) > 0 && (
+                <span className="text-[9px] font-mono bg-amber-500/15 border border-amber-500/25 px-1.5 py-0.2 rounded text-amber-400 font-bold">
+                  LOCKED: {Number(asset.lockedBalance).toFixed(4)}
+                </span>
+              )}
             </div>
-            <div className="text-[11px] font-medium text-gray-500">{details.name}</div>
+            <div className="text-[11px] font-bold text-gray-400">{details.name}</div>
           </div>
         </div>
-        <div className="text-right">
-          <div className="font-bold text-gray-100">{Number(asset.totalBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</div>
-          <div className="text-[11px] font-medium text-gray-500">≈ ${Number(asset.marketValue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        <div className="text-right font-mono">
+          <div className="font-bold text-white text-sm tabular-nums">
+            {Number(asset.totalBalance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}
+          </div>
+          <div className="text-[11px] text-gray-400 tabular-nums">
+            ≈ ${Number(asset.marketValue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
         </div>
       </div>
     </div>
   );
 }
+
 
 function TransferModal({ onClose, balances, userId = 'demo-user-1' }: { onClose: () => void, balances: any, userId?: string }) {
   const [fromWallet, setFromWallet] = useState<WalletType>('SPOT');
@@ -606,12 +643,19 @@ function WithdrawModal({ onClose, balances, assets, userId }: { onClose: () => v
   const [asset, setAsset] = useState('USDT');
   const [amount, setAmount] = useState('');
   const [destination, setDestination] = useState('');
+  const [totpCode, setTotpCode] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [kycStatus, setKycStatus] = useState<any>(null);
   const isSubmittingRef = useRef(false);
+
+  useEffect(() => {
+    securityService.fetchKycStatus().then(status => setKycStatus(status)).catch(() => {});
+  }, []);
 
   const assetRecord = assets.find(a => a.asset === asset);
   const available = assetRecord ? assetRecord.availableBalance : (asset === 'USDT' ? balances.spotAvailable : '0');
+  const is2FAActive = securityService.getStatus().twoFactorEnabled;
 
   const handleWithdraw = async () => {
     if (isSubmittingRef.current) return;
@@ -620,7 +664,10 @@ function WithdrawModal({ onClose, balances, assets, userId }: { onClose: () => v
     setError('');
     try {
       if (!destination.trim()) {
-        throw new Error('Destination label is required');
+        throw new Error('Destination address or label is required');
+      }
+      if (is2FAActive && (!totpCode || totpCode.length !== 6)) {
+        throw new Error('Please enter a valid 6-digit 2FA code');
       }
       await demoTransactionService.createWithdrawal(asset, amount, destination, available, userId);
       onClose();
@@ -644,24 +691,36 @@ function WithdrawModal({ onClose, balances, assets, userId }: { onClose: () => v
           </button>
         </div>
         
-        <div className="p-5 flex flex-col gap-5">
-          <div className="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 rounded-xl text-sm font-medium flex gap-2">
-            <div>ℹ️</div>
-            <div>Demo only — no real funds are transferred. This deducts simulated balance from your spot account.</div>
+        <div className="p-5 flex flex-col gap-4">
+          <div className="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-2.5 rounded-xl text-xs font-medium">
+            Demo environment only — simulated balance deducted from your spot account.
           </div>
 
+          {kycStatus && (
+            <div className="bg-gray-800/60 border border-gray-700/60 p-3 rounded-xl space-y-1 text-xs">
+              <div className="flex justify-between text-gray-400">
+                <span>24h Rolling Quota:</span>
+                <span className="text-emerald-400 font-bold">{kycStatus.tier}</span>
+              </div>
+              <div className="flex justify-between text-gray-300">
+                <span>Remaining Today:</span>
+                <span className="font-bold text-white">{kycStatus.remaining24hUsdt} / {kycStatus.dailyLimitUsdt} USDT</span>
+              </div>
+            </div>
+          )}
+
           {error && (
-             <div className="bg-red-500/10 border border-red-500/50 text-red-500 px-3 py-2 rounded-lg text-sm font-medium">
+             <div className="bg-red-500/10 border border-red-500/50 text-red-500 px-3 py-2 rounded-lg text-xs font-medium">
                {error}
              </div>
           )}
 
           <div>
-            <div className="text-xs text-gray-500 font-medium mb-2">Asset</div>
+            <div className="text-xs text-gray-500 font-medium mb-1.5">Asset</div>
             <select 
               value={asset}
               onChange={(e) => { setAsset(e.target.value); setAmount(''); }}
-              className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-3 px-4 text-white font-bold outline-none transition-colors appearance-none"
+              className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-2.5 px-4 text-white font-bold outline-none transition-colors appearance-none text-sm"
             >
               <option value="USDT">USDT - Tether US</option>
               <option value="BTC">BTC - Bitcoin</option>
@@ -674,18 +733,18 @@ function WithdrawModal({ onClose, balances, assets, userId }: { onClose: () => v
           </div>
 
           <div>
-            <div className="text-xs text-gray-500 font-medium mb-2">Demo Destination Label</div>
+            <div className="text-xs text-gray-500 font-medium mb-1.5">Destination Address / Label</div>
             <input 
               type="text" 
               value={destination}
               onChange={e => setDestination(e.target.value)}
-              placeholder="e.g. External demo wallet"
-              className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-3 px-4 text-white font-bold placeholder-gray-600 outline-none transition-colors"
+              placeholder="e.g. 0x71C... or External Wallet"
+              className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-2.5 px-4 text-white font-bold placeholder-gray-600 outline-none transition-colors text-sm"
             />
           </div>
 
           <div>
-            <div className="flex justify-between items-end mb-2">
+            <div className="flex justify-between items-end mb-1.5">
               <div className="text-xs text-gray-500 font-medium">Amount</div>
               <div className="text-xs text-gray-400">Available: <span className="font-bold text-gray-200">{Number(available).toFixed(4)}</span></div>
             </div>
@@ -695,21 +754,37 @@ function WithdrawModal({ onClose, balances, assets, userId }: { onClose: () => v
                 value={amount}
                 onChange={e => setAmount(e.target.value)}
                 placeholder="0.00"
-                className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-3 pl-4 pr-16 text-white font-bold placeholder-gray-600 outline-none transition-colors"
+                className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-2.5 pl-4 pr-16 text-white font-bold placeholder-gray-600 outline-none transition-colors text-sm"
               />
               <button 
                 onClick={() => setAmount(available)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-blue-500 font-bold text-sm hover:text-blue-400"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-blue-500 font-bold text-xs hover:text-blue-400"
               >
                 MAX
               </button>
             </div>
           </div>
 
+          {is2FAActive && (
+            <div>
+              <div className="text-xs text-gray-400 font-bold mb-1.5 flex items-center gap-1">
+                <span>Two-Factor Authentication Code</span>
+              </div>
+              <input 
+                type="text" 
+                maxLength={6}
+                value={totpCode}
+                onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="6-digit code"
+                className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-2.5 px-4 text-white font-mono text-center tracking-widest outline-none transition-colors text-sm"
+              />
+            </div>
+          )}
+
           <button 
             disabled={!amount || !destination.trim() || isSubmitting}
             onClick={handleWithdraw}
-            className="w-full bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:hover:bg-red-600 text-white font-bold py-3.5 rounded-xl transition-colors mt-2"
+            className="w-full bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:hover:bg-red-600 text-white font-bold py-3 rounded-xl transition-colors mt-2 text-sm"
           >
             {isSubmitting ? 'Processing...' : 'Confirm Withdrawal'}
           </button>
@@ -718,6 +793,7 @@ function WithdrawModal({ onClose, balances, assets, userId }: { onClose: () => v
     </div>
   );
 }
+
 
 function TransactionDetailModal({ tx, onClose }: { tx: Transaction; onClose: () => void }) {
   const dateStr = safeFormatDate(tx.createdAt);

@@ -60,8 +60,14 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     const token = extractSessionToken(req);
 
     if (!token) {
+      logger.warn('requireAuth missing token', {
+        headers: req.headers,
+        url: req.originalUrl,
+        method: req.method,
+      });
       throw new AppError('Authentication required. Please log in.', 401, 'UNAUTHORIZED');
     }
+
 
     const session = await sessionService.validateSession(token);
     if (!session) {
