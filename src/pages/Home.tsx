@@ -17,7 +17,7 @@ export function Home({ onNavigate }: { onNavigate: (tab: string, symbol?: string
   const { user } = useAuth();
   const { data: markets, loading, isRefreshing, error, lastUpdated } = useMarketData();
   const tickers = useTicker();
-  const { balances } = useLedger(user?.id || 'demo-user-1');
+  const { balances } = useLedger();
   const [hideBalance, setHideBalance] = useState(false);
   const [marketTab, setMarketTab] = useState<'hot' | 'gainers' | 'losers' | 'volume'>('hot');
 

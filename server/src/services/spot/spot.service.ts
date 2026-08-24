@@ -996,10 +996,28 @@ export class SpotService {
     const pageSize = options.pageSize || 50;
     const offset = (page - 1) * pageSize;
 
-    const ordersRes = await this.database.query<any>(
-      'SELECT * FROM orders WHERE account_id = $1',
-      [spotAcc.id, options.symbol, options.status, pageSize, offset]
-    );
+    let sql = 'SELECT * FROM orders WHERE account_id = $1';
+    const params: any[] = [spotAcc.id];
+    let paramIndex = 2;
+
+    if (options.symbol) {
+      sql += ` AND symbol = $${paramIndex++}`;
+      params.push(options.symbol.toUpperCase());
+    }
+    if (options.status) {
+      sql += ` AND status = $${paramIndex++}`;
+      params.push(options.status);
+    }
+    if (options.side) {
+      sql += ` AND side = $${paramIndex++}`;
+      params.push(options.side);
+    }
+
+    sql += ' ORDER BY created_at DESC';
+    sql += ` LIMIT $${paramIndex++} OFFSET $${paramIndex++}`;
+    params.push(pageSize, offset);
+
+    const ordersRes = await this.database.query<any>(sql, params);
 
     return ordersRes.rows.map(r => ({
       id: r.id,
@@ -1040,10 +1058,20 @@ export class SpotService {
     const pageSize = options.pageSize || 50;
     const offset = (page - 1) * pageSize;
 
-    const tradesRes = await this.database.query<any>(
-      'SELECT * FROM trades WHERE account_id = $1',
-      [spotAcc.id, options.symbol, pageSize, offset]
-    );
+    let tradeSql = 'SELECT * FROM trades WHERE account_id = $1';
+    const tradeParams: any[] = [spotAcc.id];
+    let tradeParamIndex = 2;
+
+    if (options.symbol) {
+      tradeSql += ` AND symbol = $${tradeParamIndex++}`;
+      tradeParams.push(options.symbol.toUpperCase());
+    }
+
+    tradeSql += ' ORDER BY created_at DESC';
+    tradeSql += ` LIMIT $${tradeParamIndex++} OFFSET $${tradeParamIndex++}`;
+    tradeParams.push(pageSize, offset);
+
+    const tradesRes = await this.database.query<any>(tradeSql, tradeParams);
 
     return tradesRes.rows.map(r => ({
       id: r.id,

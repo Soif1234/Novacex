@@ -33,7 +33,7 @@ export function Assets() {
   const [showDeposit, setShowDeposit] = useState(false);
   const [showWithdraw, setShowWithdraw] = useState(false);
   
-  const { assets, balances, isLoading } = useWallet(user?.id || 'demo-user-1');
+  const { assets, balances, isLoading } = useWallet();
 
   if (isLoading || !balances) {
     return (

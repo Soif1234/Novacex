@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { walletService, Asset, WalletBalances } from '../services/wallet';
 import { wsClient } from '../services/websocket/wsClient';
 
-export function useWallet(accountId: string = 'demo-user-1') {
+export function useWallet(accountId?: string) {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [balances, setBalances] = useState<WalletBalances | null>(null);
   const [isLoading, setIsLoading] = useState(true);

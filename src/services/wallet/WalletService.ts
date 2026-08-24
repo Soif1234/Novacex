@@ -5,11 +5,11 @@ import { apiClient } from '../api/client';
 import { WalletBalancesMap } from '../api/types';
 
 export class WalletService {
-  public async getAssets(accountId: string = 'demo-user-1'): Promise<Asset[]> {
+  public async getAssets(accountId?: string): Promise<Asset[]> {
     if (typeof window === 'undefined') {
       return []; // SSR safe
     }
-    const backendRes = await apiClient.get<any>('/wallet/balances', { accountId });
+    const backendRes = await apiClient.get<any>('/wallet/balances', accountId ? { accountId } : undefined);
     const backendBalances: WalletBalancesMap = backendRes?.balances || backendRes;
     if (!backendBalances || typeof backendBalances !== 'object' || Object.keys(backendBalances).length === 0) {
       return [];
@@ -17,7 +17,7 @@ export class WalletService {
     return this.mapBackendBalancesToAssets(backendBalances);
   }
 
-  public async getWalletBalances(accountId: string = 'demo-user-1'): Promise<WalletBalances> {
+  public async getWalletBalances(accountId?: string): Promise<WalletBalances> {
     const assets = await this.getAssets(accountId);
     const spotUsdtAsset = assets.find(a => a.asset === 'USDT') || this.createEmptyAsset('USDT');
     const futuresUsdtAsset = assets.find(a => a.asset === 'FUTURES_USDT') || this.createEmptyAsset('FUTURES_USDT');
@@ -30,7 +30,7 @@ export class WalletService {
       }
     }
 
-    const futuresPositions = futuresOrderService.getPositions(accountId).filter(p => p.status === 'OPEN');
+    const futuresPositions = (accountId ? futuresOrderService.getPositions(accountId) : futuresOrderService.getAllPositions()).filter(p => p.status === 'OPEN');
     let unrealizedPnl = new Decimal(0);
     for (const p of futuresPositions) {
       unrealizedPnl = unrealizedPnl.plus(new Decimal(p.unrealizedPnl || '0'));

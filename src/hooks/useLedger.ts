@@ -10,7 +10,7 @@ import { wsClient } from '../services/websocket/wsClient';
  * WebSocket event and on a periodic poll. No financial state is ever fabricated or
  * mutated on the client.
  */
-export function useLedger(accountId: string = 'demo-user-1'): { balances: Record<string, string>; isLoading: boolean } {
+export function useLedger(accountId?: string): { balances: Record<string, string>; isLoading: boolean } {
   const [balances, setBalances] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
 
