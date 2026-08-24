@@ -33,7 +33,7 @@ export function corsMiddleware(req: Request, res: Response, next: NextFunction):
   );
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Request-ID, Idempotency-Key'
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Session-Token, X-Request-ID, Idempotency-Key, X-API-Key, X-API-Timestamp, X-API-Nonce, X-API-Signature, X-2FA-Code'
   );
   res.setHeader('Access-Control-Max-Age', '86400');
 
