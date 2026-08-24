@@ -267,7 +267,7 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
 
       {/* Candlestick Chart Section */}
       <div className="w-full h-[240px] bg-gray-950 border-b border-gray-800/80 flex-shrink-0">
-        <FuturesChart market={market!} />
+        <FuturesChart market={market!} marketType="SPOT" />
       </div>
 
       {/* Main Trading Area */}

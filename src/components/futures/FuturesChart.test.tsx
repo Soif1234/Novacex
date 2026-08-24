@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, act } from '@testing-library/react';
+import { render, act, screen } from '@testing-library/react';
 import { FuturesChart } from './FuturesChart';
+import { apiClient } from '../../services/api/client';
 
 // Mock lightweight-charts
 vi.mock('lightweight-charts', () => {
@@ -43,6 +44,7 @@ describe('FuturesChart backend kline subscription & symbol switching', () => {
   beforeEach(() => {
     subscriptions.length = 0;
     unsubSpies.length = 0;
+    vi.clearAllMocks();
   });
 
   afterEach(() => {
@@ -59,31 +61,48 @@ describe('FuturesChart backend kline subscription & symbol switching', () => {
   };
 
   it('subscribes to the backend kline channel per symbol and never uses Binance', async () => {
-    render(<FuturesChart market={{ symbol: 'BTCUSDT' } as any} />);
+    render(<FuturesChart market={{ symbol: 'BTCUSDT' } as any} marketType="FUTURES" />);
     await flush();
 
     expect(subscriptions.length).toBe(1);
-    expect(subscriptions[0]).toMatch(/^kline:(futures|spot):btcusdt:(1m|5m|1h|1d)$/);
+    expect(subscriptions[0]).toBe('kline:futures:btcusdt:5m');
     expect(subscriptions[0]).not.toContain('binance');
+    expect(apiClient.get).toHaveBeenCalledWith('/market/klines', expect.objectContaining({
+      market: 'FUTURES',
+      symbol: 'BTCUSDT',
+    }));
+  });
+
+  it('correctly resolves Spot market from market.id and marketType=SPOT', async () => {
+    render(<FuturesChart market={{ id: 'BTCUSDT' } as any} marketType="SPOT" />);
+    await flush();
+
+    expect(subscriptions.length).toBe(1);
+    expect(subscriptions[0]).toBe('kline:spot:btcusdt:5m');
+    expect(apiClient.get).toHaveBeenCalledWith('/market/klines', expect.objectContaining({
+      market: 'SPOT',
+      symbol: 'BTCUSDT',
+    }));
+    expect(screen.getByText('Spot')).toBeTruthy();
   });
 
   it('unsubscribes the previous channel and resubscribes on symbol switch', async () => {
-    const { rerender } = render(<FuturesChart market={{ symbol: 'BTCUSDT' } as any} />);
+    const { rerender } = render(<FuturesChart market={{ symbol: 'BTCUSDT' } as any} marketType="FUTURES" />);
     await flush();
     expect(subscriptions.length).toBe(1);
 
-    rerender(<FuturesChart market={{ symbol: 'ETHUSDT' } as any} />);
+    rerender(<FuturesChart market={{ symbol: 'ETHUSDT' } as any} marketType="FUTURES" />);
     await flush();
 
     expect(unsubSpies[0]).toHaveBeenCalled(); // previous subscription cleaned up
     expect(subscriptions.length).toBe(2);
-    expect(subscriptions[1]).toMatch(/^kline:(futures|spot):ethusdt:(1m|5m|1h|1d)$/);
+    expect(subscriptions[1]).toBe('kline:futures:ethusdt:5m');
 
-    rerender(<FuturesChart market={{ symbol: 'SOLUSDT' } as any} />);
+    rerender(<FuturesChart market={{ symbol: 'SOLUSDT' } as any} marketType="FUTURES" />);
     await flush();
 
     expect(unsubSpies[1]).toHaveBeenCalled();
     expect(subscriptions.length).toBe(3);
-    expect(subscriptions[2]).toMatch(/^kline:(futures|spot):solusdt:(1m|5m|1h|1d)$/);
+    expect(subscriptions[2]).toBe('kline:futures:solusdt:5m');
   });
 });

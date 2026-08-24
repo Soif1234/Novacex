@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createChart, IChartApi, ISeriesApi, CandlestickData, Time, ColorType } from 'lightweight-charts';
 import { FuturesMarket } from '../../types/futures';
+import { MarketPair } from '../../types';
 import { updateMarketPriceLocally } from '../../hooks/useFuturesMarketData';
 import { preferencesService } from '../../services/user/PreferencesService';
 import { apiClient } from '../../services/api/client';
@@ -8,7 +9,8 @@ import { wsClient } from '../../services/websocket/wsClient';
 import { tradingPairRegistry } from '../../services/market/TradingPairRegistry';
 
 interface FuturesChartProps {
-  market: FuturesMarket;
+  market: FuturesMarket | MarketPair | any;
+  marketType?: 'SPOT' | 'FUTURES';
 }
 
 // Maps UI timeframe labels to backend-supported kline intervals (1m/5m/1h/1d).
@@ -21,10 +23,18 @@ const INTERVAL_MAP: Record<string, string> = {
 
 const TIMEFRAMES = ['1m', '5m', '1H', '1D'];
 
-export function FuturesChart({ market }: FuturesChartProps) {
-  const pair = tradingPairRegistry.getPair(market.symbol || (market as any).id);
-  const apiSym = pair ? pair.apiSymbol || pair.symbol : (market.symbol || (market as any).id);
-  const marketType = pair ? pair.marketType : 'FUTURES';
+export function FuturesChart({ market, marketType: explicitMarketType }: FuturesChartProps) {
+  const symbol = market?.symbol || (market as any)?.id || '';
+  const marketType: 'SPOT' | 'FUTURES' =
+    explicitMarketType ||
+    (market && (market as any).marketType) ||
+    ((market as any)?.id && !(market as any)?.symbol ? 'SPOT' : 'FUTURES');
+
+  const pair = tradingPairRegistry.getPair(symbol, marketType);
+  const apiSym = pair ? pair.apiSymbol || pair.symbol : symbol;
+  const displaySymbol = pair?.symbol || symbol;
+  const displayBadge = marketType === 'SPOT' ? 'Spot' : 'Perp';
+
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -34,7 +44,6 @@ export function FuturesChart({ market }: FuturesChartProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const symbol = market?.symbol;
   const interval = INTERVAL_MAP[timeframe] || '1m';
 
   // Initialization and Resize
@@ -205,8 +214,8 @@ export function FuturesChart({ market }: FuturesChartProps) {
         <div className="flex items-center justify-between px-3 py-1 border-b border-gray-900 text-xs">
             <div className="flex gap-4">
                 <div className="flex items-center gap-1 font-bold text-gray-200">
-                    {market?.symbol}
-                    <span className="text-gray-500 font-normal">Perp</span>
+                    {displaySymbol}
+                    <span className="text-gray-500 font-normal">{displayBadge}</span>
                 </div>
                 <div className="flex gap-2 text-gray-400">
                     {TIMEFRAMES.map(tf => (

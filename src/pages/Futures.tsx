@@ -388,7 +388,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
 
       {/* Candlestick Chart */}
       <div className="h-60 border-b border-gray-800/80 bg-gray-950">
-        <FuturesChart market={market} />
+        <FuturesChart market={market} marketType="FUTURES" />
       </div>
 
       {/* Terminal Main Workspace */}
