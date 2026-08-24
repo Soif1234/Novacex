@@ -25,7 +25,11 @@ export async function fetchMarketData(): Promise<MarketPair[]> {
 
     const bySymbol = new Map<string, any>();
     for (const t of tickers) {
-      if (t && t.symbol) bySymbol.set(String(t.symbol).toUpperCase(), t);
+      if (t && t.symbol) {
+        const clean = String(t.symbol).toUpperCase();
+        bySymbol.set(clean, t);
+        tradingPairRegistry.registerPairFromTicker(clean, t.lastPrice);
+      }
     }
 
     const pairs = tradingPairRegistry.getAllPairs();

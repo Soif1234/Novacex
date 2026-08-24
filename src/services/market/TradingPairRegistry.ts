@@ -1,3 +1,5 @@
+import { apiClient } from '../api/client';
+
 export type MarketType = 'SPOT' | 'FUTURES';
 
 export interface TradingPair {
@@ -222,12 +224,153 @@ export class TradingPairRegistry {
     return cleaned;
   }
 
+  public registerPairFromTicker(symbol: string, lastPrice?: string): TradingPair {
+    const cleanSym = this.resolveCanonicalSymbol(symbol);
+    const existing = this.getPair(cleanSym);
+    if (existing) return existing;
+
+    let quoteAsset = 'USDT';
+    let baseAsset = cleanSym;
+    if (cleanSym.endsWith('USDT')) {
+      quoteAsset = 'USDT';
+      baseAsset = cleanSym.slice(0, -4);
+    } else if (cleanSym.endsWith('USDC')) {
+      quoteAsset = 'USDC';
+      baseAsset = cleanSym.slice(0, -4);
+    }
+
+    const priceNum = parseFloat(lastPrice || '1');
+    let tickSize = '0.01';
+    let quantityPrecision = 2;
+    let minQuantity = '0.01';
+
+    if (priceNum >= 1000) {
+      tickSize = '0.10';
+      quantityPrecision = 3;
+      minQuantity = '0.001';
+    } else if (priceNum >= 10) {
+      tickSize = '0.01';
+      quantityPrecision = 2;
+      minQuantity = '0.01';
+    } else if (priceNum >= 1) {
+      tickSize = '0.001';
+      quantityPrecision = 1;
+      minQuantity = '0.1';
+    } else if (priceNum >= 0.01) {
+      tickSize = '0.0001';
+      quantityPrecision = 0;
+      minQuantity = '10';
+    } else {
+      tickSize = '0.00001';
+      quantityPrecision = 0;
+      minQuantity = '100';
+    }
+
+    const commonNames: Record<string, string> = {
+      'BTC': 'Bitcoin', 'ETH': 'Ethereum', 'SOL': 'Solana', 'XRP': 'Ripple',
+      'DOGE': 'Dogecoin', 'ADA': 'Cardano', 'AVAX': 'Avalanche', 'LINK': 'Chainlink',
+      'DOT': 'Polkadot', 'MATIC': 'Polygon', 'SHIB': 'Shiba Inu', 'LTC': 'Litecoin',
+      'BCH': 'Bitcoin Cash', 'ATOM': 'Cosmos', 'UNI': 'Uniswap', 'XLM': 'Stellar',
+      'NEAR': 'NEAR Protocol', 'APT': 'Aptos', 'ARB': 'Arbitrum', 'OP': 'Optimism',
+      'FIL': 'Filecoin', 'INJ': 'Injective', 'LDO': 'Lido DAO', 'RNDR': 'Render',
+      'STX': 'Stacks', 'IMX': 'Immutable', 'VET': 'VeChain', 'GRT': 'The Graph',
+      'SNX': 'Synthetix', 'AAVE': 'Aave', 'MKR': 'Maker', 'ALGO': 'Algorand',
+      'FTM': 'Fantom', 'SAND': 'The Sandbox', 'MANA': 'Decentraland', 'EGLD': 'MultiversX',
+      'THETA': 'Theta Network', 'AXS': 'Axie Infinity', 'QNT': 'Quant', 'GALA': 'Gala',
+      'PEPE': 'Pepe', 'SUI': 'Sui', 'SEI': 'Sei', 'TIA': 'Celestia', 'WIF': 'dogwifhat',
+      'BONK': 'Bonk', 'FLOKI': 'Floki', 'RENDER': 'Render', 'FET': 'Fetch.ai', 'TAO': 'Bittensor'
+    };
+
+    const name = commonNames[baseAsset] || baseAsset;
+
+    const futuresPair: TradingPair = {
+      symbol: cleanSym,
+      apiSymbol: cleanSym,
+      baseAsset,
+      quoteAsset,
+      marketType: 'FUTURES',
+      tickSize,
+      quantityPrecision,
+      minQuantity,
+      categories: [quoteAsset],
+      name
+    };
+
+    const spotPair: TradingPair = {
+      symbol: cleanSym,
+      apiSymbol: cleanSym,
+      baseAsset,
+      quoteAsset,
+      marketType: 'SPOT',
+      tickSize,
+      quantityPrecision,
+      minQuantity,
+      categories: [quoteAsset],
+      name
+    };
+
+    if (!this.futuresPairs.has(cleanSym)) this.futuresPairs.set(cleanSym, futuresPair);
+    if (!this.spotPairs.has(cleanSym)) this.spotPairs.set(cleanSym, spotPair);
+
+    return futuresPair;
+  }
+
   public async loadTop200() {
     if (this.loaded) return;
     this.loaded = true;
-    // Trading pairs are sourced from the static registry above, which is aligned with
-    // the backend's supported markets. No external market-data provider (e.g. Binance)
-    // is contacted from the browser.
+    try {
+      const cacheKey = 'nova_top_200_pairs_v4';
+      const cached = typeof localStorage !== 'undefined' ? localStorage.getItem(cacheKey) : null;
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached);
+          if (parsed && parsed.timestamp && Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000) {
+            if (Array.isArray(parsed.pairs)) {
+              parsed.pairs.forEach((p: TradingPair) => {
+                const canonicalSym = this.resolveCanonicalSymbol(p.symbol);
+                const normalized: TradingPair = {
+                  ...p,
+                  symbol: canonicalSym
+                };
+                if (p.marketType === 'FUTURES') {
+                  if (!this.futuresPairs.has(canonicalSym)) this.futuresPairs.set(canonicalSym, normalized);
+                } else {
+                  if (!this.spotPairs.has(canonicalSym)) this.spotPairs.set(canonicalSym, normalized);
+                }
+              });
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to parse cached top 200 pairs', e);
+        }
+      }
+
+      // Fetch from NovaCEX authoritative backend proxy endpoint
+      const res = await apiClient.get<{ tickers: any[] }>('/market/tickers').catch(() => null);
+      const tickers = (res && (res as any).tickers)
+        ? (res as any).tickers
+        : (Array.isArray(res) ? (res as any) : []);
+
+      if (Array.isArray(tickers) && tickers.length > 0) {
+        const newPairs: TradingPair[] = [];
+        tickers.forEach((t: any) => {
+          if (t && t.symbol) {
+            const pair = this.registerPairFromTicker(t.symbol, t.lastPrice);
+            newPairs.push(pair);
+          }
+        });
+
+        if (typeof localStorage !== 'undefined' && newPairs.length > 0) {
+          localStorage.setItem(cacheKey, JSON.stringify({
+            timestamp: Date.now(),
+            pairs: newPairs
+          }));
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to load top 200 pairs from backend:', err);
+    }
   }
 
   public getSpotPair(symbol: string): TradingPair | undefined {

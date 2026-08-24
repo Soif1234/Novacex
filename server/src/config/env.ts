@@ -49,6 +49,9 @@ export interface EnvironmentConfig {
   SHUTDOWN_TIMEOUT_MS: number;
   API_KEY_ENCRYPTION_SECRET?: string;
   AUTO_MIGRATE: boolean;
+  EXTERNAL_MARKET_DATA_ENABLED: boolean;
+  EXTERNAL_MARKET_DATA_URL: string;
+  EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS: number;
 }
 
 function parseNumber(val: string | undefined, fallback: number, name: string): number {
@@ -128,6 +131,10 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
   }
   const redisUrl = process.env.REDIS_URL || `redis://${redisHost}:${redisPort}`;
 
+  const externalMarketDataEnabled = parseBoolean(process.env.EXTERNAL_MARKET_DATA_ENABLED, true);
+  const externalMarketDataUrl = process.env.EXTERNAL_MARKET_DATA_URL || 'https://data-api.binance.vision/api/v3';
+  const externalMarketDataPollIntervalMs = parseNumber(process.env.EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS, 3000, 'EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS');
+
   const config: EnvironmentConfig = {
     NODE_ENV: nodeEnv as 'development' | 'production' | 'test',
     PORT: port,
@@ -177,6 +184,9 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     ? (() => { throw new Error('API_KEY_ENCRYPTION_SECRET must be provided in production'); })() 
     : process.env.API_KEY_ENCRYPTION_SECRET || undefined,
     AUTO_MIGRATE: autoMigrate,
+    EXTERNAL_MARKET_DATA_ENABLED: externalMarketDataEnabled,
+    EXTERNAL_MARKET_DATA_URL: externalMarketDataUrl,
+    EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS: externalMarketDataPollIntervalMs,
     ...overrides
   };
 

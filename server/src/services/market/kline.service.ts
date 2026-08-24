@@ -2,6 +2,8 @@ import { IDatabaseConnection, db } from '../../config/database';
 import { eventBus } from './event-bus';
 import { decimalAdd, decimalCompare, decimalNormalize } from '../ledger/decimal';
 import { logger } from '../../config/logger';
+import { env } from '../../config/env';
+import { isSupportedSymbol } from './external-feed.service';
 
 export type Interval = '1m' | '5m' | '1h' | '1d';
 
@@ -305,6 +307,8 @@ export class KLineService {
     }
   }
 
+  private klineCache = new Map<string, { data: KLine[]; expiresAt: number }>();
+
   public async getHistoricalKLines(
     market: 'SPOT' | 'FUTURES',
     symbol: string,
@@ -312,30 +316,165 @@ export class KLineService {
     limit: number = 500,
     endTime?: number
   ): Promise<KLine[]> {
+    const cleanSym = symbol.trim().toUpperCase();
+    const cleanInterval = (['1m', '5m', '1h', '1d'].includes(interval) ? interval : '1m') as Interval;
+    const safeLimit = Math.min(Math.max(limit || 500, 1), 1000);
     const end = endTime || Date.now();
-    const res = await this.db.query<any>(
-      `SELECT * FROM k_lines 
-       WHERE market = $1 AND symbol = $2 AND interval = $3 AND open_time <= $4
-       ORDER BY open_time DESC 
-       LIMIT $5`,
-      [market, symbol, interval, end, limit]
-    );
 
-    return res.rows.map(row => ({
-      market: row.market,
-      symbol: row.symbol,
-      interval: row.interval,
-      openTime: Number(row.open_time),
-      closeTime: Number(row.close_time),
-      open: row.open_price,
-      high: row.high_price,
-      low: row.low_price,
-      close: row.close_price,
-      baseVolume: row.base_volume,
-      quoteVolume: row.quote_volume,
-      tradesCount: Number(row.trades_count),
-      isFinal: row.is_final
-    })).reverse(); // Return oldest to newest for charts
+    let res: any = { rows: [] };
+    try {
+      res = await this.db.query<any>(
+        `SELECT * FROM k_lines
+         WHERE market = $1 AND symbol = $2 AND interval = $3 AND open_time <= $4
+         ORDER BY open_time DESC
+         LIMIT $5`,
+        [market, cleanSym, cleanInterval, end, safeLimit]
+      );
+    } catch {
+      res = { rows: [] };
+    }
+
+    if (res.rows.length > 0) {
+      return res.rows.map((row: any) => ({
+        market: row.market,
+        symbol: row.symbol,
+        interval: row.interval,
+        openTime: Number(row.open_time),
+        closeTime: Number(row.close_time),
+        open: row.open_price,
+        high: row.high_price,
+        low: row.low_price,
+        close: row.close_price,
+        baseVolume: row.base_volume,
+        quoteVolume: row.quote_volume,
+        tradesCount: Number(row.trades_count),
+        isFinal: row.is_final
+      })).reverse(); // Return oldest to newest for charts
+    }
+
+    // Fallback: If no internal simulated trade candles exist in DB, fetch reference candles from external feed
+    if (!env.EXTERNAL_MARKET_DATA_ENABLED) {
+      return [];
+    }
+
+    const cacheKey = `${market}:${cleanSym}:${cleanInterval}:${safeLimit}`;
+    const now = Date.now();
+    const cached = this.klineCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return cached.data;
+    }
+
+    const externalKlines = await this.fetchExternalHistoricalKLines(market, cleanSym, cleanInterval, safeLimit);
+    if (externalKlines.length > 0) {
+      this.klineCache.set(cacheKey, {
+        data: externalKlines,
+        expiresAt: now + 10000, // 10-second TTL
+      });
+    }
+
+    return externalKlines;
+  }
+
+  private async fetchExternalHistoricalKLines(
+    market: 'SPOT' | 'FUTURES',
+    symbol: string,
+    interval: Interval,
+    limit: number
+  ): Promise<KLine[]> {
+    if (!isSupportedSymbol(symbol)) {
+      return [];
+    }
+
+    const primaryBase = market === 'FUTURES'
+      ? 'https://fapi.binance.com/fapi/v1'
+      : env.EXTERNAL_MARKET_DATA_URL;
+
+    const fallbackBase = market === 'FUTURES'
+      ? 'https://fapi.binance.com/fapi/v1'
+      : 'https://api.binance.com/api/v3';
+
+    const fetchFromUrl = async (baseUrl: string): Promise<KLine[]> => {
+      const url = `${baseUrl}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+
+      try {
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            'User-Agent': 'NovaCEX-MarketFeed/1.0',
+          },
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const rawData = await response.json();
+        if (!Array.isArray(rawData)) return [];
+
+        const result: KLine[] = [];
+        for (const raw of rawData) {
+          if (!Array.isArray(raw) || raw.length < 9) continue;
+          try {
+            const openTime = Number(raw[0]);
+            const open = decimalNormalize(String(raw[1]));
+            const high = decimalNormalize(String(raw[2]));
+            const low = decimalNormalize(String(raw[3]));
+            const close = decimalNormalize(String(raw[4]));
+            const baseVolume = decimalNormalize(String(raw[5]));
+            const closeTime = Number(raw[6]);
+            const quoteVolume = decimalNormalize(String(raw[7]));
+            const tradesCount = Number(raw[8]) || 0;
+
+            result.push({
+              market,
+              symbol,
+              interval,
+              openTime,
+              closeTime,
+              open,
+              high,
+              low,
+              close,
+              baseVolume,
+              quoteVolume,
+              tradesCount,
+              isFinal: true,
+            });
+          } catch {
+            // Skip invalid candle
+          }
+        }
+        return result;
+      } catch (err) {
+        clearTimeout(timeout);
+        throw err;
+      }
+    };
+
+    try {
+      return await fetchFromUrl(primaryBase);
+    } catch (err: any) {
+      if (primaryBase !== fallbackBase) {
+        try {
+          return await fetchFromUrl(fallbackBase);
+        } catch {
+          // Fallback failed
+        }
+      }
+      logger.warn('Failed to fetch external historical candles', {
+        market,
+        symbol,
+        interval,
+        error: err?.message || String(err),
+      });
+      return [];
+    }
   }
 }
 

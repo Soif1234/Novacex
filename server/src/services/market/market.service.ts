@@ -51,7 +51,10 @@ export class MarketDataService {
   }
 
   private initDefaultMarketState(): void {
-    const defaultSymbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BTCUSDC'];
+    const defaultSymbols = [
+      'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT',
+      'ADAUSDT', 'AVAXUSDT', 'LINKUSDC', 'BTCUSDC'
+    ];
 
     for (const sym of defaultSymbols) {
       this.sequenceMap.set(sym, 1000);
@@ -61,6 +64,11 @@ export class MarketDataService {
       let defaultPrice = '50000';
       if (sym === 'ETHUSDT') defaultPrice = '3000';
       if (sym === 'SOLUSDT') defaultPrice = '150';
+      if (sym === 'XRPUSDT') defaultPrice = '1.50';
+      if (sym === 'DOGEUSDT') defaultPrice = '0.10';
+      if (sym === 'ADAUSDT') defaultPrice = '0.25';
+      if (sym === 'AVAXUSDT') defaultPrice = '10.0';
+      if (sym === 'LINKUSDC') defaultPrice = '12.0';
 
       const normPrice = decimalNormalize(defaultPrice);
       this.tickers.set(sym, {
@@ -75,6 +83,29 @@ export class MarketDataService {
         priceChange24h: decimalZero(),
         priceChangePercent24h: decimalZero(),
         timestamp: Date.now(),
+      });
+    }
+  }
+
+  /**
+   * Update reference tickers from external market data feed.
+   * Updates in-memory reference prices and emits market.ticker public events.
+   * Strictly decoupled from internal matching engine & ledger state.
+   */
+  public updateExternalTickers(tickers: TickerData[]): void {
+    for (const t of tickers) {
+      const cleanSym = t.symbol.trim().toUpperCase();
+      this.tickers.set(cleanSym, { ...t, symbol: cleanSym });
+
+      // Emit market.ticker public event on EventBus for WebSocket subscribers
+      this.bus.publish({
+        id: crypto.randomUUID(),
+        type: 'market.ticker',
+        channel: `ticker:${cleanSym}`,
+        symbol: cleanSym,
+        timestamp: t.timestamp || Date.now(),
+        version: '1.0.0',
+        payload: t,
       });
     }
   }

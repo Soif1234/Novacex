@@ -7,6 +7,7 @@ import { redis } from './config/redis';
 import { migrator } from './config/migrator';
 import { webSocketGateway } from './websocket';
 import { workerSupervisor } from './workers/WorkerSupervisor';
+import { externalMarketFeedService } from './services/market/external-feed.service';
 
 let server: http.Server | null = null;
 let isShuttingDown = false;
@@ -45,6 +46,9 @@ export async function startServer(): Promise<http.Server> {
       // Start all background workers via unified supervisor
       await workerSupervisor.startAll();
       
+      // Start external market reference data feed
+      externalMarketFeedService.start();
+
       resolve(server!);
     });
   });
@@ -61,7 +65,8 @@ export async function stopServer(): Promise<void> {
   }, env.SHUTDOWN_TIMEOUT_MS);
 
   try {
-    // 0. Stop all background workers via unified supervisor
+    // 0. Stop external market feed and all background workers
+    externalMarketFeedService.stop();
     await workerSupervisor.stopAll();
 
     // 1. Close WebSocket Gateway
