@@ -20,19 +20,19 @@
   "author": "Mallick Exchange Team",
   "license": "UNLICENSED",
   "dependencies": {
-    "dotenv": "^17.4.2",
-    "express": "^5.2.1",
-    "ioredis": "^6.0.0",
-    "pg": "^8.23.0",
-    "ws": "^8.21.3"
-  },
-  "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^22.14.0",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.1",
-    "tsx": "^4.23.12",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "ioredis": "^6.0.0",
+    "pg": "^8.23.0",
     "typescript": "^7.0.2",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.12",
     "vitest": "^4.1.11"
   }
 }
