@@ -18,7 +18,8 @@ describe('Phase 8.1: WorkerSupervisor Lifecycle & Isolation Unit Tests', () => {
     // Phase 9.4: blockchain monitoring workers (inert when no source configured)
     expect(workerNames).toContain('BlockchainMonitorWorker');
     expect(workerNames).toContain('ConfirmationWorker');
-    expect(workerNames.length).toBe(7);
+    expect(workerNames).toContain('DepositCreditingWorker');
+    expect(workerNames.length).toBe(8);
   });
 
   it('2. Starts all registered workers cleanly in sequence', async () => {
@@ -151,5 +152,28 @@ describe('Phase 8.1: WorkerSupervisor Lifecycle & Isolation Unit Tests', () => {
 
     testSupervisor.unregister('TelemetryWorker');
     expect(testSupervisor.getWorkerNames()).not.toContain('TelemetryWorker');
+  });
+
+  it('7. WorkerSupervisor correctly handles duplicate registration without creating duplicates', () => {
+    const testSupervisor = new WorkerSupervisor();
+    const worker1 = { name: 'DupeWorker', start: vi.fn(), stop: vi.fn(), getStatus: vi.fn() };
+    const worker2 = { name: 'DupeWorker', start: vi.fn(), stop: vi.fn(), getStatus: vi.fn() };
+    
+    testSupervisor.register(worker1);
+    testSupervisor.register(worker2);
+    
+    const names = testSupervisor.getWorkerNames();
+    expect(names.filter(n => n === 'DupeWorker').length).toBe(1);
+  });
+
+  it('8. depositCreditingWorker remains inert when DEPOSIT_CREDITING_ENABLED=false', async () => {
+    const { depositCreditingWorker } = await import('../src/workers/DepositCreditingWorker');
+    const { env } = await import('../src/config/env');
+    
+    env.DEPOSIT_CREDITING_ENABLED = false;
+    depositCreditingWorker.isRunning = false; // ensure clean state
+    
+    depositCreditingWorker.start();
+    expect(depositCreditingWorker.isRunning).toBe(false);
   });
 });

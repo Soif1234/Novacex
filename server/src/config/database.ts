@@ -722,6 +722,8 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       confirmed_at: d.confirmedAt,
       confirmedAt: d.confirmedAt,
       reorged_at: d.reorgedAt,
+      is_credited: d.isCredited,
+      ledger_tx_id: d.ledgerTxId,
       reorgedAt: d.reorgedAt,
       raw_payload: d.rawPayload,
       rawPayload: d.rawPayload,
@@ -1029,6 +1031,9 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       return { rows: user ? [this.mapUser(user) as T] : [], rowCount: user ? 1 : 0 };
     }
 
+    if (/INSERT\s+INTO\s+deposits/i.test(trimmed)) {
+      return { rows: [], rowCount: 1 };
+    }
     // 3. SELECT ... FROM users WHERE id = $1
     if (/FROM\s+users\s+WHERE\s+id\s*=/i.test(trimmed)) {
       const id = params[0] as string;
@@ -3373,6 +3378,21 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       return { rows: matches.map(d => this.mapBlockchainDeposit(d)) as unknown as T[], rowCount: matches.length };
     }
 
+    
+    // 52c. SELECT ... FROM blockchain_deposits WHERE status = 'CONFIRMED' AND is_credited = FALSE
+    if (/FROM\s+blockchain_deposits\s+WHERE\s+status\s*=\s*'CONFIRMED'\s+AND\s+is_credited\s*=\s*FALSE/i.test(trimmed)) {
+      const matches = Array.from(this.blockchainDeposits.values())
+        .filter(d => d.status === 'CONFIRMED' && !d.isCredited)
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      
+      let limit = matches.length;
+      if (/LIMIT\s+\\$1/i.test(trimmed)) {
+        limit = parseInt(params[0] as string, 10) || 100;
+      }
+      
+      const limited = matches.slice(0, limit);
+      return { rows: limited.map(d => this.mapBlockchainDeposit(d)) as unknown as T[], rowCount: limited.length };
+    }
     // 52b. SELECT ... FROM blockchain_deposits (all rows, no WHERE) — catch-all
     if (/FROM\s+blockchain_deposits/i.test(trimmed)) {
       const matches = Array.from(this.blockchainDeposits.values())
@@ -3414,7 +3434,9 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
         detectedAt: detectedAt ?? now,
         confirmedAt: confirmedAt ?? null,
         reorgedAt: reorgedAt ?? null,
-        rawPayload: rawPayload ?? null,
+          rawPayload: rawPayload ?? null,
+          isCredited: false,
+          ledgerTxId: null,
         createdAt: now,
         updatedAt: now,
       };
@@ -3449,7 +3471,19 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
         this.blockchainDeposits.set(id as string, row);
         return { rows: [this.mapBlockchainDeposit(row) as unknown as T], rowCount: 1 };
       }
-      // Generic UPDATE fallback: use last param as id
+      
+        // Pattern C: SET is_credited = TRUE, ledger_tx_id = $1, updated_at = NOW() WHERE id = $2
+        if (/SET\s+is_credited\s*=\s*TRUE\s*,\s*ledger_tx_id\s*=\s*\$1/i.test(trimmed)) {
+          const [ledgerTxId, id] = params;
+          const row = this.blockchainDeposits.get(id as string);
+          if (!row) return { rows: [] as T[], rowCount: 0 };
+          row.isCredited = true;
+          row.ledgerTxId = ledgerTxId as string;
+          row.updatedAt = new Date();
+          this.blockchainDeposits.set(id as string, row);
+          return { rows: [this.mapBlockchainDeposit(row) as unknown as T], rowCount: 1 };
+        }
+        // Generic UPDATE fallback: use last param as id
       const row = this.blockchainDeposits.get(params[params.length - 1] as string);
       if (row) {
         row.updatedAt = new Date();
@@ -3623,4 +3657,10 @@ export const db: IDatabaseConnection =
   process.env.NODE_ENV === 'test' && process.env.USE_REAL_PG !== 'true'
     ? new InMemoryDatabasePool()
     : new PostgresDatabasePool();
+
+
+
+
+
+
 

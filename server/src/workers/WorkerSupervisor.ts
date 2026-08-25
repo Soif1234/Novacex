@@ -3,6 +3,7 @@ import { liquidationWorker } from './LiquidationWorker';
 import { fundingWorker } from './FundingWorker';
 import { reconciliationWorker } from './ReconciliationWorker';
 import { blockchainMonitorWorker } from './BlockchainMonitorWorker';
+import { depositCreditingWorker } from './DepositCreditingWorker';
 import { confirmationWorker } from './ConfirmationWorker';
 import { klineService } from '../services/market/kline.service';
 import { conditionalTriggerService } from '../services/market/conditional.service';
@@ -72,6 +73,13 @@ export class WorkerSupervisor {
       start: () => conditionalTriggerService.loadFromDatabase(),
       stop: () => {},
       getStatus: () => ({ isRunning: true }),
+    });
+
+    this.register({
+      name: 'DepositCreditingWorker',
+      start: () => depositCreditingWorker.start(),
+      stop: () => depositCreditingWorker.stop(),
+      getStatus: () => ({ isRunning: depositCreditingWorker.isRunning }),
     });
   }
 
@@ -145,3 +153,4 @@ export class WorkerSupervisor {
 }
 
 export const workerSupervisor = new WorkerSupervisor();
+

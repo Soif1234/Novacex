@@ -47,6 +47,8 @@ export interface BlockchainDepositEntity {
   detectedAt: Date;
   confirmedAt: Date | null;
   reorgedAt: Date | null;
+  isCredited: boolean;
+  ledgerTxId: string | null;
   rawPayload: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
@@ -141,6 +143,8 @@ export function mapBlockchainDepositRow(row: Record<string, any>): BlockchainDep
     detectedAt: row.detected_at ?? row.detectedAt,
     confirmedAt: row.confirmed_at ?? row.confirmedAt ?? null,
     reorgedAt: row.reorged_at ?? row.reorgedAt ?? null,
+    isCredited: row.is_credited ?? row.isCredited ?? false,
+    ledgerTxId: row.ledger_tx_id ?? row.ledgerTxId ?? null,
     rawPayload: row.raw_payload ?? row.rawPayload ?? null,
     createdAt: row.created_at ?? row.createdAt,
     updatedAt: row.updated_at ?? row.updatedAt,

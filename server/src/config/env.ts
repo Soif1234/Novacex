@@ -66,6 +66,7 @@ export interface EnvironmentConfig {
    * (no network) unless an explicit source URL is configured below.
    */
   BLOCKCHAIN_MONITORING_ENABLED: boolean;
+  DEPOSIT_CREDITING_ENABLED: boolean;
   /** Ethereum JSON-RPC URL (e.g. Infura/Alchemy). Empty = disabled. */
   ETHEREUM_RPC_URL: string;
   /** Bitcoin API base URL (e.g. Mempool.space / Blockstream). Empty = disabled. */
@@ -213,6 +214,7 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS: externalMarketDataPollIntervalMs,
     CUSTODY_ENABLED: parseBoolean(process.env.CUSTODY_ENABLED, false),
     BLOCKCHAIN_MONITORING_ENABLED: parseBoolean(process.env.BLOCKCHAIN_MONITORING_ENABLED, false),
+    DEPOSIT_CREDITING_ENABLED: parseBoolean(process.env.DEPOSIT_CREDITING_ENABLED, false),
     ETHEREUM_RPC_URL: process.env.ETHEREUM_RPC_URL || '',
     BITCOIN_API_URL: process.env.BITCOIN_API_URL || '',
     BLOCKCHAIN_MONITOR_POLL_INTERVAL_MS: parseNumber(
@@ -232,3 +234,4 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
 }
 
 export const env = loadConfig();
+
