@@ -53,6 +53,13 @@ export interface EnvironmentConfig {
   EXTERNAL_MARKET_DATA_URL: string;
   EXTERNAL_MARKET_DATA_FUTURES_URL: string;
   EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS: number;
+  /**
+   * Phase 9.2: custody abstraction layer master switch.
+   * MUST remain false until the real-money custody system is fully built
+   * (Phase 9.12/9.13). When false, the custody service fails closed and the
+   * mock provider is never wired to any financial state.
+   */
+  CUSTODY_ENABLED: boolean;
 }
 
 function parseNumber(val: string | undefined, fallback: number, name: string): number {
@@ -190,6 +197,7 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     EXTERNAL_MARKET_DATA_URL: externalMarketDataUrl,
     EXTERNAL_MARKET_DATA_FUTURES_URL: externalMarketDataFuturesUrl,
     EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS: externalMarketDataPollIntervalMs,
+    CUSTODY_ENABLED: parseBoolean(process.env.CUSTODY_ENABLED, false),
     ...overrides
   };
 

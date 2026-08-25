@@ -1,0 +1,23 @@
+/**
+ * Phase 9.2 — Custody Abstraction Layer (CAL) public exports.
+ */
+
+export { CustodyErrorCode, CustodyError, CustodyDisabledError, ProviderUnavailableError, UnsupportedAssetNetworkError, CustodyCapabilityUnavailableError, InvalidCustodyRequestError, CustodyTransactionNotFoundError, CustodyOperationRejectedError } from './custody.errors';
+export type { CustodyErrorCodeType } from './custody.errors';
+export type {
+  CustodyTransactionStatus,
+  CustodyTransactionDirection,
+  CustodyAssetNetwork,
+  CustodyAccount,
+  CustodyBalance,
+  DepositAddress,
+  WithdrawalRequest,
+  CustodyTransaction,
+  CustodyProviderHealth,
+} from './custody.types';
+export { CustodyProviderCapability } from './custody.types';
+export type { ICustodyAdapter, ICustodyReadAdapter, ICustodyWriteAdapter } from './custody-adapter';
+export { MockCustodyProvider } from './mock-custody-provider';
+export type { MockCustodyProviderOptions } from './mock-custody-provider';
+export { CustodyService, createCustodyService, custodyService } from './custody.service';
+export type { CustodyServiceOptions } from './custody.service';
