@@ -394,7 +394,7 @@ describe('Phase 9.4: Blockchain Monitor Service — Ethereum (ERC-20)', () => {
   });
 
   // 8. Revoked address rejected
-  it('08. Deposit to revoked address is REJECTED', async () => {
+  it('08. Deposit to revoked address is DETECTED', async () => {
     const { service } = makeEnabledStack();
     const addr = await service.getOrCreateDepositAddress({ userId, asset: 'USDT', network: 'ETHEREUM' });
     await service.revokeDepositAddress({ userId, asset: 'USDT', network: 'ETHEREUM' });
@@ -416,13 +416,14 @@ describe('Phase 9.4: Blockchain Monitor Service — Ethereum (ERC-20)', () => {
     mockSource.setNextBlock(1);
 
     const result = await monitor.runOnce();
-    expect(result.rejected).toBe(1);
+    expect(result.rejected).toBe(0);
+    expect(result.inserted).toBe(1);
 
     const depositRes = await db.query(
       'SELECT status FROM blockchain_deposits WHERE transaction_hash = $1',
       ['0x' + '1'.repeat(64)],
     );
-    expect(depositRes.rows[0].status).toBe('REJECTED');
+    expect(depositRes.rows[0].status).toBe('DETECTED');
   });
 
   // 9. Reorg changes CONFIRMED → REORGED
@@ -666,7 +667,7 @@ describe('Phase 9.4: Blockchain Monitor Service — Ethereum (ERC-20)', () => {
   });
 
   // 15. Circuit breaker deposits disabled
-  it('15. is_deposits_enabled=false marks deposits as REJECTED', async () => {
+  it('15. is_deposits_enabled=false observes truthfully (DETECTED)', async () => {
     // Halt deposits
     await circuitBreakerService.halt({
       adminUserId: userId,
@@ -692,13 +693,14 @@ describe('Phase 9.4: Blockchain Monitor Service — Ethereum (ERC-20)', () => {
     mockSource.setNextBlock(1);
 
     const result = await monitor.runOnce();
-    expect(result.rejected).toBe(1);
+    expect(result.rejected).toBe(0);
+    expect(result.inserted).toBe(1);
 
     const depositRes = await db.query(
       'SELECT status FROM blockchain_deposits WHERE transaction_hash = $1',
       ['0x' + '1'.repeat(64)],
     );
-    expect(depositRes.rows[0].status).toBe('REJECTED');
+    expect(depositRes.rows[0].status).toBe('DETECTED');
   });
 
   // 16. Unsupported network rejected

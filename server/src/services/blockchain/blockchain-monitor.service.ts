@@ -431,21 +431,24 @@ export class BlockchainMonitorService {
                   contract_address AS "contractAddress", address_format AS "addressFormat"
            FROM asset_networks
            WHERE asset = $1 AND network = $2`,
-          ['ETH', 'ETHEREUM'],
+          ['ETH', this.network],
         );
         networkRow = res.rows[0] ?? null;
-        if (networkRow) asset = 'ETH';
+        if (networkRow) {
+          asset = networkRow.asset;
+        }
       } else if (this.network === 'BITCOIN') {
-        // Bitcoin: only BTC is valid
         const res = await this.database.query<any>(
           `SELECT asset, network, is_active AS "isActive", decimals, confirmations_required AS "confirmationsRequired",
                   contract_address AS "contractAddress", address_format AS "addressFormat"
            FROM asset_networks
            WHERE asset = $1 AND network = $2`,
-          ['BTC', 'BITCOIN'],
+          ['BTC', this.network],
         );
         networkRow = res.rows[0] ?? null;
-        if (networkRow) asset = 'BTC';
+        if (networkRow) {
+          asset = networkRow.asset;
+        }
       }
 
       // Asset/network must be known
@@ -532,11 +535,11 @@ export class BlockchainMonitorService {
         };
       }
 
-      // Match destination address against ACTIVE deposit_addresses for this asset+network
+      // Match destination address against known deposit_addresses (ACTIVE, ROTATED, or REVOKED)
       const addressMatches = await this.database.query<any>(
         `SELECT id, user_id AS "userId", asset, network, status
          FROM deposit_addresses
-         WHERE LOWER(blockchain_address) = LOWER($1) AND network = $2 AND asset = $3 AND status = 'ACTIVE'`,
+         WHERE LOWER(blockchain_address) = LOWER($1) AND network = $2 AND asset = $3 AND status IN ('ACTIVE', 'ROTATED', 'REVOKED')`,
         [event.toAddress, this.network, asset],
       );
 
@@ -546,19 +549,7 @@ export class BlockchainMonitorService {
           status: 'REJECTED',
           rejection: {
             reason: 'UNKNOWN_DEPOSIT_ADDRESS',
-            detail: `No ACTIVE deposit_address found for ${event.toAddress.slice(0, 12)}... on ${this.network} (${asset})`,
-          },
-        };
-      }
-
-      // Circuit breaker: deposits disabled
-      if (!depositsEnabled) {
-        return {
-          valid: false,
-          status: 'REJECTED',
-          rejection: {
-            reason: 'DEPOSITS_HALTED',
-            detail: 'Deposits are disabled by circuit breaker',
+            detail: `No known deposit_address found for ${event.toAddress.slice(0, 12)}... on ${this.network} (${asset})`,
           },
         };
       }
@@ -711,7 +702,7 @@ export class BlockchainMonitorService {
 
     // Mark all deposits in the reorged block range as REORGED
     const affected = await this.database.query<any>(
-      `SELECT id FROM blockchain_deposits
+      `SELECT * FROM blockchain_deposits
        WHERE network = $1 AND block_number BETWEEN $2 AND $3 AND status IN ('DETECTED', 'CONFIRMING', 'CONFIRMED')`,
       [this.network, reorgFrom, reorgTo],
     );
@@ -725,6 +716,24 @@ export class BlockchainMonitorService {
            WHERE id = $2`,
           [now, row.id],
         );
+
+        // If Phase 9.5 has already credited this deposit, alert administrators
+        const isCredited = row.is_credited === true || row.is_credited === 'true';
+        if (isCredited) {
+          logger.error('CRITICAL: Credited deposit was reorged!', { id: row.id, network: this.network });
+          if (this.threatAlertService) {
+            try {
+              await this.threatAlertService.createAlert({
+                severity: 'CRITICAL',
+                category: 'REORGED_CREDITED_DEPOSIT',
+                title: `Reorg on Credited Deposit - ${this.network}`,
+                description: `Deposit ${row.id} was reorged after being credited. Manual intervention required.`,
+              });
+            } catch {
+              // Ignore failure to create alert
+            }
+          }
+        }
       } catch (err: any) {
         logger.error('BlockchainMonitor: reorg update error', {
           id: row.id,
@@ -898,7 +907,7 @@ export class BlockchainMonitorService {
         const res = await this.database.query<any>(
           `SELECT DISTINCT blockchain_address AS "blockchainAddress"
            FROM deposit_addresses
-           WHERE network = $1 AND asset = $2 AND status = 'ACTIVE'`,
+           WHERE network = $1 AND asset = $2 AND status IN ('ACTIVE', 'ROTATED', 'REVOKED')`,
           [this.network, asset],
         );
         return res.rows.map((r: any) => r.blockchainAddress);
@@ -906,7 +915,7 @@ export class BlockchainMonitorService {
       const res = await this.database.query<any>(
         `SELECT DISTINCT blockchain_address AS "blockchainAddress"
          FROM deposit_addresses
-         WHERE network = $1 AND status = 'ACTIVE'`,
+         WHERE network = $1 AND status IN ('ACTIVE', 'ROTATED', 'REVOKED')`,
         [this.network],
       );
       return res.rows.map((r: any) => r.blockchainAddress);
