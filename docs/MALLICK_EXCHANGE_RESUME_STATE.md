@@ -4,10 +4,10 @@
 **Project:** MALLICK EXCHANGE / NovaCEX
 
 ## 2. Current Date/Time
-**Timestamp:** 2026-08-23T04:18:00+05:30
+**Timestamp:** 2026-08-25T07:05:00+05:30
 
 ## 3. Current Phase
-**Current Phase:** Phase 8.2 — HTTP Idempotency Middleware (8.1 & 8.2 COMPLETE)
+**Current Phase:** Phase 8.3 — Database Pool Resilience & Query Timeout Controls (COMPLETE)
 
 ## 4. Completed Phases
 - Phase 1 — UI Foundation: **COMPLETE**
@@ -29,13 +29,14 @@
 - Phase 7.6 — Full Regression & Security Hardening Verification: **COMPLETE (VERIFIED PASS)**
 - Phase 8.1 — Unified Background Worker Lifecycle & Orchestration: **COMPLETE**
 - Phase 8.2 — HTTP Idempotency Middleware: **COMPLETE**
+- Phase 8.3 — Database Pool Resilience & Query Timeout Controls: **COMPLETE**
 
 ## 5. Current Phase Status
 **Status:** COMPLETE (VERIFIED PASS).
-Phase 8.1 and 8.2 are implemented, verified on real PostgreSQL, typechecked, and covered by 100% passing tests.
+Phase 8.1, 8.2, and 8.3 are implemented, verified on real PostgreSQL, typechecked, and covered by 100% passing tests.
 
 ## 6. Next Phase
-**Next Phase:** Phase 8.3 — Database Pool Resilience & Query Timeout Controls (NOT STARTED).
+**Next Phase:** Phase 8.4 — TBD (NOT STARTED).
 
 ## 7. Complete Phase 1 Summary
 Phase 1 established the UI foundation, responsive interface layouts, component design systems, charting interfaces, order books, and primary frontend infrastructure to support the exchange web application.
@@ -91,7 +92,10 @@ Phase 8.1 implemented the Unified Background Worker Lifecycle & Orchestration. C
 ## 24. Phase 8.2 Summary
 Phase 8.2 implemented the HTTP Idempotency Middleware. Created `IdempotencyService` and `idempotencyMiddleware` providing deterministic request fingerprinting, user-scoped keys, in-flight concurrent execution locks, response caching, payload conflict rejection, and Redis/in-memory fallback on mutating Spot/Futures/Wallet endpoints.
 
-## 25. Database Migrations
+## 25. Phase 8.3 Summary
+Phase 8.3 implemented Database Pool Resilience & Query Timeout Controls. Hardened `PostgresDatabasePool` with configurable connection/idle/query timeouts (`DB_CONNECTION_TIMEOUT_MS`, `DB_IDLE_TIMEOUT_MS`, `DB_QUERY_TIMEOUT_MS`), JS-level `QUERY_TIMEOUT` enforcement on both pool and transaction client queries, pool queue-depth monitoring, graceful idle-client error handling, transaction rollback on timeout with strict non-retry semantics, and clean pool shutdown. Covered by `database_resilience.test.ts` unit tests and `database_resilience.integration.test.ts` real-PostgreSQL tests.
+
+## 26. Database Migrations
 Migrations present and verified in `server/migrations/`:
 - `001_create_users_and_auth.sql`
 - `002_create_accounts_and_wallets.sql`
@@ -109,7 +113,7 @@ Migrations present and verified in `server/migrations/`:
 - `014_create_system_circuit_breaker.sql`
 - `015_create_reconciliation_and_alerts.sql`
 
-## 26. Test Status
+## 27. Test Status
 - Full vitest suite: **58 / 58 test files passed, 718 / 718 tests passed (100%)**
 - PostgreSQL integration test suite: **11 / 11 test files passed, 82 / 82 tests passed (100%)**
 - TypeScript compilation (frontend & backend): **PASS (0 errors)**
