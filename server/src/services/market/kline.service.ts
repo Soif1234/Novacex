@@ -386,11 +386,11 @@ export class KLineService {
     }
 
     const primaryBase = market === 'FUTURES'
-      ? 'https://fapi.binance.com/fapi/v1'
+      ? env.EXTERNAL_MARKET_DATA_FUTURES_URL
       : env.EXTERNAL_MARKET_DATA_URL;
 
     const fallbackBase = market === 'FUTURES'
-      ? 'https://fapi.binance.com/fapi/v1'
+      ? env.EXTERNAL_MARKET_DATA_URL
       : 'https://api.binance.com/api/v3';
 
     const fetchFromUrl = async (baseUrl: string): Promise<KLine[]> => {

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DatabasePool } from '../src/config/database';
 import { KLineService } from '../src/services/market/kline.service';
 import { eventBus } from '../src/services/market/event-bus';
+import { env } from '../src/config/env';
 
 describe('Market Data Infrastructure / OHLCV K-Lines (Phase 6.2)', () => {
   let db: DatabasePool;
@@ -160,5 +161,146 @@ describe('Market Data Infrastructure / OHLCV K-Lines (Phase 6.2)', () => {
 
     const klines = await klineService.getHistoricalKLines('SPOT', 'BTCUSDT', '1m');
     expect(klines).toHaveLength(0); // Should skip invalid trades
+  });
+});
+
+// ── Phase 8.6: External kline source selection (FUTURES primary/fallback URLs) ──────────
+describe('Phase 8.6: External historical kline source selection (SPOT/FUTURES URLs)', () => {
+  let db: DatabasePool;
+  let klineService: KLineService;
+  const originalFuturesUrl = (env as any).EXTERNAL_MARKET_DATA_FUTURES_URL;
+  const originalSpotUrl = (env as any).EXTERNAL_MARKET_DATA_URL;
+
+  beforeEach(async () => {
+    db = new DatabasePool();
+    await db.connect();
+    klineService = new KLineService(db);
+    (klineService as any).klineCache.clear();
+    // Pin the env URLs so the assertions are deterministic.
+    (env as any).EXTERNAL_MARKET_DATA_FUTURES_URL = 'https://futures.example.test/fapi/v1';
+    (env as any).EXTERNAL_MARKET_DATA_URL = 'https://spot.example.test/api/v3';
+    (env as any).EXTERNAL_MARKET_DATA_ENABLED = true;
+  });
+
+  afterEach(async () => {
+    (env as any).EXTERNAL_MARKET_DATA_FUTURES_URL = originalFuturesUrl;
+    (env as any).EXTERNAL_MARKET_DATA_URL = originalSpotUrl;
+    vi.unstubAllGlobals();
+  });
+
+  // Binance-style kline row: [openTime, open, high, low, close, volume, closeTime, quoteVolume, trades]
+  const binanceRow = [1600000020000, '60000', '61000', '59000', '60500', '1.5', 1600000025999, '90750', 12];
+
+  function mockFetch(handler: (url: string, init?: any) => Promise<any>) {
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: any) => handler(url, init)));
+  }
+
+  function okResponse(body: unknown) {
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => body,
+    };
+  }
+
+  function failResponse(status = 451) {
+    return {
+      ok: false,
+      status,
+      statusText: `HTTP ${status}`,
+      json: async () => ({}),
+    };
+  }
+
+  it('FUTURES primary kline source uses env.EXTERNAL_MARKET_DATA_FUTURES_URL', async () => {
+    const urls: string[] = [];
+    mockFetch(async (url: string) => {
+      urls.push(url);
+      return okResponse([binanceRow]);
+    });
+
+    const klines = await klineService.getHistoricalKLines('FUTURES', 'PEPEUSDT', '5m', 10);
+
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toBe('https://futures.example.test/fapi/v1/klines?symbol=PEPEUSDT&interval=5m&limit=10');
+    expect(klines).toHaveLength(1);
+    expect(klines[0]).toMatchObject({
+      market: 'FUTURES',
+      symbol: 'PEPEUSDT',
+      interval: '5m',
+      open: '60000.000000000000000000',
+      high: '61000.000000000000000000',
+      low: '59000.000000000000000000',
+      close: '60500.000000000000000000',
+      baseVolume: '1.500000000000000000',
+      quoteVolume: '90750.000000000000000000',
+      tradesCount: 12,
+      isFinal: true,
+    });
+  });
+
+  it('FUTURES falls back to env.EXTERNAL_MARKET_DATA_URL when the futures host fails', async () => {
+    const urls: string[] = [];
+    mockFetch(async (url: string) => {
+      urls.push(url);
+      if (url.startsWith('https://futures.example.test')) return failResponse(451);
+      return okResponse([binanceRow]);
+    });
+
+    const klines = await klineService.getHistoricalKLines('FUTURES', 'PEPEUSDT', '5m', 10);
+
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toContain('https://futures.example.test/fapi/v1/klines');
+    expect(urls[1]).toBe('https://spot.example.test/api/v3/klines?symbol=PEPEUSDT&interval=5m&limit=10');
+    expect(klines).toHaveLength(1);
+    expect(klines[0].market).toBe('FUTURES');
+  });
+
+  it('returns [] (no throw) when both FUTURES sources fail', async () => {
+    mockFetch(async (url: string) => {
+      if (url.startsWith('https://futures.example.test')) return failResponse(451);
+      return failResponse(503);
+    });
+
+    const klines = await klineService.getHistoricalKLines('FUTURES', 'PEPEUSDT', '5m', 10);
+    expect(klines).toEqual([]);
+  });
+
+  it('SPOT primary kline source remains env.EXTERNAL_MARKET_DATA_URL (unchanged)', async () => {
+    const urls: string[] = [];
+    mockFetch(async (url: string) => {
+      urls.push(url);
+      return okResponse([binanceRow]);
+    });
+
+    const klines = await klineService.getHistoricalKLines('SPOT', 'PEPEUSDT', '5m', 10);
+
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toBe('https://spot.example.test/api/v3/klines?symbol=PEPEUSDT&interval=5m&limit=10');
+    expect(klines).toHaveLength(1);
+    expect(klines[0].market).toBe('SPOT');
+  });
+
+  it('SPOT falls back to api.binance.com/api/v3 when the primary spot host fails (unchanged)', async () => {
+    const urls: string[] = [];
+    mockFetch(async (url: string) => {
+      urls.push(url);
+      if (url.startsWith('https://spot.example.test')) return failResponse(451);
+      if (url.startsWith('https://api.binance.com/api/v3')) return okResponse([binanceRow]);
+      return failResponse(500);
+    });
+
+    const klines = await klineService.getHistoricalKLines('SPOT', 'PEPEUSDT', '5m', 10);
+
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toContain('https://spot.example.test/api/v3/klines');
+    expect(urls[1]).toContain('https://api.binance.com/api/v3/klines');
+    expect(klines).toHaveLength(1);
+    expect(klines[0].market).toBe('SPOT');
+  });
+
+  it('env.EXTERNAL_MARKET_DATA_FUTURES_URL defaults to the Binance Futures URL', () => {
+    expect(originalFuturesUrl).toBe('https://fapi.binance.com/fapi/v1');
   });
 });

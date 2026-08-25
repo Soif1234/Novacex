@@ -51,6 +51,7 @@ export interface EnvironmentConfig {
   AUTO_MIGRATE: boolean;
   EXTERNAL_MARKET_DATA_ENABLED: boolean;
   EXTERNAL_MARKET_DATA_URL: string;
+  EXTERNAL_MARKET_DATA_FUTURES_URL: string;
   EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS: number;
 }
 
@@ -133,6 +134,7 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
 
   const externalMarketDataEnabled = parseBoolean(process.env.EXTERNAL_MARKET_DATA_ENABLED, true);
   const externalMarketDataUrl = process.env.EXTERNAL_MARKET_DATA_URL || 'https://data-api.binance.vision/api/v3';
+  const externalMarketDataFuturesUrl = process.env.EXTERNAL_MARKET_DATA_FUTURES_URL || 'https://fapi.binance.com/fapi/v1';
   const externalMarketDataPollIntervalMs = parseNumber(process.env.EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS, 3000, 'EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS');
 
   const config: EnvironmentConfig = {
@@ -186,6 +188,7 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     AUTO_MIGRATE: autoMigrate,
     EXTERNAL_MARKET_DATA_ENABLED: externalMarketDataEnabled,
     EXTERNAL_MARKET_DATA_URL: externalMarketDataUrl,
+    EXTERNAL_MARKET_DATA_FUTURES_URL: externalMarketDataFuturesUrl,
     EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS: externalMarketDataPollIntervalMs,
     ...overrides
   };
