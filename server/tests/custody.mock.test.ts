@@ -118,7 +118,7 @@ class FakeCustodyAdapter implements ICustodyAdapter {
     }
     return [];
   }
-  async getDepositAddress(): Promise<any> { throw new Error('not implemented'); }
+  async getOrCreateDepositAddress(): Promise<any> { throw new Error('not implemented'); }
   async getWithdrawalStatus(): Promise<any> { throw new Error('not implemented'); }
   async getTransaction(): Promise<any> { throw new Error('not implemented'); }
   async requestWithdrawal(): Promise<any> { throw new Error('not implemented'); }
@@ -265,25 +265,28 @@ describe('Phase 9.2: Custody Abstraction Layer Unit Tests', () => {
   // 4. Deposit-address simulation
   // -----------------------------------------------------------------------
 
-  it('04. Mock deposit address is deterministic per (asset, network, accountId)', async () => {
+  it('04. Mock deposit address is deterministic per (userId, asset, network)', async () => {
     const mock = new MockCustodyProvider();
-    const accountId = makeId();
-    const addr1 = await mock.getDepositAddress('USDT', 'ETHEREUM', accountId);
-    const addr2 = await mock.getDepositAddress('USDT', 'ETHEREUM', accountId);
+    const userId = makeId();
+    const addr1 = await mock.getOrCreateDepositAddress({ userId, asset: 'USDT', network: 'ETHEREUM' });
+    const addr2 = await mock.getOrCreateDepositAddress({ userId, asset: 'USDT', network: 'ETHEREUM' });
     // Same input → same address (idempotent)
     expect(addr1.address).toBe(addr2.address);
     expect(addr1.asset).toBe('USDT');
     expect(addr1.network).toBe('ETHEREUM');
-    // Different network → different address
-    const addr3 = await mock.getDepositAddress('BTC', 'BITCOIN', accountId);
+    expect(addr1.userId).toBe(userId);
+    expect(addr1.status).toBe('ACTIVE');
+    // Different network → different address (EVM format)
+    const addr3 = await mock.getOrCreateDepositAddress({ userId, asset: 'BTC', network: 'BITCOIN' });
     expect(addr3.address).not.toBe(addr1.address);
-    expect(addr3.address).toMatch(/^MOCK_BITCOIN_/);
+    expect(addr3.address).toMatch(/^bc1/);
+    expect(addr1.address).toMatch(/^0x/);
   });
 
   it('04b. Unsupported asset/network for deposit address throws InvalidCustodyRequestError', async () => {
     const mock = new MockCustodyProvider();
-    const accountId = makeId();
-    await expect(mock.getDepositAddress('SOL', 'SOLANA', accountId)).rejects.toThrow(
+    const userId = makeId();
+    await expect(mock.getOrCreateDepositAddress({ userId, asset: 'SOL', network: 'SOLANA' })).rejects.toThrow(
       InvalidCustodyRequestError,
     );
   });
@@ -291,13 +294,13 @@ describe('Phase 9.2: Custody Abstraction Layer Unit Tests', () => {
   it('04c. CAL validates asset/network before delegating deposit address creation', async () => {
     const mock = new MockCustodyProvider();
     const cal = createCustodyService({ enabled: true, adapter: mock });
-    const accountId = makeId();
+    const userId = makeId();
     // Unsupported network → UnsupportedAssetNetworkError (from CAL, not from mock)
-    await expect(cal.getDepositAddress('USDT', 'SOLANA', accountId)).rejects.toThrow(
+    await expect(cal.getOrCreateDepositAddress({ userId, asset: 'USDT', network: 'SOLANA' })).rejects.toThrow(
       UnsupportedAssetNetworkError,
     );
     // Supported pair works
-    const addr = await cal.getDepositAddress('USDT', 'ETHEREUM', accountId);
+    const addr = await cal.getOrCreateDepositAddress({ userId, asset: 'USDT', network: 'ETHEREUM' });
     expect(addr.address).toBeTruthy();
   });
 
@@ -458,7 +461,7 @@ describe('Phase 9.2: Custody Abstraction Layer Unit Tests', () => {
     const mock = new MockCustodyProvider();
     const cal = createCustodyService({ enabled: true, adapter: mock });
     // Unsupported asset/network throws UnsupportedAssetNetworkError (from CAL validation)
-    await expect(cal.getDepositAddress('SOL', 'SOLANA', makeId())).rejects.toThrow(
+    await expect(cal.getOrCreateDepositAddress({ userId: makeId(), asset: 'SOL', network: 'SOLANA' })).rejects.toThrow(
       UnsupportedAssetNetworkError,
     );
     // Nonexistent transaction throws CustodyTransactionNotFoundError (from mock)
@@ -477,7 +480,7 @@ describe('Phase 9.2: Custody Abstraction Layer Unit Tests', () => {
     await expect(cal.getSupportedAssetNetworks()).rejects.toThrow(CustodyDisabledError);
     await expect(cal.getAccounts()).rejects.toThrow(CustodyDisabledError);
     await expect(cal.getBalances()).rejects.toThrow(CustodyDisabledError);
-    await expect(cal.getDepositAddress('USDT', 'ETHEREUM', makeId())).rejects.toThrow(CustodyDisabledError);
+    await expect(cal.getOrCreateDepositAddress({ userId: makeId(), asset: 'USDT', network: 'ETHEREUM' })).rejects.toThrow(CustodyDisabledError);
     await expect(cal.getWithdrawalStatus('x')).rejects.toThrow(CustodyDisabledError);
     await expect(cal.getTransaction('x')).rejects.toThrow(CustodyDisabledError);
     await expect(
@@ -561,8 +564,8 @@ describe('Phase 9.2: Custody Abstraction Layer Unit Tests', () => {
       updatedAt: new Date(),
     });
     await mock.getBalances(accountId);
-    await mock.getDepositAddress('USDT', 'ETHEREUM', accountId);
-    await mock.getDepositAddress('BTC', 'BITCOIN', accountId);
+    await mock.getOrCreateDepositAddress({ userId: accountId, asset: 'USDT', network: 'ETHEREUM' });
+    await mock.getOrCreateDepositAddress({ userId: accountId, asset: 'BTC', network: 'BITCOIN' });
     const wd = await mock.requestWithdrawal({
       clientWithdrawalId: `test10-${Date.now()}`,
       accountId,
@@ -687,12 +690,12 @@ describe('Phase 9.2: Custody Abstraction Layer Unit Tests', () => {
   it('13. CAL validates network identifiers against Phase 9.1 known networks', async () => {
     const mock = new MockCustodyProvider();
     const cal = createCustodyService({ enabled: true, adapter: mock });
-    const accountId = makeId();
+    const userId = makeId();
 
-    await expect(cal.getDepositAddress('USDT', 'SOLANA', accountId)).rejects.toThrow(
+    await expect(cal.getOrCreateDepositAddress({ userId, asset: 'USDT', network: 'SOLANA' })).rejects.toThrow(
       UnsupportedAssetNetworkError,
     );
-    await expect(cal.getDepositAddress('USDT', '', accountId)).rejects.toThrow(
+    await expect(cal.getOrCreateDepositAddress({ userId, asset: 'USDT', network: '' })).rejects.toThrow(
       InvalidCustodyRequestError,
     );
   });

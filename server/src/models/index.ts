@@ -9,3 +9,4 @@ export * from './admin.model';
 export * from './system.model';
 export * from './reconciliation.model';
 export * from './asset-network.model';
+export * from './deposit-address.model';

@@ -427,10 +427,15 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
   private futuresLiquidations: FuturesLiquidationEntity[] = [];
   private kLines: any[] = [];
 
+  // Phase 9.1/9.3 tables
+  private assetNetworks = new Map<string, any>(); // "asset:network" -> row
+  private depositAddresses = new Map<string, any>(); // id -> address row
+
   constructor(private config = env) {
     this.totalPoolSize = config.DB_POOL_MIN;
     this.initDefaultAssets();
     this.initDefaultTradingPairs();
+    this.initDefaultAssetNetworks();
   }
 
 
@@ -459,6 +464,40 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     ];
     for (const p of defaultPairs) {
       this.tradingPairs.set(p.symbol, { ...p });
+    }
+  }
+
+  /** Seed the Phase 9.1 approved asset/network pairs (mirror of migration 016). */
+  private initDefaultAssetNetworks(): void {
+    const now = new Date();
+    const defaults: any[] = [
+      {
+        asset: 'USDT', network: 'ETHEREUM', isActive: true, decimals: 6, confirmationsRequired: 12,
+        minDeposit: '10', minWithdrawal: '10', withdrawalFee: '1',
+        contractAddress: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+        addressFormat: 'EVM_HEX', requiresMemo: false, networkMetadata: { chainId: 1, tokenStandard: 'ERC20' },
+      },
+      {
+        asset: 'USDC', network: 'ETHEREUM', isActive: true, decimals: 6, confirmationsRequired: 12,
+        minDeposit: '10', minWithdrawal: '10', withdrawalFee: '1',
+        contractAddress: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+        addressFormat: 'EVM_HEX', requiresMemo: false, networkMetadata: { chainId: 1, tokenStandard: 'ERC20' },
+      },
+      {
+        asset: 'BTC', network: 'BITCOIN', isActive: true, decimals: 8, confirmationsRequired: 2,
+        minDeposit: '0.0001', minWithdrawal: '0.0001', withdrawalFee: '0.00005',
+        contractAddress: null, addressFormat: 'BITCOIN_BECH32', requiresMemo: false,
+        networkMetadata: { tokenStandard: 'NATIVE' },
+      },
+      {
+        asset: 'ETH', network: 'ETHEREUM', isActive: true, decimals: 18, confirmationsRequired: 12,
+        minDeposit: '0.01', minWithdrawal: '0.01', withdrawalFee: '0.005',
+        contractAddress: null, addressFormat: 'EVM_HEX', requiresMemo: false,
+        networkMetadata: { chainId: 1, tokenStandard: 'NATIVE' },
+      },
+    ];
+    for (const n of defaults) {
+      this.assetNetworks.set(`${n.asset}:${n.network}`, { ...n, createdAt: now, updatedAt: now });
     }
   }
 
@@ -514,6 +553,9 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     this.ledgerTxByRef.clear();
     this.ledgerEntries = [];
     this.lockedWallets.clear();
+    this.assetNetworks.clear();
+    this.initDefaultAssetNetworks();
+    this.depositAddresses.clear();
   }
 
   public async transaction<T = unknown>(callback: (client: IDatabaseConnection) => Promise<T>): Promise<T> {
@@ -540,6 +582,8 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     const snapLedgerTransactions = new Map(this.ledgerTransactions);
     const snapLedgerTxByRef = new Map(this.ledgerTxByRef);
     const snapLedgerEntries = [...this.ledgerEntries];
+    const snapAssetNetworks = new Map(this.assetNetworks);
+    const snapDepositAddresses = new Map(this.depositAddresses);
 
     try {
       const result = await callback(this);
@@ -566,6 +610,8 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       this.ledgerTransactions = snapLedgerTransactions;
       this.ledgerTxByRef = snapLedgerTxByRef;
       this.ledgerEntries = snapLedgerEntries;
+      this.assetNetworks = snapAssetNetworks;
+      this.depositAddresses = snapDepositAddresses;
       throw err;
     }
   }
@@ -577,6 +623,34 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       account_status: u.accountStatus,
       created_at: u.createdAt,
       updated_at: u.updatedAt
+    };
+  }
+
+  private mapDepositAddress(d: any): any {
+    return {
+      id: d.id,
+      user_id: d.userId,
+      userId: d.userId,
+      asset: d.asset,
+      network: d.network,
+      provider_id: d.providerId,
+      providerId: d.providerId,
+      custody_account_id: d.custodyAccountId,
+      custodyAccountId: d.custodyAccountId,
+      provider_address_id: d.providerAddressId,
+      providerAddressId: d.providerAddressId,
+      blockchain_address: d.blockchainAddress,
+      blockchainAddress: d.blockchainAddress,
+      memo: d.memo,
+      status: d.status,
+      address_metadata: d.addressMetadata,
+      addressMetadata: d.addressMetadata,
+      created_at: d.createdAt,
+      createdAt: d.createdAt,
+      updated_at: d.updatedAt,
+      updatedAt: d.updatedAt,
+      revoked_at: d.revokedAt,
+      revokedAt: d.revokedAt,
     };
   }
 
@@ -2852,6 +2926,176 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       const kline = this.kLines.find(k => k.market === market && k.symbol === symbol && k.interval === interval && k.open_time === open_time);
       if (kline) return { rows: [{ is_final: kline.is_final }] as T[], rowCount: 1 };
       return { rows: [] as T[], rowCount: 0 };
+    }
+
+    // =========================================================================
+    // Phase 9.1/9.3 — asset_networks & deposit_addresses (in-memory mirrors)
+    // =========================================================================
+
+    // 40. SELECT ... FROM asset_networks WHERE asset = $1 AND network = $2
+    if (/FROM\s+asset_networks\s+WHERE\s+asset\s*=\s*\$1\s+AND\s+network\s*=\s*\$2/i.test(trimmed)) {
+      const [asset, network] = params as string[];
+      const key = `${asset}:${network}`;
+      const row = this.assetNetworks.get(key);
+      if (!row) return { rows: [] as T[], rowCount: 0 };
+      return {
+        rows: [{
+          asset: row.asset,
+          network: row.network,
+          is_active: row.isActive,
+          isActive: row.isActive,
+          decimals: row.decimals,
+          confirmations_required: row.confirmationsRequired,
+          confirmationsRequired: row.confirmationsRequired,
+          min_deposit: row.minDeposit,
+          minDeposit: row.minDeposit,
+          min_withdrawal: row.minWithdrawal,
+          minWithdrawal: row.minWithdrawal,
+          withdrawal_fee: row.withdrawalFee,
+          withdrawalFee: row.withdrawalFee,
+          contract_address: row.contractAddress,
+          contractAddress: row.contractAddress,
+          address_format: row.addressFormat,
+          addressFormat: row.addressFormat,
+          requires_memo: row.requiresMemo,
+          requiresMemo: row.requiresMemo,
+          network_metadata: row.networkMetadata,
+          networkMetadata: row.networkMetadata,
+        } as unknown as T],
+        rowCount: 1,
+      };
+    }
+
+    // 41. INSERT INTO asset_networks (asset, network, is_active, requires_memo, ...)
+    if (/INSERT\s+INTO\s+asset_networks/i.test(trimmed)) {
+      // Params order: asset, network, is_active, requires_memo [, decimals, confirmations_required, address_format, ...]
+      const [asset, network, isActive, requiresMemo] = params;
+      const key = `${asset}:${network}`;
+      if (!this.assets.has(asset as string)) {
+        const err = new Error(`insert or update on table "asset_networks" violates foreign key constraint "asset_networks_asset_fkey"`);
+        (err as any).code = '23503';
+        throw err;
+      }
+      const now = new Date();
+      const row = {
+        asset, network,
+        isActive: isActive === true || isActive === 'true' || isActive === 1 || isActive === '1',
+        decimals: params[4] ?? 8,
+        confirmationsRequired: params[5] ?? 12,
+        minDeposit: params[6] ?? '0',
+        minWithdrawal: params[7] ?? '0',
+        withdrawalFee: params[8] ?? '0',
+        contractAddress: params[9] ?? null,
+        addressFormat: params[10] ?? 'EVM_HEX',
+        requiresMemo: requiresMemo === true || requiresMemo === 'true' || requiresMemo === 1 || requiresMemo === '1',
+        networkMetadata: params[11] ?? {},
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.assetNetworks.set(key, row);
+      return { rows: [row as unknown as T], rowCount: 1 };
+    }
+
+    // 42. SELECT ... FROM deposit_addresses WHERE user_id = $1 AND asset = $2 AND network = $3 AND status = 'ACTIVE'
+    if (/FROM\s+deposit_addresses\s+WHERE\s+user_id\s*=\s*\$1\s+AND\s+asset\s*=\s*\$2\s+AND\s+network\s*=\s*\$3/i.test(trimmed)) {
+      const [userId, asset, network] = params as string[];
+      const activeOnly = /status\s*=\s*'ACTIVE'/i.test(trimmed);
+      const matches = Array.from(this.depositAddresses.values())
+        .filter(d => d.userId === userId && d.asset === asset && d.network === network)
+        .filter(d => !activeOnly || d.status === 'ACTIVE')
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      if (matches.length === 0) return { rows: [] as T[], rowCount: 0 };
+      if (/LIMIT\s+1/i.test(trimmed) || activeOnly) {
+        return { rows: [this.mapDepositAddress(matches[0]) as unknown as T], rowCount: 1 };
+      }
+      return { rows: matches.map(d => this.mapDepositAddress(d)) as unknown as T[], rowCount: matches.length };
+    }
+
+    // 43. SELECT ... FROM deposit_addresses WHERE id = $1
+    if (/FROM\s+deposit_addresses\s+WHERE\s+id\s*=\s*\$1/i.test(trimmed)) {
+      const id = params[0] as string;
+      const row = this.depositAddresses.get(id);
+      if (!row) return { rows: [] as T[], rowCount: 0 };
+      return { rows: [this.mapDepositAddress(row) as unknown as T], rowCount: 1 };
+    }
+
+    // 44. SELECT ... FROM deposit_addresses WHERE user_id = $1 (history, newest first)
+    if (/FROM\s+deposit_addresses\s+WHERE\s+user_id\s*=\s*\$1/i.test(trimmed)) {
+      const userId = params[0] as string;
+      const matches = Array.from(this.depositAddresses.values())
+        .filter(d => d.userId === userId)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      return { rows: matches.map(d => this.mapDepositAddress(d)) as unknown as T[], rowCount: matches.length };
+    }
+
+    // 45. INSERT INTO deposit_addresses (id, user_id, asset, network, provider_id, custody_account_id, provider_address_id, blockchain_address, memo, status, address_metadata)
+    if (/INSERT\s+INTO\s+deposit_addresses/i.test(trimmed)) {
+      const [
+        id, userId, asset, network, providerId,
+        custodyAccountId, providerAddressId, blockchainAddress,
+        memo, status, addressMetadata,
+      ] = params;
+
+      // FK: user must exist
+      if (!this.users.has(userId as string)) {
+        const err = new Error(`insert or update on table "deposit_addresses" violates foreign key constraint "deposit_addresses_user_id_fkey"`);
+        (err as any).code = '23503';
+        throw err;
+      }
+      // Composite FK: (asset, network) must exist in asset_networks
+      const netKey = `${asset}:${network}`;
+      if (!this.assetNetworks.has(netKey)) {
+        const err = new Error(`insert or update on table "deposit_addresses" violates foreign key constraint "deposit_addresses_asset_network_fkey"`);
+        (err as any).code = '23503';
+        throw err;
+      }
+      // Unique: one ACTIVE per (user_id, asset, network)
+      const activeDuplicate = Array.from(this.depositAddresses.values()).some(
+        d => d.userId === userId && d.asset === asset && d.network === network && d.status === 'ACTIVE'
+      );
+      if (activeDuplicate) {
+        const err = new Error(`duplicate key value violates unique constraint "uq_deposit_addresses_active"`);
+        (err as any).code = '23505';
+        throw err;
+      }
+      // Unique provider address
+      if (providerAddressId) {
+        const providerDuplicate = Array.from(this.depositAddresses.values()).some(
+          d => d.providerId === providerId && d.providerAddressId === providerAddressId
+        );
+        if (providerDuplicate) {
+          const err = new Error(`duplicate key value violates unique constraint "uq_deposit_addresses_provider"`);
+          (err as any).code = '23505';
+          throw err;
+        }
+      }
+
+      const now = new Date();
+      const row = {
+        id, userId, asset, network, providerId,
+        custodyAccountId: custodyAccountId ?? null,
+        providerAddressId: providerAddressId ?? null,
+        blockchainAddress, memo: memo ?? null,
+        status: status ?? 'ACTIVE',
+        addressMetadata: addressMetadata ?? {},
+        createdAt: now,
+        updatedAt: now,
+        revokedAt: null,
+      };
+      this.depositAddresses.set(id as string, row);
+      return { rows: [this.mapDepositAddress(row) as unknown as T], rowCount: 1 };
+    }
+
+    // 46. UPDATE deposit_addresses SET status = $1, revoked_at = $2 WHERE id = $3
+    if (/UPDATE\s+deposit_addresses\s+SET\s+status/i.test(trimmed)) {
+      const [status, revokedAt, id] = params;
+      const row = this.depositAddresses.get(id as string);
+      if (!row) return { rows: [] as T[], rowCount: 0 };
+      row.status = status;
+      row.revokedAt = revokedAt ?? null;
+      row.updatedAt = new Date();
+      this.depositAddresses.set(id as string, row);
+      return { rows: [this.mapDepositAddress(row) as unknown as T], rowCount: 1 };
     }
 
     return { rows: [] as T[], rowCount: 0 };

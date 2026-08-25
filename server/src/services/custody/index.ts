@@ -1,5 +1,5 @@
 /**
- * Phase 9.2 — Custody Abstraction Layer (CAL) public exports.
+ * Phase 9.2/9.3 — Custody Abstraction Layer (CAL) public exports.
  */
 
 export { CustodyErrorCode, CustodyError, CustodyDisabledError, ProviderUnavailableError, UnsupportedAssetNetworkError, CustodyCapabilityUnavailableError, InvalidCustodyRequestError, CustodyTransactionNotFoundError, CustodyOperationRejectedError } from './custody.errors';
@@ -11,6 +11,8 @@ export type {
   CustodyAccount,
   CustodyBalance,
   DepositAddress,
+  DepositAddressStatus,
+  GetOrCreateDepositAddressRequest,
   WithdrawalRequest,
   CustodyTransaction,
   CustodyProviderHealth,
@@ -21,3 +23,5 @@ export { MockCustodyProvider } from './mock-custody-provider';
 export type { MockCustodyProviderOptions } from './mock-custody-provider';
 export { CustodyService, createCustodyService, custodyService } from './custody.service';
 export type { CustodyServiceOptions } from './custody.service';
+export { DepositAddressService, createDepositAddressService, depositAddressService } from './deposit-address.service';
+export type { DepositAddressServiceOptions, GetOrCreateDepositAddressParams, RotateDepositAddressResult } from './deposit-address.service';

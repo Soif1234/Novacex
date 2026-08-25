@@ -28,6 +28,7 @@ import {
   CustodyTransaction,
   CustodyTransactionStatus,
   DepositAddress,
+  GetOrCreateDepositAddressRequest,
   WithdrawalRequest,
 } from './custody.types';
 import {
@@ -49,17 +50,25 @@ export interface MockCustodyProviderOptions {
 
 /**
  * Deterministic address generator for the mock. Produces a stable, fake
- * address per (asset, network, accountId) so repeat lookups are idempotent
- * without any real key material.
+ * address per (asset, network, accountId, generation) so repeat lookups are
+ * idempotent without any real key material. The generated address conforms to
+ * the network's declared address format so the CAL can validate provider
+ * responses consistently (EVM_HEX → 0x…, BITCOIN_BECH32 → bc1…).
  */
-function mockAddress(asset: string, network: string, accountId: string): string {
+function mockAddress(asset: string, network: string, accountId: string, format: string, generation = 0): string {
   const hash = crypto
     .createHash('sha256')
-    .update(`mock-custody:${asset}:${network}:${accountId}`)
+    .update(`mock-custody:${asset}:${network}:${accountId}:${generation}`)
     .digest('hex')
-    .slice(0, 24)
-    .toUpperCase();
-  return `MOCK_${network}_${hash}`;
+    .toLowerCase();
+  if (format === 'EVM_HEX') {
+    return `0x${hash.slice(0, 40)}`;
+  }
+  if (format === 'BITCOIN_BECH32') {
+    // bech32 regex accepts bc1 + [a-zA-HJ-NP-Z0-9]{25,59}; hex chars are valid.
+    return `bc1${hash.slice(0, 38)}`;
+  }
+  return `MOCK_${network}_${hash.slice(0, 24).toUpperCase()}`;
 }
 
 export class MockCustodyProvider implements ICustodyAdapter {
@@ -70,6 +79,7 @@ export class MockCustodyProvider implements ICustodyAdapter {
   private readonly balances = new Map<string, CustodyBalance>();
   private readonly accounts = new Map<string, CustodyAccount>();
   private readonly addresses = new Map<string, DepositAddress>();
+  private readonly rotationCounters = new Map<string, number>();
   private readonly withdrawals = new Map<string, WithdrawalRequest>();
   private readonly transactions = new Map<string, CustodyTransaction>();
 
@@ -136,10 +146,12 @@ export class MockCustodyProvider implements ICustodyAdapter {
     return filtered.map((b) => ({ ...b }));
   }
 
-  public async getDepositAddress(asset: string, network: string, accountId: string): Promise<DepositAddress> {
-    const key = `${accountId}|${asset}|${network}`;
+  public async getOrCreateDepositAddress(request: GetOrCreateDepositAddressRequest): Promise<DepositAddress> {
+    const { userId, asset, network } = request;
+    const key = `${userId}|${asset}|${network}`;
     const existing = this.addresses.get(key);
-    if (existing) return { ...existing };
+    // Idempotent path: return the stored address unless a fresh one is required.
+    if (existing && !request.forceNew) return { ...existing };
 
     const supported = this.supported.find(
       (n) => n.asset === asset && n.network === network && n.isActive,
@@ -147,17 +159,27 @@ export class MockCustodyProvider implements ICustodyAdapter {
     if (!supported) {
       throw new InvalidCustodyRequestError(
         `Cannot create deposit address: asset/network "${asset}/${network}" is not supported by mock custody`,
-        { asset, network, accountId },
+        { asset, network, userId },
       );
     }
 
+    // forceNew (rotation): bump the generation counter so the deterministic
+    // address differs from the previous one.
+    const generation = this.rotationCounters.get(key) ?? 0;
+    if (request.forceNew) {
+      this.rotationCounters.set(key, generation + 1);
+    }
+    const providerAddressId = mockAddress(asset, network, userId, supported.addressFormat, generation + (request.forceNew ? 1 : 0));
     const address: DepositAddress = {
-      address: mockAddress(asset, network, accountId),
+      address: providerAddressId,
       asset,
       network,
-      accountId,
+      userId,
       requiresMemo: supported.requiresMemo,
-      memo: supported.requiresMemo ? `NOVA-${accountId.slice(0, 8)}` : undefined,
+      memo: supported.requiresMemo ? `NOVA-${userId.slice(0, 8)}-${generation + (request.forceNew ? 1 : 0)}` : undefined,
+      providerId: this.providerId,
+      providerAddressId,
+      status: 'ACTIVE',
       createdAt: new Date(),
     };
     this.addresses.set(key, address);

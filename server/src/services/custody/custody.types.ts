@@ -81,14 +81,43 @@ export interface CustodyBalance {
   updatedAt: Date;
 }
 
-/** A deposit address assigned by the provider for a specific (asset, network). */
+/** Lifecycle status of a deposit address (Phase 9.3 approved model). */
+export type DepositAddressStatus = 'ACTIVE' | 'ROTATED' | 'REVOKED';
+
+/**
+ * Provider-neutral get-or-create request for a deposit address.
+ * User-scoped (NOT per Spot/Futures/Funding account): one ACTIVE address per
+ * (user, asset, network). Phase 9.5 decides which internal account receives
+ * a verified deposit.
+ */
+export interface GetOrCreateDepositAddressRequest {
+  userId: string;
+  asset: string;
+  network: string;
+  /** Idempotency key; provider must return the same address for the same key. */
+  idempotencyKey?: string;
+  /**
+   * When true, the provider must generate a FRESH address even if one already
+   * exists for this (userId, asset, network). Used during rotation (Phase 9.3).
+   * Default false.
+   */
+  forceNew?: boolean;
+}
+
+/**
+ * A deposit address assigned by the provider for a specific (asset, network).
+ * Provider-side object — NOT a NovaCEX wallet_balances record.
+ */
 export interface DepositAddress {
   address: string;
   asset: string;
   network: string;
-  accountId: string;
+  userId: string;
   requiresMemo: boolean;
   memo?: string;
+  providerId: string;
+  providerAddressId?: string;
+  status: DepositAddressStatus;
   createdAt: Date;
 }
 

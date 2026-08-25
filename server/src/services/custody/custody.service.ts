@@ -23,6 +23,7 @@ import { logger } from '../../config/logger';
 import { isSupportedNetwork } from '../../models/asset-network.model';
 import { ICustodyAdapter, ICustodyReadAdapter } from './custody-adapter';
 import {
+  CustodyError,
   CustodyDisabledError,
   CustodyOperationRejectedError,
   CustodyCapabilityUnavailableError,
@@ -39,6 +40,7 @@ import {
   CustodyTransaction,
   CustodyTransactionStatus,
   DepositAddress,
+  GetOrCreateDepositAddressRequest,
   WithdrawalRequest,
 } from './custody.types';
 
@@ -110,7 +112,7 @@ export class CustodyService {
 
   /** Normalize any thrown error into a provider-neutral CustodyError. */
   private normalizeError(err: unknown): never {
-    if (err instanceof Error && err.name.startsWith('Custody')) {
+    if (err instanceof CustodyError) {
       throw err;
     }
     logger.error('Custody provider operation failed', {
@@ -172,9 +174,11 @@ export class CustodyService {
     }
   }
 
-  public async getDepositAddress(asset: string, network: string, accountId: string): Promise<DepositAddress> {
+  public async getOrCreateDepositAddress(
+    request: GetOrCreateDepositAddressRequest,
+  ): Promise<DepositAddress> {
     const adapter = this.assertRead();
-    this.validateAssetNetwork(asset, network);
+    this.validateAssetNetwork(request.asset, request.network);
     if (!adapter.hasCapability(CustodyProviderCapability.DEPOSIT_ADDRESS)) {
       throw new CustodyCapabilityUnavailableError(
         CustodyProviderCapability.DEPOSIT_ADDRESS,
@@ -182,7 +186,15 @@ export class CustodyService {
       );
     }
     try {
-      return await adapter.getDepositAddress(asset, network, accountId);
+      // Defense in depth: reject pairs the provider does not advertise as active.
+      const supported = await adapter.getSupportedAssetNetworks();
+      const pair = supported.find(
+        (n) => n.asset === request.asset && n.network === request.network,
+      );
+      if (!pair || !pair.isActive) {
+        throw new UnsupportedAssetNetworkError(request.asset, request.network, adapter.providerId);
+      }
+      return await adapter.getOrCreateDepositAddress(request);
     } catch (err) {
       this.normalizeError(err);
     }

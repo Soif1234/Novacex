@@ -21,6 +21,7 @@ import {
   CustodyTransaction,
   CustodyTransactionStatus,
   DepositAddress,
+  GetOrCreateDepositAddressRequest,
   WithdrawalRequest,
 } from './custody.types';
 
@@ -47,8 +48,14 @@ export interface ICustodyReadAdapter {
   /** Balances held at the provider (ON-CHAIN reserves, never user wallet rows). */
   getBalances(accountId?: string): Promise<CustodyBalance[]>;
 
-  /** Look up (or create-once) a deposit address for a user on an asset/network. */
-  getDepositAddress(asset: string, network: string, accountId: string): Promise<DepositAddress>;
+  /**
+   * Get-or-create a deposit address for a user on an asset/network.
+   * USER-scoped (not per Spot/Futures/Funding account). Idempotent: the same
+   * (userId, asset, network) must always resolve to the same address.
+   * Phase 9.3: the mock generates a deterministic in-memory address; no real
+   * blockchain interaction occurs.
+   */
+  getOrCreateDepositAddress(request: GetOrCreateDepositAddressRequest): Promise<DepositAddress>;
 
   /** Look up a withdrawal request by client-provided id. */
   getWithdrawalStatus(clientWithdrawalId: string): Promise<WithdrawalRequest>;
