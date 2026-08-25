@@ -60,6 +60,20 @@ export interface EnvironmentConfig {
    * mock provider is never wired to any financial state.
    */
   CUSTODY_ENABLED: boolean;
+  /**
+   * Phase 9.4: blockchain monitoring master switch.
+   * MUST remain false by default. Blockchain monitoring workers stay inert
+   * (no network) unless an explicit source URL is configured below.
+   */
+  BLOCKCHAIN_MONITORING_ENABLED: boolean;
+  /** Ethereum JSON-RPC URL (e.g. Infura/Alchemy). Empty = disabled. */
+  ETHEREUM_RPC_URL: string;
+  /** Bitcoin API base URL (e.g. Mempool.space / Blockstream). Empty = disabled. */
+  BITCOIN_API_URL: string;
+  /** Poll interval for the blockchain monitor worker (ms). */
+  BLOCKCHAIN_MONITOR_POLL_INTERVAL_MS: number;
+  /** Poll interval for the confirmation worker (ms). */
+  BLOCKCHAIN_CONFIRMATION_POLL_INTERVAL_MS: number;
 }
 
 function parseNumber(val: string | undefined, fallback: number, name: string): number {
@@ -198,6 +212,19 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     EXTERNAL_MARKET_DATA_FUTURES_URL: externalMarketDataFuturesUrl,
     EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS: externalMarketDataPollIntervalMs,
     CUSTODY_ENABLED: parseBoolean(process.env.CUSTODY_ENABLED, false),
+    BLOCKCHAIN_MONITORING_ENABLED: parseBoolean(process.env.BLOCKCHAIN_MONITORING_ENABLED, false),
+    ETHEREUM_RPC_URL: process.env.ETHEREUM_RPC_URL || '',
+    BITCOIN_API_URL: process.env.BITCOIN_API_URL || '',
+    BLOCKCHAIN_MONITOR_POLL_INTERVAL_MS: parseNumber(
+      process.env.BLOCKCHAIN_MONITOR_POLL_INTERVAL_MS,
+      30000,
+      'BLOCKCHAIN_MONITOR_POLL_INTERVAL_MS',
+    ),
+    BLOCKCHAIN_CONFIRMATION_POLL_INTERVAL_MS: parseNumber(
+      process.env.BLOCKCHAIN_CONFIRMATION_POLL_INTERVAL_MS,
+      60000,
+      'BLOCKCHAIN_CONFIRMATION_POLL_INTERVAL_MS',
+    ),
     ...overrides
   };
 

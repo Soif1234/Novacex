@@ -2,6 +2,8 @@ import { logger } from '../config/logger';
 import { liquidationWorker } from './LiquidationWorker';
 import { fundingWorker } from './FundingWorker';
 import { reconciliationWorker } from './ReconciliationWorker';
+import { blockchainMonitorWorker } from './BlockchainMonitorWorker';
+import { confirmationWorker } from './ConfirmationWorker';
 import { klineService } from '../services/market/kline.service';
 import { conditionalTriggerService } from '../services/market/conditional.service';
 
@@ -40,6 +42,22 @@ export class WorkerSupervisor {
       start: () => reconciliationWorker.start(),
       stop: () => reconciliationWorker.stop(),
       getStatus: () => ({ isRunning: (reconciliationWorker as any).isRunning ?? false }),
+    });
+
+    // Phase 9.4 — Blockchain monitoring workers.
+    // Inert (no network) unless a blockchain source is explicitly configured.
+    this.register({
+      name: 'BlockchainMonitorWorker',
+      start: () => blockchainMonitorWorker.start(),
+      stop: () => blockchainMonitorWorker.stop(),
+      getStatus: () => ({ isRunning: (blockchainMonitorWorker as any).isRunning ?? false }),
+    });
+
+    this.register({
+      name: 'ConfirmationWorker',
+      start: () => confirmationWorker.start(),
+      stop: () => confirmationWorker.stop(),
+      getStatus: () => ({ isRunning: (confirmationWorker as any).isRunning ?? false }),
     });
 
     this.register({

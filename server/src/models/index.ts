@@ -10,3 +10,17 @@ export * from './system.model';
 export * from './reconciliation.model';
 export * from './asset-network.model';
 export * from './deposit-address.model';
+export {
+  BlockchainDepositStatus,
+  BlockchainChainId,
+  BlockchainDepositEntity,
+  MonitorCheckpointEntity,
+  BlockchainEvent,
+  computeConfirmations,
+  normalizeBlockchainAmount,
+  mapBlockchainDepositRow,
+  mapMonitorCheckpointRow,
+} from './blockchain-deposit.model';
+export type {
+  BlockchainNetwork as BlockchainDepositNetwork,
+} from './blockchain-deposit.model';

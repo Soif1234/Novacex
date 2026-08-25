@@ -8,14 +8,17 @@ describe('Phase 8.1: WorkerSupervisor Lifecycle & Isolation Unit Tests', () => {
     supervisor = new WorkerSupervisor();
   });
 
-  it('1. Initializes with all 5 core default background workers registered', () => {
+  it('1. Initializes with all core default background workers registered', () => {
     const workerNames = supervisor.getWorkerNames();
     expect(workerNames).toContain('LiquidationWorker');
     expect(workerNames).toContain('FundingWorker');
     expect(workerNames).toContain('ReconciliationWorker');
     expect(workerNames).toContain('KlineService');
     expect(workerNames).toContain('ConditionalTriggerService');
-    expect(workerNames.length).toBe(5);
+    // Phase 9.4: blockchain monitoring workers (inert when no source configured)
+    expect(workerNames).toContain('BlockchainMonitorWorker');
+    expect(workerNames).toContain('ConfirmationWorker');
+    expect(workerNames.length).toBe(7);
   });
 
   it('2. Starts all registered workers cleanly in sequence', async () => {

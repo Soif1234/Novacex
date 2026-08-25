@@ -431,11 +431,16 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
   private assetNetworks = new Map<string, any>(); // "asset:network" -> row
   private depositAddresses = new Map<string, any>(); // id -> address row
 
+  // Phase 9.4 tables
+  private blockchainDeposits = new Map<string, any>(); // id -> deposit row
+  private monitorCheckpoints = new Map<string, any>(); // network -> checkpoint row
+
   constructor(private config = env) {
     this.totalPoolSize = config.DB_POOL_MIN;
     this.initDefaultAssets();
     this.initDefaultTradingPairs();
     this.initDefaultAssetNetworks();
+    this.initDefaultMonitorCheckpoints();
   }
 
 
@@ -501,6 +506,25 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     }
   }
 
+  /** Seed the Phase 9.4 monitor checkpoints for approved networks. */
+  private initDefaultMonitorCheckpoints(): void {
+    const now = new Date();
+    this.monitorCheckpoints.set('ETHEREUM', {
+      network: 'ETHEREUM',
+      lastBlockNumber: 0,
+      lastBlockHash: null,
+      lastProcessedAt: now,
+      consecutiveErrors: 0,
+    });
+    this.monitorCheckpoints.set('BITCOIN', {
+      network: 'BITCOIN',
+      lastBlockNumber: 0,
+      lastBlockHash: null,
+      lastProcessedAt: now,
+      consecutiveErrors: 0,
+    });
+  }
+
 
   public async connect(): Promise<void> {
     logger.info('Initializing PostgreSQL connection pool', {
@@ -556,6 +580,9 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     this.assetNetworks.clear();
     this.initDefaultAssetNetworks();
     this.depositAddresses.clear();
+    this.blockchainDeposits.clear();
+    this.monitorCheckpoints.clear();
+    this.initDefaultMonitorCheckpoints();
   }
 
   public async transaction<T = unknown>(callback: (client: IDatabaseConnection) => Promise<T>): Promise<T> {
@@ -584,6 +611,8 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     const snapLedgerEntries = [...this.ledgerEntries];
     const snapAssetNetworks = new Map(this.assetNetworks);
     const snapDepositAddresses = new Map(this.depositAddresses);
+    const snapBlockchainDeposits = new Map(this.blockchainDeposits);
+    const snapMonitorCheckpoints = new Map(this.monitorCheckpoints);
 
     try {
       const result = await callback(this);
@@ -612,6 +641,8 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       this.ledgerEntries = snapLedgerEntries;
       this.assetNetworks = snapAssetNetworks;
       this.depositAddresses = snapDepositAddresses;
+      this.blockchainDeposits = snapBlockchainDeposits;
+      this.monitorCheckpoints = snapMonitorCheckpoints;
       throw err;
     }
   }
@@ -651,6 +682,67 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       updatedAt: d.updatedAt,
       revoked_at: d.revokedAt,
       revokedAt: d.revokedAt,
+    };
+  }
+
+  private mapBlockchainDeposit(d: any): any {
+    return {
+      id: d.id,
+      chain_id: d.chainId,
+      chainId: d.chainId,
+      asset: d.asset,
+      network: d.network,
+      transaction_hash: d.transactionHash,
+      transactionHash: d.transactionHash,
+      block_number: d.blockNumber,
+      blockNumber: d.blockNumber,
+      block_hash: d.blockHash,
+      blockHash: d.blockHash,
+      block_timestamp: d.blockTimestamp,
+      blockTimestamp: d.blockTimestamp,
+      log_index: d.logIndex,
+      logIndex: d.logIndex,
+      from_address: d.fromAddress,
+      fromAddress: d.fromAddress,
+      to_address: d.toAddress,
+      toAddress: d.toAddress,
+      amount: d.amount,
+      raw_amount: d.rawAmount,
+      rawAmount: d.rawAmount,
+      token_contract: d.tokenContract,
+      tokenContract: d.tokenContract,
+      decimals: d.decimals,
+      confirmation_count: d.confirmationCount,
+      confirmationCount: d.confirmationCount,
+      required_confirmations: d.requiredConfirmations,
+      requiredConfirmations: d.requiredConfirmations,
+      status: d.status,
+      detected_at: d.detectedAt,
+      detectedAt: d.detectedAt,
+      confirmed_at: d.confirmedAt,
+      confirmedAt: d.confirmedAt,
+      reorged_at: d.reorgedAt,
+      reorgedAt: d.reorgedAt,
+      raw_payload: d.rawPayload,
+      rawPayload: d.rawPayload,
+      created_at: d.createdAt,
+      createdAt: d.createdAt,
+      updated_at: d.updatedAt,
+      updatedAt: d.updatedAt,
+    };
+  }
+
+  private mapMonitorCheckpoint(c: any): any {
+    return {
+      network: c.network,
+      last_block_number: c.lastBlockNumber,
+      lastBlockNumber: c.lastBlockNumber,
+      last_block_hash: c.lastBlockHash,
+      lastBlockHash: c.lastBlockHash,
+      last_processed_at: c.lastProcessedAt,
+      lastProcessedAt: c.lastProcessedAt,
+      consecutive_errors: c.consecutiveErrors,
+      consecutiveErrors: c.consecutiveErrors,
     };
   }
 
@@ -2996,6 +3088,69 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       return { rows: [row as unknown as T], rowCount: 1 };
     }
 
+    // 41c. UPDATE asset_networks SET is_active = $1|false|true WHERE asset = $2|$1 AND network = $3|$2
+    //      (Phase 9.4 tests — toggle network activity)
+    if (/UPDATE\s+asset_networks\s+SET\s+is_active/i.test(trimmed)) {
+      // Determine param layout: literal value (SET is_active = false) vs parameterized ($1)
+      const literalMatch = /SET\s+is_active\s*=\s*(false|true)/i.exec(trimmed);
+      const paramMatch = /SET\s+is_active\s*=\s*\$1/i.test(trimmed);
+      let isActive: boolean;
+      let asset: string;
+      let network: string;
+      if (literalMatch) {
+        isActive = literalMatch[1].toLowerCase() === 'true';
+        asset = params[0] as string;
+        network = params[1] as string;
+      } else if (paramMatch) {
+        isActive = params[0] === true || params[0] === 'true' || params[0] === 1 || params[0] === '1';
+        asset = params[1] as string;
+        network = params[2] as string;
+      } else {
+        return { rows: [] as T[], rowCount: 0 };
+      }
+      const key = `${asset}:${network}`;
+      const row = this.assetNetworks.get(key);
+      if (!row) return { rows: [] as T[], rowCount: 0 };
+      row.isActive = isActive;
+      row.updatedAt = new Date();
+      this.assetNetworks.set(key, row);
+      return { rows: [{ ...row } as unknown as T], rowCount: 1 };
+    }
+
+    // 41b. SELECT ... FROM asset_networks WHERE LOWER(contract_address) = LOWER($1) AND network = $2
+    //      (Phase 9.4 — resolve asset by ERC-20 token contract)
+    if (/FROM\s+asset_networks\s+WHERE\s+LOWER\(\s*contract_address\s*\)\s*=\s*LOWER\(\s*\$1\s*\)/i.test(trimmed)) {
+      const contract = String(params[0] ?? '').toLowerCase();
+      const network = params[1] as string;
+      let found: any = null;
+      for (const row of this.assetNetworks.values()) {
+        if (row.network !== network) continue;
+        if (row.contractAddress && String(row.contractAddress).toLowerCase() === contract) {
+          found = row;
+          break;
+        }
+      }
+      if (!found) return { rows: [] as T[], rowCount: 0 };
+      return {
+        rows: [{
+          asset: found.asset,
+          network: found.network,
+          is_active: found.isActive,
+          isActive: found.isActive,
+          decimals: found.decimals,
+          confirmations_required: found.confirmationsRequired,
+          confirmationsRequired: found.confirmationsRequired,
+          contract_address: found.contractAddress,
+          contractAddress: found.contractAddress,
+          address_format: found.addressFormat,
+          addressFormat: found.addressFormat,
+          requires_memo: found.requiresMemo,
+          requiresMemo: found.requiresMemo,
+        } as unknown as T],
+        rowCount: 1,
+      };
+    }
+
     // 42. SELECT ... FROM deposit_addresses WHERE user_id = $1 AND asset = $2 AND network = $3 AND status = 'ACTIVE'
     if (/FROM\s+deposit_addresses\s+WHERE\s+user_id\s*=\s*\$1\s+AND\s+asset\s*=\s*\$2\s+AND\s+network\s*=\s*\$3/i.test(trimmed)) {
       const [userId, asset, network] = params as string[];
@@ -3026,6 +3181,36 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
         .filter(d => d.userId === userId)
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
       return { rows: matches.map(d => this.mapDepositAddress(d)) as unknown as T[], rowCount: matches.length };
+    }
+
+    // 44b. SELECT ... FROM deposit_addresses WHERE LOWER(blockchain_address) = LOWER($1) AND network = $2 [AND asset = $3] [AND status = 'ACTIVE']
+    //      (Phase 9.4 — address matching)
+    if (/FROM\s+deposit_addresses\s+WHERE\s+LOWER\(\s*blockchain_address\s*\)\s*=\s*LOWER\(\s*\$1\s*\)\s+AND\s+network\s*=\s*\$2/i.test(trimmed)) {
+      const [addr, network, asset] = params as string[];
+      const addrLower = String(addr).toLowerCase();
+      const activeOnly = /status\s*=\s*'ACTIVE'/i.test(trimmed);
+      const assetFiltered = /AND\s+asset\s*=\s*\$3/i.test(trimmed);
+      const matches = Array.from(this.depositAddresses.values())
+        .filter(d => d.network === network && String(d.blockchainAddress).toLowerCase() === addrLower)
+        .filter(d => !assetFiltered || d.asset === asset)
+        .filter(d => !activeOnly || d.status === 'ACTIVE');
+      return { rows: matches.map(d => this.mapDepositAddress(d)) as unknown as T[], rowCount: matches.length };
+    }
+
+    // 44c. SELECT DISTINCT blockchain_address [AS "x"] FROM deposit_addresses WHERE network = $1 [AND asset = $2] [AND status = 'ACTIVE'|$3]
+    //      (Phase 9.4 — Bitcoin/Ethereum address scanning)
+    if (/SELECT\s+DISTINCT\s+blockchain_address(?:\s+AS\s+"?[A-Za-z0-9_]+"?)?\s+FROM\s+deposit_addresses/i.test(trimmed)) {
+      const network = params[0] as string;
+      const asset = /AND\s+asset\s*=\s*\$2/i.test(trimmed) ? params[1] as string : null;
+      const addresses = new Set<string>();
+      for (const d of this.depositAddresses.values()) {
+        if (d.network === network && d.status === 'ACTIVE') {
+          if (asset && d.asset !== asset) continue;
+          addresses.add(d.blockchainAddress);
+        }
+      }
+      const rows = Array.from(addresses).map(addr => ({ blockchainAddress: addr, blockchain_address: addr }));
+      return { rows: rows as unknown as T[], rowCount: rows.length };
     }
 
     // 45. INSERT INTO deposit_addresses (id, user_id, asset, network, provider_id, custody_account_id, provider_address_id, blockchain_address, memo, status, address_metadata)
@@ -3096,6 +3281,271 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       row.updatedAt = new Date();
       this.depositAddresses.set(id as string, row);
       return { rows: [this.mapDepositAddress(row) as unknown as T], rowCount: 1 };
+    }
+
+    // =========================================================================
+    // Phase 9.4 — blockchain_deposits & monitor_checkpoints (in-memory)
+    // =========================================================================
+
+    // 47. SELECT ... FROM blockchain_deposits WHERE id = $1
+    if (/FROM\s+blockchain_deposits\s+WHERE\s+id\s*=\s*\$1/i.test(trimmed)) {
+      const id = params[0] as string;
+      const row = this.blockchainDeposits.get(id);
+      if (!row) return { rows: [] as T[], rowCount: 0 };
+      return { rows: [this.mapBlockchainDeposit(row) as unknown as T], rowCount: 1 };
+    }
+
+    // 48. SELECT ... FROM blockchain_deposits [WHERE to_address=$1 AND network=$2] [AND status=$3]
+    if (/FROM\s+blockchain_deposits\s+WHERE\s+to_address\s*=\s*\$1\s+AND\s+network\s*=\s*\$2/i.test(trimmed)) {
+      const [toAddress, network, status] = params as string[];
+      let matches = Array.from(this.blockchainDeposits.values())
+        .filter(d => d.toAddress === toAddress && d.network === network);
+      if (status && /status\s*=\s*\$3/i.test(trimmed)) {
+        matches = matches.filter(d => d.status === status);
+      }
+      matches.sort((a, b) => b.blockNumber - a.blockNumber);
+      return { rows: matches.map(d => this.mapBlockchainDeposit(d)) as unknown as T[], rowCount: matches.length };
+    }
+
+    // 49. SELECT ... FROM blockchain_deposits WHERE block_number BETWEEN $1 AND $2 AND network = $3
+    if (/FROM\s+blockchain_deposits\s+WHERE\s+block_number\s+BETWEEN\s+\$1\s+AND\s+\$2\s+AND\s+network\s*=\s*\$3/i.test(trimmed)) {
+      const [fromBlock, toBlock, network] = params as [number, number, string];
+      const matches = Array.from(this.blockchainDeposits.values())
+        .filter(d => d.network === network && d.blockNumber >= fromBlock && d.blockNumber <= toBlock)
+        .sort((a, b) => a.blockNumber - b.blockNumber);
+      return { rows: matches.map(d => this.mapBlockchainDeposit(d)) as unknown as T[], rowCount: matches.length };
+    }
+
+    // 50. SELECT ... FROM blockchain_deposits WHERE transaction_hash = $1 [AND network = $2]
+    if (/FROM\s+blockchain_deposits\s+WHERE\s+transaction_hash\s*=\s*\$1/i.test(trimmed)) {
+      const txHash = params[0] as string;
+      const hasNetwork = /AND\s+network\s*=\s*\$2/i.test(trimmed);
+      const network = hasNetwork ? params[1] as string : null;
+      let matches = Array.from(this.blockchainDeposits.values())
+        .filter(d => d.transactionHash === txHash);
+      if (network) matches = matches.filter(d => d.network === network);
+      return { rows: matches.map(d => this.mapBlockchainDeposit(d)) as unknown as T[], rowCount: matches.length };
+    }
+
+    // 50c. SELECT COUNT(*) ... FROM blockchain_deposits
+    if (/COUNT\(\s*\*\s*\)[\s\S]*FROM\s+blockchain_deposits/i.test(trimmed)) {
+      const hasNetwork = /WHERE\s+network\s*=\s*\$1/i.test(trimmed);
+      let count: number;
+      if (hasNetwork) {
+        const network = params[0] as string;
+        count = Array.from(this.blockchainDeposits.values()).filter(d => d.network === network).length;
+      } else {
+        count = this.blockchainDeposits.size;
+      }
+      return { rows: [{ cnt: count, count } as unknown as T], rowCount: 1 };
+    }
+
+    // 51. SELECT ... FROM blockchain_deposits WHERE network = $1 AND status = $2
+    if (/FROM\s+blockchain_deposits\s+WHERE\s+network\s*=\s*\$1\s+AND\s+status\s*=\s*\$2/i.test(trimmed)) {
+      const [network, status] = params as [string, string];
+      const matches = Array.from(this.blockchainDeposits.values())
+        .filter(d => d.network === network && d.status === status);
+      return { rows: matches.map(d => this.mapBlockchainDeposit(d)) as unknown as T[], rowCount: matches.length };
+    }
+
+    // 52. SELECT ... FROM blockchain_deposits WHERE network = $1 AND status IN ($2, $3, ...)
+    //     Also handles literal status values: WHERE status IN ('DETECTED', 'CONFIRMING')
+    if (/FROM\s+blockchain_deposits\s+WHERE\s+network\s*=\s*\$1\s+AND\s+status\s+IN\s*\(/i.test(trimmed)) {
+      const network = params[0] as string;
+      // Extract statuses from params (if parameterized) or from SQL literals
+      let statuses: Set<string>;
+      if (params.length > 1) {
+        statuses = new Set(params.slice(1).map(s => String(s)));
+      } else {
+        // Extract literals from SQL: IN ('A', 'B')
+        const m = /status\s+IN\s*\(([^)]+)\)/i.exec(trimmed);
+        if (m) {
+          statuses = new Set(
+            m[1].split(',').map(s => s.trim().replace(/^'|'$/g, '').replace(/^"|"$/g, ''))
+          );
+        } else {
+          statuses = new Set<string>();
+        }
+      }
+      const matches = Array.from(this.blockchainDeposits.values())
+        .filter(d => d.network === network && statuses.has(d.status))
+        .sort((a, b) => a.blockNumber - b.blockNumber);
+      return { rows: matches.map(d => this.mapBlockchainDeposit(d)) as unknown as T[], rowCount: matches.length };
+    }
+
+    // 52b. SELECT ... FROM blockchain_deposits (all rows, no WHERE) — catch-all
+    if (/FROM\s+blockchain_deposits/i.test(trimmed)) {
+      const matches = Array.from(this.blockchainDeposits.values())
+        .map(d => this.mapBlockchainDeposit(d));
+      return { rows: matches as unknown as T[], rowCount: matches.length };
+    }
+
+    // 53. INSERT INTO blockchain_deposits ...
+    if (/INSERT\s+INTO\s+blockchain_deposits/i.test(trimmed)) {
+      const [
+        id, chainId, asset, network, txHash, blockNumber, blockHash,
+        blockTimestamp, logIndex, fromAddress, toAddress, amount, rawAmount,
+        tokenContract, decimals, confirmationCount, requiredConfirmations, status,
+        detectedAt, confirmedAt, reorgedAt, rawPayload,
+      ] = params;
+
+      // FK: (asset, network) must exist in asset_networks
+      const netKey = `${asset}:${network}`;
+      if (!this.assetNetworks.has(netKey)) {
+        const err = new Error(`insert or update on table "blockchain_deposits" violates foreign key constraint "blockchain_deposits_asset_network_fkey"`);
+        (err as any).code = '23503';
+        throw err;
+      }
+
+      // PK: deterministic id — ON CONFLICT DO NOTHING semantics
+      if (this.blockchainDeposits.has(id as string)) {
+        const existing = this.blockchainDeposits.get(id as string);
+        return { rows: [this.mapBlockchainDeposit(existing) as unknown as T], rowCount: 1 };
+      }
+
+      const now = new Date();
+      const row = {
+        id, chainId, asset, network,
+        transactionHash: txHash, blockNumber, blockHash, blockTimestamp,
+        logIndex, fromAddress, toAddress, amount, rawAmount,
+        tokenContract: tokenContract ?? null,
+        decimals, confirmationCount: confirmationCount ?? 0,
+        requiredConfirmations, status: status ?? 'DETECTED',
+        detectedAt: detectedAt ?? now,
+        confirmedAt: confirmedAt ?? null,
+        reorgedAt: reorgedAt ?? null,
+        rawPayload: rawPayload ?? null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.blockchainDeposits.set(id as string, row);
+      return { rows: [this.mapBlockchainDeposit(row) as unknown as T], rowCount: 1 };
+    }
+
+    // 54. UPDATE blockchain_deposits — confirmation count update
+    //     Pattern A: SET confirmation_count = $1, status = $2, confirmed_at = CASE WHEN $2 = 'CONFIRMED' ... $3, updated_at = $3 WHERE id = $4
+    if (/UPDATE\s+blockchain_deposits\s+SET/i.test(trimmed)) {
+      if (/confirmation_count\s*=\s*\$1\s*,\s*status\s*=\s*\$2/i.test(trimmed)) {
+        const [confirmationCount, status, _now, id] = params;
+        const row = this.blockchainDeposits.get(id as string);
+        if (!row) return { rows: [] as T[], rowCount: 0 };
+        row.confirmationCount = confirmationCount;
+        row.status = status;
+        if (status === 'CONFIRMED' && !row.confirmedAt) {
+          row.confirmedAt = new Date();
+        }
+        row.updatedAt = new Date();
+        this.blockchainDeposits.set(id as string, row);
+        return { rows: [this.mapBlockchainDeposit(row) as unknown as T], rowCount: 1 };
+      }
+      // Pattern B: SET status = 'REORGED', reorged_at = $1, updated_at = NOW() WHERE id = $2
+      if (/SET\s+status\s*=\s*'REORGED'/i.test(trimmed)) {
+        const [reorgedAt, id] = params;
+        const row = this.blockchainDeposits.get(id as string);
+        if (!row) return { rows: [] as T[], rowCount: 0 };
+        row.status = 'REORGED';
+        row.reorgedAt = reorgedAt ?? new Date();
+        row.updatedAt = new Date();
+        this.blockchainDeposits.set(id as string, row);
+        return { rows: [this.mapBlockchainDeposit(row) as unknown as T], rowCount: 1 };
+      }
+      // Generic UPDATE fallback: use last param as id
+      const row = this.blockchainDeposits.get(params[params.length - 1] as string);
+      if (row) {
+        row.updatedAt = new Date();
+        this.blockchainDeposits.set(params[params.length - 1] as string, row);
+        return { rows: [this.mapBlockchainDeposit(row) as unknown as T], rowCount: 1 };
+      }
+      return { rows: [] as T[], rowCount: 0 };
+    }
+
+    // 55. SELECT ... FROM monitor_checkpoints WHERE network = $1
+    if (/FROM\s+monitor_checkpoints\s+WHERE\s+network\s*=\s*\$1/i.test(trimmed)) {
+      const network = params[0] as string;
+      const row = this.monitorCheckpoints.get(network);
+      if (!row) return { rows: [] as T[], rowCount: 0 };
+      return { rows: [this.mapMonitorCheckpoint(row) as unknown as T], rowCount: 1 };
+    }
+
+    // 56. INSERT INTO monitor_checkpoints (network, ...) VALUES ($1, ...) ON CONFLICT (network) DO UPDATE SET ...
+    //     Also: simple INSERT INTO monitor_checkpoints (network, ...) VALUES ($1, ...)
+    if (/INSERT\s+INTO\s+monitor_checkpoints/i.test(trimmed)) {
+      const [network, lastBlockNumber, lastBlockHash, lastProcessedAt, consecutiveErrors] = params;
+      const now = new Date();
+      const row = {
+        network,
+        lastBlockNumber: lastBlockNumber ?? 0,
+        lastBlockHash: lastBlockHash ?? null,
+        lastProcessedAt: lastProcessedAt ?? now,
+        consecutiveErrors: consecutiveErrors ?? 0,
+      };
+      const existing = this.monitorCheckpoints.get(network as string);
+      if (existing) {
+        // ON CONFLICT DO UPDATE — merge
+        existing.lastBlockNumber = row.lastBlockNumber;
+        if (row.lastBlockHash !== null) existing.lastBlockHash = row.lastBlockHash;
+        existing.lastProcessedAt = row.lastProcessedAt;
+        existing.consecutiveErrors = row.consecutiveErrors;
+        this.monitorCheckpoints.set(network as string, existing);
+        return { rows: [this.mapMonitorCheckpoint(existing) as unknown as T], rowCount: 1 };
+      }
+      this.monitorCheckpoints.set(network as string, row);
+      return { rows: [this.mapMonitorCheckpoint(row) as unknown as T], rowCount: 1 };
+    }
+
+    // 57. UPDATE monitor_checkpoints — explicit layout matching
+    if (/UPDATE\s+monitor_checkpoints\s+SET/i.test(trimmed)) {
+      // Layout A (advance): SET last_block_number=$1, last_block_hash=$2, last_processed_at=$3, consecutive_errors=0 WHERE network=$4
+      let m = /SET\s+last_block_number\s*=\s*\$1\s*,\s*last_block_hash\s*=\s*\$2\s*,\s*last_processed_at\s*=\s*\$3\s*,\s*consecutive_errors\s*=\s*0\s+WHERE\s+network\s*=\s*\$4/i.exec(trimmed);
+      if (m) {
+        const [blockNumber, blockHash, ts, network] = params as [number, string | null, Date, string];
+        const row = this.monitorCheckpoints.get(network);
+        if (!row) return { rows: [] as T[], rowCount: 0 };
+        row.lastBlockNumber = blockNumber;
+        if (blockHash !== null && blockHash !== undefined) row.lastBlockHash = blockHash;
+        row.lastProcessedAt = ts ?? new Date();
+        row.consecutiveErrors = 0;
+        this.monitorCheckpoints.set(network, row);
+        return { rows: [this.mapMonitorCheckpoint(row) as unknown as T], rowCount: 1 };
+      }
+      // Layout B (timestamp): SET last_processed_at=$1, consecutive_errors=0 WHERE network=$2
+      m = /SET\s+last_processed_at\s*=\s*\$1\s*,\s*consecutive_errors\s*=\s*0\s+WHERE\s+network\s*=\s*\$2/i.exec(trimmed);
+      if (m) {
+        const [ts, network] = params as [Date, string];
+        const row = this.monitorCheckpoints.get(network);
+        if (!row) return { rows: [] as T[], rowCount: 0 };
+        row.lastProcessedAt = ts ?? new Date();
+        row.consecutiveErrors = 0;
+        this.monitorCheckpoints.set(network, row);
+        return { rows: [this.mapMonitorCheckpoint(row) as unknown as T], rowCount: 1 };
+      }
+      // Layout C (rewind): SET last_block_number=$1, last_block_hash=NULL, last_processed_at=NOW(), consecutive_errors=0 WHERE network=$2
+      m = /SET\s+last_block_number\s*=\s*\$1\s*,\s*last_block_hash\s*=\s*NULL\s*,\s*last_processed_at\s*=\s*NOW\(\)\s*,\s*consecutive_errors\s*=\s*0\s+WHERE\s+network\s*=\s*\$2/i.exec(trimmed);
+      if (m) {
+        const [blockNumber, network] = params as [number, string];
+        const row = this.monitorCheckpoints.get(network);
+        if (!row) return { rows: [] as T[], rowCount: 0 };
+        row.lastBlockNumber = blockNumber;
+        row.lastBlockHash = null;
+        row.lastProcessedAt = new Date();
+        row.consecutiveErrors = 0;
+        this.monitorCheckpoints.set(network, row);
+        return { rows: [this.mapMonitorCheckpoint(row) as unknown as T], rowCount: 1 };
+      }
+      // Layout D (test rewind): SET last_block_number=$1, last_block_hash=NULL, last_processed_at=$2, consecutive_errors=0 WHERE network=$3
+      m = /SET\s+last_block_number\s*=\s*\$1\s*,\s*last_block_hash\s*=\s*NULL\s*,\s*last_processed_at\s*=\s*\$2\s*,\s*consecutive_errors\s*=\s*0\s+WHERE\s+network\s*=\s*\$3/i.exec(trimmed);
+      if (m) {
+        const [blockNumber, ts, network] = params as [number, Date, string];
+        const row = this.monitorCheckpoints.get(network);
+        if (!row) return { rows: [] as T[], rowCount: 0 };
+        row.lastBlockNumber = blockNumber;
+        row.lastBlockHash = null;
+        row.lastProcessedAt = ts ?? new Date();
+        row.consecutiveErrors = 0;
+        this.monitorCheckpoints.set(network, row);
+        return { rows: [this.mapMonitorCheckpoint(row) as unknown as T], rowCount: 1 };
+      }
+      return { rows: [] as T[], rowCount: 0 };
     }
 
     return { rows: [] as T[], rowCount: 0 };
