@@ -8,3 +8,4 @@ export * from './kyc.model';
 export * from './admin.model';
 export * from './system.model';
 export * from './reconciliation.model';
+export * from './asset-network.model';
