@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { walletService } from '../services/wallet/wallet.service';
+import { withdrawalService } from '../services/wallet/withdrawal.service';
 import { AccountType } from '../models/account.model';
 import { LedgerTxType } from '../models/ledger.model';
 import { AppError } from '../middleware/errorHandler';
@@ -160,6 +161,41 @@ export async function getTransactions(req: Request, res: Response, next: NextFun
     res.json({
       success: true,
       data: history,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/v1/wallet/withdraw/crypto
+ * Initiates a real crypto withdrawal.
+ */
+export async function cryptoWithdraw(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Authentication required', 401, 'UNAUTHORIZED');
+    }
+
+    const { asset, network, amount, destinationAddress, destinationMemo, referenceId } = req.body || {};
+
+    if (!asset || !network || !amount || !destinationAddress || !referenceId) {
+      throw new AppError('asset, network, amount, destinationAddress, and referenceId are required', 400, 'MISSING_PARAMETERS');
+    }
+
+    const receipt = await withdrawalService.cryptoWithdraw({
+      userId: req.user.id,
+      asset: String(asset),
+      network: String(network),
+      amount: String(amount),
+      destinationAddress: String(destinationAddress),
+      destinationMemo: destinationMemo ? String(destinationMemo) : undefined,
+      referenceId: String(referenceId),
+    });
+
+    res.json({
+      success: true,
+      data: { receipt },
     });
   } catch (err) {
     next(err);

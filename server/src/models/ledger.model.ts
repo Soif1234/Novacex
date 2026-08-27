@@ -1,6 +1,8 @@
 export type LedgerTxType =
   | 'DEPOSIT'
   | 'WITHDRAWAL'
+  | 'WITHDRAWAL_SETTLE'
+  | 'WITHDRAWAL_FEE'
   | 'INTERNAL_TRANSFER'
   | 'SPOT_ORDER_LOCK'
   | 'SPOT_ORDER_UNLOCK'
@@ -53,10 +55,16 @@ export interface WithdrawalEntity {
   id: string;
   accountId: string;
   asset: string;
+  network?: string;
   amount: string;
   fee: string;
   status: TransferStatus;
   destinationAddress: string;
+  destinationMemo?: string;
+  providerId?: string;
+  providerWithdrawalId?: string;
+  cryptoStatus?: string;
+  failureReason?: string;
   txHash?: string;
   ledgerTxId?: string;
   createdAt: Date;

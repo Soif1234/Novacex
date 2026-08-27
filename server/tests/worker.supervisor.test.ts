@@ -19,7 +19,7 @@ describe('Phase 8.1: WorkerSupervisor Lifecycle & Isolation Unit Tests', () => {
     expect(workerNames).toContain('BlockchainMonitorWorker');
     expect(workerNames).toContain('ConfirmationWorker');
     expect(workerNames).toContain('DepositCreditingWorker');
-    expect(workerNames.length).toBe(8);
+    expect(workerNames.length).toBe(10);
   });
 
   it('2. Starts all registered workers cleanly in sequence', async () => {

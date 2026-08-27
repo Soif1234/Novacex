@@ -5,6 +5,7 @@ import path from 'path';
 dotenv.config();
 
 export interface EnvironmentConfig {
+  CRYPTO_WITHDRAWALS_ENABLED: boolean;
   NODE_ENV: 'development' | 'production' | 'test';
   PORT: number;
   HOST: string;
@@ -213,6 +214,7 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     EXTERNAL_MARKET_DATA_FUTURES_URL: externalMarketDataFuturesUrl,
     EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS: externalMarketDataPollIntervalMs,
     CUSTODY_ENABLED: parseBoolean(process.env.CUSTODY_ENABLED, false),
+    CRYPTO_WITHDRAWALS_ENABLED: parseBoolean(process.env.CRYPTO_WITHDRAWALS_ENABLED, false),
     BLOCKCHAIN_MONITORING_ENABLED: parseBoolean(process.env.BLOCKCHAIN_MONITORING_ENABLED, false),
     DEPOSIT_CREDITING_ENABLED: parseBoolean(process.env.DEPOSIT_CREDITING_ENABLED, false),
     ETHEREUM_RPC_URL: process.env.ETHEREUM_RPC_URL || '',

@@ -428,7 +428,8 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
   private kLines: any[] = [];
 
   // Phase 9.1/9.3 tables
-  private assetNetworks = new Map<string, any>(); // "asset:network" -> row
+  private assetNetworks = new Map<string, any>();
+  private withdrawals = new Map<string, any>(); // "asset:network" -> row
   private depositAddresses = new Map<string, any>(); // id -> address row
 
   // Phase 9.4 tables
@@ -565,6 +566,7 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     this.futuresTpSlConfigs.clear();
     this.futuresFundingHistory = [];
     this.futuresLiquidations = [];
+    this.withdrawals.clear();
     this.apiKeys.clear();
     this.userKycProfiles.clear();
     this.sanctionedAddresses.clear();
@@ -1387,18 +1389,26 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     // 7l. 24-hour withdrawal sum query
     if (/FROM\s+ledger_transactions\s+lt[\s\S]*JOIN\s+ledger_entries\s+le[\s\S]*lt\.transaction_type\s*=\s*'WITHDRAWAL'/i.test(trimmed)) {
       const accountIds = params[0] as string[];
-      const withdrawalEntries: any[] = [];
+      const withdrawalEntries = [];
       const cutoff = Date.now() - 24 * 60 * 60 * 1000;
 
       for (const entry of this.ledgerEntries) {
         if (entry.direction === 'DEBIT' && Array.isArray(accountIds) && accountIds.includes(entry.accountId)) {
           const tx = this.ledgerTransactions.get(entry.transactionId);
           if (tx && tx.transactionType === 'WITHDRAWAL' && tx.createdAt.getTime() >= cutoff) {
-            withdrawalEntries.push({ amount: entry.amount });
+            const ws = Array.from(this.withdrawals.values());
+            const w = ws.find(ww => ww.ledger_tx_id === tx.id);
+            if (w) {
+              if (!['FAILED', 'REJECTED', 'CANCELLED'].includes(w.status)) {
+                withdrawalEntries.push({ amount: w.amount || entry.amount });
+              }
+            } else {
+                withdrawalEntries.push({ amount: entry.amount });
+            }
           }
         }
       }
-      return { rows: withdrawalEntries as T[], rowCount: withdrawalEntries.length };
+      return { rows: withdrawalEntries as unknown as T[], rowCount: withdrawalEntries.length };
     }
 
     // 7m. INSERT INTO admin_audit_logs
@@ -2080,6 +2090,42 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       return { rows: [wb as unknown as T], rowCount: 1 };
     }
 
+    
+    if (/UPDATE\s+withdrawals\s+SET\s+status/i.test(trimmed)) {
+      let id;
+      let status;
+      let cryptoStatus;
+      if (/failure_reason/i.test(trimmed)) {
+        status = 'FAILED';
+        cryptoStatus = 'FAILED';
+        id = params[1] as string;
+      } else if (/crypto_status\s*=\s*'CANCELLED'/i.test(trimmed)) {
+        status = 'REJECTED';
+        cryptoStatus = 'CANCELLED';
+        id = params[0] as string;
+      } else if (/tx_hash/i.test(trimmed)) {
+        status = 'COMPLETED';
+        cryptoStatus = 'COMPLETED';
+        id = params[1];
+      } else if (/status\s*=\s*'REJECTED'/i.test(trimmed)) {
+        status = 'REJECTED';
+        cryptoStatus = 'REJECTED';
+        id = params[0];
+      }
+      const w = this.withdrawals.get(id as string);
+      if (w) {
+        w.status = status;
+        w.crypto_status = cryptoStatus;
+      }
+      return { rows: [], rowCount: 1 };
+    }
+    
+    if (/UPDATE\s+withdrawals\s+SET\s+crypto_status\s*=\s*\$1/i.test(trimmed)) {
+      const w = this.withdrawals.get(params[1] as string);
+      if (w) w.crypto_status = params[0];
+      return { rows: [], rowCount: 1 };
+    }
+
     // 17. UPDATE wallet_balances SET available_balance = $1, locked_balance = $2
     if (/UPDATE\s+wallet_balances\s+SET/i.test(trimmed)) {
       if (params.length >= 4) {
@@ -2139,6 +2185,15 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       return { rows: [], rowCount: 0 };
     }
 
+    
+    if (/SELECT\s+\*\s+FROM\s+withdrawals/i.test(trimmed)) {
+      if (/WHERE\s+id\s*=\s*\$1/i.test(trimmed)) {
+        const w = this.withdrawals.get(params[0] as string);
+        return { rows: w ? [w] : [], rowCount: w ? 1 : 0 };
+      }
+      return { rows: Array.from(this.withdrawals.values()), rowCount: this.withdrawals.size };
+    }
+
     // 18. SELECT ... FROM ledger_transactions WHERE account_id = $1 AND reference_id = $2
     if (/FROM\s+ledger_transactions\s+WHERE\s+account_id\s*=\s*\$1\s+AND\s+reference_id\s*=\s*\$2/i.test(trimmed)) {
       const accId = params[0] as string;
@@ -2164,6 +2219,28 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
         } as unknown as T],
         rowCount: 1,
       };
+    }
+
+    
+    // INSERT INTO withdrawals
+    if (/INSERT\s+INTO\s+withdrawals/i.test(trimmed)) {
+      const row = {
+        id: params[0],
+        account_id: params[1],
+        asset: params[2],
+        network: params[3],
+        amount: params[4],
+        fee: params[5],
+        status: params[6],
+        crypto_status: params[7],
+        destination_address: params[8],
+        destination_memo: params[9],
+        ledger_tx_id: params[10],
+        created_at: new Date(),
+        updated_at: new Date()
+      };
+      this.withdrawals.set(row.id as string, row);
+      return { rows: [row as unknown as T], rowCount: 1 };
     }
 
     // 19. INSERT INTO ledger_transactions

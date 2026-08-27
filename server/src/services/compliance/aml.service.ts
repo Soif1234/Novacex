@@ -70,14 +70,16 @@ export class AmlService {
 
     const accountIds = accRes.rows.map((a) => a.id);
 
-    // Sum ledger entries for WITHDRAWAL in last 24 hours
+    // Sum ledger entries for WITHDRAWAL in last 24 hours, excluding failed/cancelled
     const txRes = await this.database.query<any>(
-      `SELECT le.amount
+      `SELECT COALESCE(w.amount, le.amount) as amount
        FROM ledger_transactions lt
        JOIN ledger_entries le ON lt.id = le.transaction_id
+       LEFT JOIN withdrawals w ON w.ledger_tx_id = lt.id
        WHERE lt.account_id = ANY($1)
          AND lt.transaction_type = 'WITHDRAWAL'
          AND le.direction = 'DEBIT'
+         AND (w.id IS NULL OR w.status NOT IN ('FAILED', 'REJECTED', 'CANCELLED'))
          AND lt.created_at >= NOW() - INTERVAL '24 hours'`,
       [accountIds]
     );

@@ -6,3 +6,5 @@ export * from './BlockchainMonitorWorker';
 export * from './ConfirmationWorker';
 
 export * from './DepositCreditingWorker';
+export * from './WithdrawalProcessingWorker';
+export * from './WithdrawalStatusWorker';

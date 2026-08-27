@@ -5,6 +5,8 @@ import { reconciliationWorker } from './ReconciliationWorker';
 import { blockchainMonitorWorker } from './BlockchainMonitorWorker';
 import { depositCreditingWorker } from './DepositCreditingWorker';
 import { confirmationWorker } from './ConfirmationWorker';
+import { withdrawalProcessingWorker } from './WithdrawalProcessingWorker';
+import { withdrawalStatusWorker } from './WithdrawalStatusWorker';
 import { klineService } from '../services/market/kline.service';
 import { conditionalTriggerService } from '../services/market/conditional.service';
 
@@ -79,7 +81,21 @@ export class WorkerSupervisor {
       name: 'DepositCreditingWorker',
       start: () => depositCreditingWorker.start(),
       stop: () => depositCreditingWorker.stop(),
-      getStatus: () => ({ isRunning: depositCreditingWorker.isRunning }),
+      getStatus: () => ({ isRunning: (depositCreditingWorker as any).isRunning ?? false }),
+    });
+
+    this.register({
+      name: 'WithdrawalProcessingWorker',
+      start: () => withdrawalProcessingWorker.start(),
+      stop: () => withdrawalProcessingWorker.stop(),
+      getStatus: () => ({ isRunning: (withdrawalProcessingWorker as any).isRunning ?? false }),
+    });
+
+    this.register({
+      name: 'WithdrawalStatusWorker',
+      start: () => withdrawalStatusWorker.start(),
+      stop: () => withdrawalStatusWorker.stop(),
+      getStatus: () => ({ isRunning: (withdrawalStatusWorker as any).isRunning ?? false }),
     });
   }
 
