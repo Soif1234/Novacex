@@ -9,6 +9,8 @@ import {
   QueryReconciliationReportsDto,
 } from '../../models/reconciliation.model';
 import { decimalAdd, decimalSubtract, decimalCompare, decimalIsZero } from '../ledger/decimal';
+import { custodyService } from '../custody/custody.service';
+import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 
 export class ReconciliationService {
@@ -199,7 +201,110 @@ export class ReconciliationService {
       });
     }
 
+    // ── Check 3: Custody vs Internal Asset Total ────────────────────────────────
+    if (env.CUSTODY_ENABLED) {
+      try {
+        const supportedNetworks = await custodyService.getSupportedAssetNetworks();
+        const activePairs = Array.isArray(supportedNetworks) ? supportedNetworks.filter((n: any) => n.isActive) : [];
+        const supportedAssets = new Set(activePairs.map((n: any) => n.asset));
+
+        if (supportedAssets.size > 0) {
+          let custodyBalances: any[] = [];
+          try {
+            custodyBalances = await custodyService.getBalances();
+            if (!Array.isArray(custodyBalances)) {
+              throw new Error('Custody provider returned non-array balances');
+            }
+            // Validate each entry has usable asset/total
+            for (const b of custodyBalances) {
+              if (!b || typeof b.asset !== 'string' || b.asset.trim() === '' ||
+                  typeof b.total !== 'string' || !/^-?\d+(\.\d+)?$/.test(b.total.trim())) {
+                throw new Error(`Malformed custody balance entry: asset=${b?.asset}, total=${b?.total}`);
+              }
+            }
+          } catch (err: any) {
+            discrepancies.push({
+              type: 'CUSTODY_API_ERROR',
+              asset: undefined,
+              severity: 'WARNING',
+              reason: `Custody provider failure: ${err.message || 'Unknown error'}`,
+            } as any);
+            supportedAssets.clear();
+          }
+
+          for (const asset of supportedAssets) {
+            // Custody total across all networks for this asset
+            const custodyTotal = custodyBalances
+              .filter((b: any) => b.asset === asset)
+              .reduce((acc: string, b: any) => decimalAdd(acc, String(b.total)), '0');
+
+            // Internal total = SUM(available + locked) across ALL accounts
+            let internalTotal = '0';
+            for (const w of walletsRes.rows) {
+              if (w.asset === asset) {
+                const available = String(w.availableBalance ?? '0');
+                const locked = String(w.lockedBalance ?? '0');
+                internalTotal = decimalAdd(internalTotal, decimalAdd(available, locked));
+              }
+            }
+
+            const diff = decimalSubtract(internalTotal, custodyTotal);
+
+            if (!decimalIsZero(diff)) {
+              // Pending Deposit Tolerance
+              const depRes = await this.database.query<any>(
+                `SELECT COALESCE(SUM(amount), 0) AS "depSum"
+                 FROM blockchain_deposits
+                 WHERE asset = $1 AND (status = 'DETECTED' OR (status = 'CONFIRMED' AND is_credited = FALSE))`,
+                [asset]
+              );
+              const pendingDepositTolerance = String(depRes.rows[0]?.depSum ?? '0');
+
+              // Pending Withdrawal Tolerance
+              const wdRes = await this.database.query<any>(
+                `SELECT COALESCE(SUM(amount), 0) AS "wdSum"
+                 FROM withdrawals
+                 WHERE asset = $1 AND crypto_status IN ('SUBMITTED', 'SIGNING', 'BROADCAST', 'UNKNOWN') AND status = 'PENDING'`,
+                [asset]
+              );
+              const pendingWithdrawalTolerance = String(wdRes.rows[0]?.wdSum ?? '0');
+
+              const tolerance = decimalAdd(pendingDepositTolerance, pendingWithdrawalTolerance);
+              // Inline abs: diff >= 0 → diff, else 0 - diff
+              const absDiff = decimalCompare(diff, '0') >= 0 ? diff : decimalSubtract('0', diff);
+
+              const isCritical = decimalCompare(absDiff, tolerance) > 0;
+              const severity = isCritical ? 'CRITICAL' : 'WARNING';
+
+              discrepancies.push({
+                type: 'CUSTODY_MISMATCH',
+                asset,
+                internalTotal,
+                custodyTotal,
+                discrepancy: diff,
+                tolerance,
+                severity,
+                pendingDepositTolerance,
+                pendingWithdrawalTolerance,
+                reason: `Custody balance mismatch for ${asset}. Internal: ${internalTotal}, Custody: ${custodyTotal}, Diff: ${diff}, Tolerance: ${tolerance} (deposits: ${pendingDepositTolerance}, withdrawals: ${pendingWithdrawalTolerance})`,
+              } as any);
+            }
+          }
+        }
+      } catch (err: any) {
+        logger.error('Check-3 custody reconciliation failed', { error: err.message });
+        // If we reach here, neither getSupportedAssetNetworks nor getBalances succeeded
+        discrepancies.push({
+          type: 'CUSTODY_API_ERROR',
+          asset: undefined,
+          severity: 'WARNING',
+          reason: `Custody provider unavailable: ${err.message || 'Unknown error'}`,
+        } as any);
+      }
+    }
+
     const status = discrepancies.length === 0 ? 'PASSED' : 'DISCREPANCY_DETECTED';
+
 
     // ── Persist Report ───────────────────────────────────────────────────────────
     const detailsJson = JSON.stringify(discrepancies);
@@ -227,7 +332,7 @@ export class ReconciliationService {
     // ── Discrepancy Alerting & Emergency Circuit Breaker Protection ───────────────
     if (discrepancies.length > 0) {
       const hasCriticalMismatch = discrepancies.some(
-        d => d.type === 'BALANCE_MISMATCH' || d.type === 'DOUBLE_ENTRY_VIOLATION'
+        d => d.type === 'BALANCE_MISMATCH' || d.type === 'DOUBLE_ENTRY_VIOLATION' || (d.type === 'CUSTODY_MISMATCH' && (d as any).severity === 'CRITICAL')
       );
 
       const severity = hasCriticalMismatch ? 'CRITICAL' : 'HIGH';

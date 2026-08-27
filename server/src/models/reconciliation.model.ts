@@ -48,13 +48,19 @@ export interface QueryThreatAlertsDto {
 }
 
 export interface ReconciliationDiscrepancyDetail {
-  type: 'BALANCE_MISMATCH' | 'NEGATIVE_BALANCE' | 'DOUBLE_ENTRY_VIOLATION' | 'LOCKED_MISMATCH';
+  type: 'BALANCE_MISMATCH' | 'NEGATIVE_BALANCE' | 'DOUBLE_ENTRY_VIOLATION' | 'LOCKED_MISMATCH' | 'CUSTODY_MISMATCH' | 'CUSTODY_API_ERROR';
   accountId?: string;
   asset?: string;
   walletAvailable?: string;
   walletLocked?: string;
   walletTotal?: string;
   ledgerComputed?: string;
+  internalTotal?: string;
+  custodyTotal?: string;
+  tolerance?: string;
+  pendingDepositTolerance?: string;
+  pendingWithdrawalTolerance?: string;
+  severity?: 'WARNING' | 'CRITICAL';
   discrepancy?: string;
   transactionId?: string;
   reason: string;

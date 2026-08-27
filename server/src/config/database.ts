@@ -1001,6 +1001,22 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
 
     const trimmed = sql.trim();
 
+    // ── DELETE FROM handlers (test cleanup) ────────────────────────────────
+    if (/^DELETE\s+FROM\s+/i.test(trimmed)) {
+      if (/ledger_entries/i.test(trimmed)) { this.ledgerEntries = []; return { rows: [] as T[], rowCount: 0 }; }
+      if (/ledger_transactions/i.test(trimmed)) { this.ledgerTransactions.clear(); this.ledgerTxByRef.clear(); return { rows: [] as T[], rowCount: 0 }; }
+      if (/wallet_balances/i.test(trimmed)) { this.walletBalances.clear(); this.lockedWallets.clear(); return { rows: [] as T[], rowCount: 0 }; }
+      if (/accounts/i.test(trimmed)) { this.accounts.clear(); return { rows: [] as T[], rowCount: 0 }; }
+      if (/users/i.test(trimmed)) { this.users.clear(); this.usersByEmail.clear(); return { rows: [] as T[], rowCount: 0 }; }
+      if (/blockchain_deposits/i.test(trimmed)) { this.blockchainDeposits.clear(); return { rows: [] as T[], rowCount: 0 }; }
+      if (/withdrawals/i.test(trimmed)) { this.withdrawals.clear(); return { rows: [] as T[], rowCount: 0 }; }
+      if (/reconciliation_reports/i.test(trimmed)) { this.reconciliationReports = []; return { rows: [] as T[], rowCount: 0 }; }
+      if (/asset_networks/i.test(trimmed)) { this.assetNetworks.clear(); return { rows: [] as T[], rowCount: 0 }; }
+      if (/system_circuit_breakers/i.test(trimmed)) { this.systemCircuitBreaker = null; return { rows: [] as T[], rowCount: 0 }; }
+      if (/security_threat_alerts/i.test(trimmed)) { this.securityThreatAlerts.clear(); return { rows: [] as T[], rowCount: 0 }; }
+      return { rows: [] as T[], rowCount: 0 };
+    }
+
     // 1. INSERT INTO users
     if (/INSERT\s+INTO\s+users/i.test(trimmed)) {
       const id = (params[0] as string) || crypto.randomUUID();
@@ -2085,6 +2101,25 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
 
     // ── LEDGER TABLE HANDLERS ──────────────────────────────────────────────
 
+    // 13b. SELECT ... FROM wallet_balances (full-table scan, no WHERE clause — used by reconciliation)
+    if (/FROM\s+wallet_balances/i.test(trimmed) && !/WHERE/i.test(trimmed)) {
+      const rows: any[] = [];
+      for (const [, wb] of this.walletBalances) {
+        rows.push({
+          id: wb.id,
+          account_id: wb.accountId,
+          accountId: wb.accountId,
+          asset: wb.asset,
+          available_balance: wb.availableBalance,
+          locked_balance: wb.lockedBalance,
+          availableBalance: wb.availableBalance,
+          lockedBalance: wb.lockedBalance,
+          updated_at: wb.updatedAt,
+        });
+      }
+      return { rows: rows as T[], rowCount: rows.length };
+    }
+
     // 14. SELECT ... FROM wallet_balances WHERE account_id = $1 AND asset = $2 FOR UPDATE
     if (/FROM\s+wallet_balances\s+WHERE\s+account_id\s*=\s*\$1\s+AND\s+asset\s*=\s*\$2/i.test(trimmed)) {
       const accId = params[0] as string;
@@ -2294,6 +2329,23 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       };
     }
 
+
+    // 18b. SELECT COALESCE(SUM(amount), 0) AS "wdSum" FROM withdrawals WHERE ... (Check-3 tolerance)
+    if (/COALESCE\(SUM/i.test(trimmed) && /FROM\s+withdrawals/i.test(trimmed)) {
+      const assetParam = params[0] as string;
+      const toleranceStatuses = ['SUBMITTED', 'SIGNING', 'BROADCAST', 'UNKNOWN'];
+      let total = '0';
+      for (const w of this.withdrawals.values()) {
+        const wAsset = (w as any).asset;
+        const wStatus = (w as any).status;
+        const wCryptoStatus = (w as any).crypto_status ?? (w as any).cryptoStatus;
+        if (wAsset === assetParam && wStatus === 'PENDING' && toleranceStatuses.includes(wCryptoStatus)) {
+          const amt = String((w as any).amount ?? '0');
+          total = decimalAdd(total, amt);
+        }
+      }
+      return { rows: [{ wdSum: total }] as unknown as T[], rowCount: 1 };
+    }
 
     // INSERT INTO withdrawals
     if (/INSERT\s+INTO\s+withdrawals/i.test(trimmed)) {
@@ -3543,6 +3595,21 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       const limited = matches.slice(0, limit);
       return { rows: limited.map(d => this.mapBlockchainDeposit(d)) as unknown as T[], rowCount: limited.length };
     }
+    // 52d. SELECT COALESCE(SUM(amount), 0) AS "depSum" FROM blockchain_deposits WHERE ... (Check-3 tolerance)
+    if (/COALESCE\(SUM/i.test(trimmed) && /FROM\s+blockchain_deposits/i.test(trimmed)) {
+      const assetParam = params[0] as string;
+      let total = '0';
+      for (const d of this.blockchainDeposits.values()) {
+        if (d.asset === assetParam) {
+          if (d.status === 'DETECTED' || (d.status === 'CONFIRMED' && !d.isCredited)) {
+            const amt = String(d.amount ?? '0');
+            total = decimalAdd(total, amt);
+          }
+        }
+      }
+      return { rows: [{ depSum: total }] as unknown as T[], rowCount: 1 };
+    }
+
     // 52b. SELECT ... FROM blockchain_deposits (all rows, no WHERE) — catch-all
     if (/FROM\s+blockchain_deposits/i.test(trimmed)) {
       const matches = Array.from(this.blockchainDeposits.values())
