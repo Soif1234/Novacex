@@ -187,5 +187,70 @@ export class AdminController {
       next(err);
     }
   }
+
+  public static async getPendingWithdrawals(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { withdrawalService } = await import('../services/wallet/withdrawal.service');
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
+      const withdrawals = await withdrawalService.getWithdrawalsPendingReview(limit);
+      res.status(200).json({ success: true, data: withdrawals });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  public static async approveWithdrawal(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { withdrawalService } = await import('../services/wallet/withdrawal.service');
+      const withdrawalId = req.params.id as string;
+      const adminId = req.user!.id;
+      const reason = typeof req.body.reason === 'string' ? req.body.reason : undefined;
+
+      await withdrawalService.approveWithdrawalAdmin(withdrawalId, adminId, reason);
+
+      await auditService.record({
+        adminUserId: adminId,
+        action: 'APPROVE_WITHDRAWAL',
+        targetResourceType: 'WITHDRAWAL',
+        targetResourceId: withdrawalId,
+        previousState: { crypto_status: 'PENDING_REVIEW' },
+        newState: { crypto_status: 'APPROVED' },
+        reason: reason || 'Administrative approval'
+      });
+
+      res.status(200).json({ success: true, message: 'Withdrawal approved successfully' });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  public static async rejectWithdrawal(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { withdrawalService } = await import('../services/wallet/withdrawal.service');
+      const withdrawalId = req.params.id as string;
+      const adminId = req.user!.id;
+      const reason = typeof req.body.reason === 'string' ? req.body.reason : '';
+
+      if (!reason) {
+        throw new AppError('Rejection reason is required', 400, 'MISSING_REASON');
+      }
+
+      await withdrawalService.rejectWithdrawalAdmin(withdrawalId, adminId, reason);
+
+      await auditService.record({
+        adminUserId: adminId,
+        action: 'REJECT_WITHDRAWAL',
+        targetResourceType: 'WITHDRAWAL',
+        targetResourceId: withdrawalId,
+        previousState: { crypto_status: 'PENDING_REVIEW' },
+        newState: { crypto_status: 'CANCELLED' },
+        reason: reason
+      });
+
+      res.status(200).json({ success: true, message: 'Withdrawal rejected successfully' });
+    } catch (err) {
+      next(err);
+    }
+  }
 }
 

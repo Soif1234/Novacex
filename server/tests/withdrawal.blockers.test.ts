@@ -73,10 +73,13 @@ describe('Blockers Fixes Tests', () => {
       expect(newTotal - initialTotal).toBe(0);
     });
 
-    it('4. CANCELLED withdrawal does not consume the 24h allowance', async () => {
+    it('4. admin rejection safely releases reservation and does not consume AML', async () => {
       const initialTotal = parseFloat(await amlService.get24HourWithdrawalTotal(userId));
       const w = await withdrawalService.cryptoWithdraw({ userId, asset: 'USDT', network: 'ETH', amount: '100', destinationAddress: '0xabc', referenceId: `wd-${Date.now()}-4` });
-      await withdrawalService.cancelWithdrawal(w.id);
+
+      // Admin rejection releases funds and sets status to REJECTED (which drops it from AML calculation)
+      await withdrawalService.rejectWithdrawalAdmin(w.id, reviewerId, 'Rejected for test');
+
       const newTotal = parseFloat(await amlService.get24HourWithdrawalTotal(userId));
       expect(newTotal - initialTotal).toBe(0);
     });
@@ -151,7 +154,7 @@ describe('Blockers Fixes Tests', () => {
       await (withdrawalProcessingWorker as any).execute();
 
       expect(withdrawalService.updateCryptoStatus).toHaveBeenCalledWith('w1', 'UNKNOWN');
-      
+
       (env as any).CRYPTO_WITHDRAWALS_ENABLED = origEnabled;
       vi.restoreAllMocks();
     });

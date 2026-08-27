@@ -1386,6 +1386,74 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       return { rows: [record as T], rowCount: 1 };
     }
 
+
+    // Mock for First-time destination query
+    if (/FROM\s+withdrawals\s+w\s+JOIN\s+accounts\s+a\s+ON\s+w\.account_id\s*=\s*a\.id\s+WHERE\s+a\.user_id\s*=\s*\$1\s+AND\s+w\.asset\s*=\s*\$2\s+AND\s+w\.network\s*=\s*\$3\s+AND\s+w\.destination_address\s*=\s*\$4\s+AND\s+w\.status\s*=\s*'COMPLETED'/i.test(trimmed)) {
+      const uId = params[0] as string;
+      const ast = params[1] as string;
+      const net = params[2] as string;
+      const addr = params[3] as string;
+
+      const found = Array.from(this.withdrawals.values()).find(w => {
+        const acc = Array.from(this.accounts.values()).find(a => a.id === w.account_id);
+        return acc && acc.userId === uId && w.asset === ast && w.network === net && w.destination_address === addr && w.status === 'COMPLETED';
+      });
+      return { rows: (found ? [{ '?column?': 1 }] : []) as unknown as T[], rowCount: found ? 1 : 0 };
+    }
+
+    // Mock for getWithdrawalsPendingReview
+    if (/FROM\s+withdrawals\s+w\s+JOIN\s+accounts\s+a\s+ON\s+w\.account_id\s*=\s*a\.id\s+WHERE\s+w\.crypto_status\s*=\s*'PENDING_REVIEW'/i.test(trimmed)) {
+      const res = Array.from(this.withdrawals.values())
+        .filter(w => w.crypto_status === 'PENDING_REVIEW')
+        .map(w => {
+          const acc = Array.from(this.accounts.values()).find(a => a.id === w.account_id);
+          return { ...w, userId: acc?.userId };
+        });
+      return { rows: res as unknown as T[], rowCount: res.length };
+    }
+
+    // Mock for approve/reject GET with user_id
+    if (/SELECT\s+w\.\*,\s+a\.user_id\s+FROM\s+withdrawals\s+w\s+JOIN\s+accounts\s+a\s+ON\s+w\.account_id\s*=\s*a\.id\s+WHERE\s+w\.id\s*=\s*\$1/i.test(trimmed)) {
+      const w = this.withdrawals.get(params[0] as string);
+      if (!w) return { rows: [], rowCount: 0 };
+      const acc = Array.from(this.accounts.values()).find(a => a.id === w.account_id);
+      return { rows: [{ ...w, user_id: acc?.userId }] as unknown as T[], rowCount: 1 };
+    }
+
+    // Mock for UPDATE withdrawals SET crypto_status = 'APPROVED', reviewed_by
+    if (/UPDATE\s+withdrawals\s+SET\s+crypto_status\s*=\s*'APPROVED',\s+reviewed_by/i.test(trimmed)) {
+      const wId = params[2] as string;
+      const w = this.withdrawals.get(wId);
+      if (w) {
+        w.crypto_status = 'APPROVED';
+        w.reviewed_by = params[0];
+        w.review_reason = params[1] || w.review_reason;
+        this.withdrawals.set(wId, w);
+      }
+      return { rows: [], rowCount: 1 };
+    }
+
+    // Mock for UPDATE withdrawals SET status = 'REJECTED'
+    if (/UPDATE\s+withdrawals\s+SET\s+status\s*=\s*'REJECTED',\s+crypto_status\s*=\s*'CANCELLED',\s+review_reason\s*=\s*\$1/i.test(trimmed)) {
+      const wId = params[2] as string;
+      const w = this.withdrawals.get(wId);
+      if (w) {
+        w.status = 'REJECTED';
+        w.crypto_status = 'CANCELLED';
+        w.review_reason = params[0];
+        w.reviewed_by = params[1];
+        this.withdrawals.set(wId, w);
+      }
+      return { rows: [], rowCount: 1 };
+    }
+
+
+    if (/SELECT\s+account_status\s+FROM\s+users\s+WHERE\s+id\s*=\s*\$1/i.test(trimmed)) {
+      const u = this.users.get(params[0] as string);
+      if (!u) return { rows: [], rowCount: 0 };
+      return { rows: [{ account_status: u.accountStatus }] as unknown as T[], rowCount: 1 };
+    }
+
     // 7l. 24-hour withdrawal sum query
     if (/FROM\s+ledger_transactions\s+lt[\s\S]*JOIN\s+ledger_entries\s+le[\s\S]*lt\.transaction_type\s*=\s*'WITHDRAWAL'/i.test(trimmed)) {
       const accountIds = params[0] as string[];
@@ -2090,7 +2158,7 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       return { rows: [wb as unknown as T], rowCount: 1 };
     }
 
-    
+
     if (/UPDATE\s+withdrawals\s+SET\s+status/i.test(trimmed)) {
       let id;
       let status;
@@ -2119,7 +2187,7 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       }
       return { rows: [], rowCount: 1 };
     }
-    
+
     if (/UPDATE\s+withdrawals\s+SET\s+crypto_status\s*=\s*\$1/i.test(trimmed)) {
       const w = this.withdrawals.get(params[1] as string);
       if (w) w.crypto_status = params[0];
@@ -2185,7 +2253,7 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       return { rows: [], rowCount: 0 };
     }
 
-    
+
     if (/SELECT\s+\*\s+FROM\s+withdrawals/i.test(trimmed)) {
       if (/WHERE\s+id\s*=\s*\$1/i.test(trimmed)) {
         const w = this.withdrawals.get(params[0] as string);
@@ -2221,7 +2289,7 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       };
     }
 
-    
+
     // INSERT INTO withdrawals
     if (/INSERT\s+INTO\s+withdrawals/i.test(trimmed)) {
       const row = {
@@ -3455,18 +3523,18 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       return { rows: matches.map(d => this.mapBlockchainDeposit(d)) as unknown as T[], rowCount: matches.length };
     }
 
-    
+
     // 52c. SELECT ... FROM blockchain_deposits WHERE status = 'CONFIRMED' AND is_credited = FALSE
     if (/FROM\s+blockchain_deposits\s+WHERE\s+status\s*=\s*'CONFIRMED'\s+AND\s+is_credited\s*=\s*FALSE/i.test(trimmed)) {
       const matches = Array.from(this.blockchainDeposits.values())
         .filter(d => d.status === 'CONFIRMED' && !d.isCredited)
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-      
+
       let limit = matches.length;
       if (/LIMIT\s+\\$1/i.test(trimmed)) {
         limit = parseInt(params[0] as string, 10) || 100;
       }
-      
+
       const limited = matches.slice(0, limit);
       return { rows: limited.map(d => this.mapBlockchainDeposit(d)) as unknown as T[], rowCount: limited.length };
     }
@@ -3548,7 +3616,7 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
         this.blockchainDeposits.set(id as string, row);
         return { rows: [this.mapBlockchainDeposit(row) as unknown as T], rowCount: 1 };
       }
-      
+
         // Pattern C: SET is_credited = TRUE, ledger_tx_id = $1, updated_at = NOW() WHERE id = $2
         if (/SET\s+is_credited\s*=\s*TRUE\s*,\s*ledger_tx_id\s*=\s*\$1/i.test(trimmed)) {
           const [ledgerTxId, id] = params;

@@ -4,6 +4,7 @@ import { AccountType } from '../../models/account.model';
 import { WithdrawalEntity } from '../../models/ledger.model';
 import { ledgerService, LedgerService } from '../ledger/ledger.service';
 import { amlService, AmlService } from '../compliance/aml.service';
+import { withdrawalPolicyService } from './withdrawal-policy.service';
 import { validateAmount, decimalNormalize, decimalAdd } from '../ledger/decimal';
 import { logger } from '../../config/logger';
 import { AppError } from '../../middleware/errorHandler';
@@ -28,6 +29,11 @@ export class WithdrawalService {
   public async cryptoWithdraw(dto: CryptoWithdrawDto): Promise<WithdrawalEntity> {
     const { userId, asset, network, amount, destinationAddress, destinationMemo, referenceId } = dto;
     validateAmount(amount);
+
+    // Evaluate risk policy BEFORE taking the lock
+    const policyResult = await withdrawalPolicyService.evaluate(userId, 'unknown_yet', asset, network, amount, destinationAddress);
+    const initialCryptoStatus = policyResult.decision === 'APPROVE' ? 'APPROVED' : 'PENDING_REVIEW';
+    const reviewReason = policyResult.reasons.length > 0 ? policyResult.reasons.join(' | ') : null;
 
     return this.database.transaction(async (txClient) => {
       // 1. Fetch FUNDING account
@@ -66,7 +72,7 @@ export class WithdrawalService {
       if (parseFloat(amount) < parseFloat(minWithdrawal)) {
         throw new AppError(`Withdrawal amount is below minimum of ${minWithdrawal}`, 400, 'BELOW_MINIMUM');
       }
-      
+
       const totalDeduction = decimalAdd(amount, withdrawalFee);
 
       // 3. AML Checks
@@ -94,14 +100,14 @@ export class WithdrawalService {
       const withdrawalId = crypto.randomUUID();
       const insertRes = await txClient.query<any>(`
         INSERT INTO withdrawals (
-          id, account_id, asset, network, amount, fee, status, crypto_status, 
-          destination_address, destination_memo, ledger_tx_id, created_at, updated_at
+          id, account_id, asset, network, amount, fee, status, crypto_status,
+          destination_address, destination_memo, ledger_tx_id, created_at, updated_at, review_reason
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW()
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW(), $12
         ) RETURNING *
       `, [
-        withdrawalId, accountId, asset, network, amount, withdrawalFee, 
-        'PENDING', 'PENDING', destinationAddress, destinationMemo || null, ledgerTxId.transactionId
+        withdrawalId, accountId, asset, network, amount, withdrawalFee,
+        'PENDING', initialCryptoStatus, destinationAddress, destinationMemo || null, ledgerTxId.transactionId, reviewReason
       ]);
 
       const row = insertRes.rows[0];
@@ -130,7 +136,7 @@ export class WithdrawalService {
         [withdrawalId]
       );
       if (wRes.rows.length === 0) throw new AppError('Withdrawal not found', 404, 'NOT_FOUND');
-      
+
       const w = wRes.rows[0];
       if (w.status !== 'PENDING' || (w.crypto_status !== 'PENDING' && w.crypto_status !== 'RESERVED')) {
         throw new AppError('Withdrawal is not pending approval', 400, 'INVALID_STATE');
@@ -139,6 +145,91 @@ export class WithdrawalService {
       await txClient.query(
         "UPDATE withdrawals SET crypto_status = 'APPROVED', updated_at = NOW() WHERE id = $1",
         [withdrawalId]
+      );
+    });
+  }
+
+  public async getWithdrawalsPendingReview(limit = 100): Promise<any[]> {
+    const res = await this.database.query<any>(
+      `SELECT w.id, w.asset, w.network, w.amount, w.fee, w.destination_address as "destinationAddress", w.destination_memo as "destinationMemo", w.created_at as "createdAt", w.review_reason as "reviewReason", a.user_id as "userId"
+       FROM withdrawals w
+       JOIN accounts a ON w.account_id = a.id
+       WHERE w.crypto_status = 'PENDING_REVIEW'
+       ORDER BY w.created_at ASC
+       LIMIT $1`,
+      [limit]
+    );
+    return res.rows;
+  }
+
+  public async approveWithdrawalAdmin(withdrawalId: string, adminUserId: string, reviewReason?: string): Promise<void> {
+    await this.database.transaction(async (txClient) => {
+      const wRes = await txClient.query<any>(
+        `SELECT w.*, a.user_id
+         FROM withdrawals w
+         JOIN accounts a ON w.account_id = a.id
+         WHERE w.id = $1 FOR UPDATE`,
+        [withdrawalId]
+      );
+      if (wRes.rows.length === 0) throw new AppError('Withdrawal not found', 404, 'NOT_FOUND');
+
+      const w = wRes.rows[0];
+      if (w.user_id === adminUserId) {
+        throw new AppError('Administrators cannot approve their own withdrawals', 403, 'FORBIDDEN_SELF_APPROVAL');
+      }
+
+      if (w.status !== 'PENDING' || w.crypto_status !== 'PENDING_REVIEW') {
+        throw new AppError('Withdrawal is not pending review', 400, 'INVALID_STATE');
+      }
+
+      await txClient.query(
+        `UPDATE withdrawals
+         SET crypto_status = 'APPROVED', reviewed_by = $1, reviewed_at = NOW(), review_reason = COALESCE($2, review_reason), updated_at = NOW()
+         WHERE id = $3`,
+        [adminUserId, reviewReason || null, withdrawalId]
+      );
+    });
+  }
+
+  public async rejectWithdrawalAdmin(withdrawalId: string, adminUserId: string, reviewReason: string): Promise<void> {
+    await this.database.transaction(async (txClient) => {
+      const wRes = await txClient.query<any>(
+        `SELECT w.*, a.user_id
+         FROM withdrawals w
+         JOIN accounts a ON w.account_id = a.id
+         WHERE w.id = $1 FOR UPDATE`,
+        [withdrawalId]
+      );
+      if (wRes.rows.length === 0) throw new AppError('Withdrawal not found', 404, 'NOT_FOUND');
+
+      const w = wRes.rows[0];
+      if (w.user_id === adminUserId) {
+        throw new AppError('Administrators cannot reject their own withdrawals', 403, 'FORBIDDEN_SELF_ACTION');
+      }
+
+      if (w.status !== 'PENDING' || w.crypto_status !== 'PENDING_REVIEW') {
+        throw new AppError('Withdrawal is not pending review', 400, 'INVALID_STATE');
+      }
+
+      const totalDeduction = decimalAdd(w.amount, w.fee);
+
+      // Release funds back to available
+      await this.ledger.postTransaction({
+        accountId: w.account_id,
+        transactionType: 'ADJUSTMENT',
+        referenceId: `wd_rel_${w.id}`,
+        description: `Release rejected crypto withdrawal ${w.asset}`,
+        entries: [
+          { accountId: w.account_id, asset: w.asset, direction: 'DEBIT', amount: totalDeduction, balancePool: 'locked' },
+          { accountId: w.account_id, asset: w.asset, direction: 'CREDIT', amount: totalDeduction, balancePool: 'available' }
+        ]
+      }, txClient);
+
+      await txClient.query(
+        `UPDATE withdrawals
+         SET status = 'REJECTED', crypto_status = 'CANCELLED', review_reason = $1, reviewed_by = $2, reviewed_at = NOW(), failure_reason = 'Rejected by administrator', updated_at = NOW()
+         WHERE id = $3`,
+        [reviewReason, adminUserId, withdrawalId]
       );
     });
   }
@@ -154,10 +245,10 @@ export class WithdrawalService {
   public async claimApprovedWithdrawals(limit: number): Promise<WithdrawalEntity[]> {
     return this.database.transaction(async (txClient) => {
       const res = await txClient.query<any>(
-        `SELECT * FROM withdrawals 
-         WHERE status = 'PENDING' AND crypto_status = 'APPROVED' 
-         ORDER BY created_at ASC 
-         LIMIT $1 
+        `SELECT * FROM withdrawals
+         WHERE status = 'PENDING' AND crypto_status = 'APPROVED'
+         ORDER BY created_at ASC
+         LIMIT $1
          FOR UPDATE SKIP LOCKED`,
         [limit]
       );
@@ -165,7 +256,7 @@ export class WithdrawalService {
       if (res.rows.length === 0) return [];
 
       const ids = res.rows.map((r: any) => r.id);
-      
+
       await txClient.query(
         `UPDATE withdrawals SET crypto_status = 'SUBMITTING', updated_at = NOW() WHERE id = ANY($1)`,
         [ids]
@@ -177,9 +268,9 @@ export class WithdrawalService {
 
   public async getActiveCustodyWithdrawals(limit: number): Promise<WithdrawalEntity[]> {
     const res = await this.database.query<any>(
-      `SELECT * FROM withdrawals 
-       WHERE status = 'PENDING' 
-       AND crypto_status IN ('SUBMITTED', 'BROADCAST', 'CONFIRMING', 'UNKNOWN', 'SUBMITTING') 
+      `SELECT * FROM withdrawals
+       WHERE status = 'PENDING'
+       AND crypto_status IN ('SUBMITTED', 'BROADCAST', 'CONFIRMING', 'UNKNOWN', 'SUBMITTING')
        ORDER BY updated_at ASC LIMIT $1`,
       [limit]
     );
@@ -188,8 +279,8 @@ export class WithdrawalService {
 
   public async markAsSubmitted(id: string, providerId: string, providerWithdrawalId: string): Promise<void> {
     await this.database.query(
-      `UPDATE withdrawals 
-       SET crypto_status = 'SUBMITTED', provider_id = $1, provider_withdrawal_id = $2, updated_at = NOW() 
+      `UPDATE withdrawals
+       SET crypto_status = 'SUBMITTED', provider_id = $1, provider_withdrawal_id = $2, updated_at = NOW()
        WHERE id = $3`,
       [providerId, providerWithdrawalId, id]
     );
@@ -224,8 +315,8 @@ export class WithdrawalService {
       }, txClient);
 
       await txClient.query(
-        `UPDATE withdrawals 
-         SET status = 'FAILED', crypto_status = 'FAILED', failure_reason = $1, updated_at = NOW() 
+        `UPDATE withdrawals
+         SET status = 'FAILED', crypto_status = 'FAILED', failure_reason = $1, updated_at = NOW()
          WHERE id = $2`,
         [reason, id]
       );
@@ -234,7 +325,7 @@ export class WithdrawalService {
 
   public async completeWithdrawal(id: string, txHash: string): Promise<void> {
     const SYSTEM_VAULT = '11111111-1111-1111-1111-111111111111';
-    
+
     await this.database.transaction(async (txClient) => {
       const wRes = await txClient.query<any>('SELECT * FROM withdrawals WHERE id = $1 FOR UPDATE', [id]);
       if (wRes.rows.length === 0) return;
@@ -269,8 +360,8 @@ export class WithdrawalService {
       }
 
       await txClient.query(
-        `UPDATE withdrawals 
-         SET status = 'COMPLETED', crypto_status = 'COMPLETED', tx_hash = $1, updated_at = NOW() 
+        `UPDATE withdrawals
+         SET status = 'COMPLETED', crypto_status = 'COMPLETED', tx_hash = $1, updated_at = NOW()
          WHERE id = $2`,
         [txHash || '', id]
       );
@@ -301,8 +392,8 @@ export class WithdrawalService {
       }, txClient);
 
       await txClient.query(
-        `UPDATE withdrawals 
-         SET status = 'REJECTED', crypto_status = 'CANCELLED', updated_at = NOW() 
+        `UPDATE withdrawals
+         SET status = 'REJECTED', crypto_status = 'CANCELLED', updated_at = NOW()
          WHERE id = $1`,
         [id]
       );

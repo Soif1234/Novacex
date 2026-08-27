@@ -76,6 +76,8 @@ export interface EnvironmentConfig {
   BLOCKCHAIN_MONITOR_POLL_INTERVAL_MS: number;
   /** Poll interval for the confirmation worker (ms). */
   BLOCKCHAIN_CONFIRMATION_POLL_INTERVAL_MS: number;
+  /** Phase 9.7: High-value withdrawal threshold string */
+  WITHDRAWAL_REVIEW_THRESHOLD?: string;
 }
 
 function parseNumber(val: string | undefined, fallback: number, name: string): number {
@@ -229,6 +231,7 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
       60000,
       'BLOCKCHAIN_CONFIRMATION_POLL_INTERVAL_MS',
     ),
+    WITHDRAWAL_REVIEW_THRESHOLD: process.env.WITHDRAWAL_REVIEW_THRESHOLD,
     ...overrides
   };
 

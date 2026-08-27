@@ -3,6 +3,7 @@ import { WithdrawalService } from '../src/services/wallet/withdrawal.service';
 import { IDatabaseConnection } from '../src/config/database';
 import { LedgerService } from '../src/services/ledger/ledger.service';
 import { AmlService } from '../src/services/compliance/aml.service';
+import { withdrawalPolicyService } from '../src/services/wallet/withdrawal-policy.service';
 import { AppError } from '../src/middleware/errorHandler';
 
 describe('WithdrawalService', () => {
@@ -13,6 +14,11 @@ describe('WithdrawalService', () => {
   let mockTxClient: any;
 
   beforeEach(() => {
+    vi.spyOn(withdrawalPolicyService, 'evaluate').mockResolvedValue({
+      decision: 'APPROVE',
+      reasons: []
+    });
+
     mockTxClient = {
       query: vi.fn(),
     };
@@ -33,12 +39,16 @@ describe('WithdrawalService', () => {
     withdrawalService = new WithdrawalService(mockDb, mockLedger, mockAml);
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('cryptoWithdraw', () => {
     it('should successfully reserve a valid withdrawal from FUNDING account', async () => {
       mockTxClient.query
         .mockResolvedValueOnce({ rows: [{ id: 'account-123', type: 'FUNDING' }] }) // account
         .mockResolvedValueOnce({ rows: [{ is_active: true, min_withdrawal: '10', withdrawal_fee: '2', requires_memo: false, address_format: 'EVM_HEX' }] }) // network
-        .mockResolvedValueOnce({ rows: [{ id: 'withdrawal-123', account_id: 'account-123', asset: 'USDT', network: 'ETH', amount: '100', fee: '2', status: 'PENDING', crypto_status: 'PENDING' }] }); // insert
+        .mockResolvedValueOnce({ rows: [{ id: 'withdrawal-123', account_id: 'account-123', asset: 'USDT', network: 'ETH', amount: '100', fee: '2', status: 'PENDING', crypto_status: 'APPROVED' }] }); // insert
 
       const res = await withdrawalService.cryptoWithdraw({
         userId: 'user-123',
@@ -96,19 +106,28 @@ describe('WithdrawalService', () => {
   });
 
   describe('Lifecycle and Status', () => {
-    it('approveWithdrawal transitions state to APPROVED', async () => {
-      mockTxClient.query.mockResolvedValueOnce({ rows: [{ status: 'PENDING', crypto_status: 'PENDING' }] });
-      
-      await withdrawalService.approveWithdrawal('withdrawal-123');
-      expect(mockTxClient.query).toHaveBeenCalledWith(
-        "UPDATE withdrawals SET crypto_status = 'APPROVED', updated_at = NOW() WHERE id = $1",
-        ['withdrawal-123']
-      );
+    it('approveWithdrawalAdmin transitions state to APPROVED', async () => {
+      mockTxClient.query.mockResolvedValueOnce({ rows: [{ status: 'PENDING', crypto_status: 'PENDING_REVIEW', user_id: 'user-123' }] });
+
+      await withdrawalService.approveWithdrawalAdmin('withdrawal-123', 'admin-123', 'Ok');
+
+      const updateCall = mockTxClient.query.mock.calls.find((call: any[]) => typeof call[0] === 'string' && call[0].includes('UPDATE withdrawals'));
+      expect(updateCall).toBeDefined();
+
+      const sql = updateCall[0];
+      const params = updateCall[1];
+
+      expect(sql).toContain("SET crypto_status = 'APPROVED'");
+      expect(sql).toContain("reviewed_by = $1");
+      expect(sql).toContain("review_reason = COALESCE($2, review_reason)");
+      expect(sql).toContain("WHERE id = $3");
+
+      expect(params).toEqual(['admin-123', 'Ok', 'withdrawal-123']);
     });
 
     it('completeWithdrawal processes SETTLE and FEE', async () => {
-      mockTxClient.query.mockResolvedValueOnce({ 
-        rows: [{ id: 'withdrawal-123', account_id: 'account-123', asset: 'USDT', amount: '100', fee: '2', status: 'PENDING' }] 
+      mockTxClient.query.mockResolvedValueOnce({
+        rows: [{ id: 'withdrawal-123', account_id: 'account-123', asset: 'USDT', amount: '100', fee: '2', status: 'PENDING' }]
       });
 
       await withdrawalService.completeWithdrawal('withdrawal-123', '0x123tx');
@@ -128,8 +147,8 @@ describe('WithdrawalService', () => {
     });
 
     it('cancelWithdrawal releases funds', async () => {
-      mockTxClient.query.mockResolvedValueOnce({ 
-        rows: [{ id: 'withdrawal-123', account_id: 'account-123', asset: 'USDT', amount: '100', fee: '2', status: 'PENDING', crypto_status: 'PENDING' }] 
+      mockTxClient.query.mockResolvedValueOnce({
+        rows: [{ id: 'withdrawal-123', account_id: 'account-123', asset: 'USDT', amount: '100', fee: '2', status: 'PENDING', crypto_status: 'APPROVED' }]
       });
 
       await withdrawalService.cancelWithdrawal('withdrawal-123');

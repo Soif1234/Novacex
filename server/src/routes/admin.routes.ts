@@ -34,5 +34,11 @@ router.post('/reconciliation/alerts/:alertId/resolve', ReconciliationController.
 router.get('/metrics', AdminController.getMetrics);
 router.get('/metrics/prometheus', AdminController.getPrometheusMetrics);
 
+// Withdrawal Approval (Phase 9.7)
+import { requireCircuitBreaker } from '../middleware/circuitBreaker';
+router.get('/withdrawals/pending', AdminController.getPendingWithdrawals);
+router.post('/withdrawals/:id/approve', requireCircuitBreaker('WITHDRAWALS'), AdminController.approveWithdrawal);
+router.post('/withdrawals/:id/reject', requireCircuitBreaker('WITHDRAWALS'), AdminController.rejectWithdrawal);
+
 export const adminRoutes = router;
 
