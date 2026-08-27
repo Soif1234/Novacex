@@ -16,15 +16,24 @@ export class AmlService {
   }
 
   /**
+   * Resolve the database connection to use.
+   * If a transaction client is provided, use it; otherwise use the module-level pool.
+   */
+  private db(txClient?: IDatabaseConnection): IDatabaseConnection {
+    return txClient || this.database;
+  }
+
+  /**
    * Check if an external crypto address is on the sanctions/blacklist
    */
-  public async isAddressSanctioned(address: string): Promise<{ sanctioned: boolean; reason?: string }> {
+  public async isAddressSanctioned(address: string, txClient?: IDatabaseConnection): Promise<{ sanctioned: boolean; reason?: string }> {
     if (!address || !address.trim()) {
       return { sanctioned: false };
     }
 
     const cleanAddress = address.trim();
-    const res = await this.database.query<any>(
+    const conn = this.db(txClient);
+    const res = await conn.query<any>(
       `SELECT id, address, reason, source
        FROM sanctioned_addresses
        WHERE address = $1 AND is_active = TRUE`,
@@ -55,11 +64,14 @@ export class AmlService {
   }
 
   /**
-   * Calculate cumulative withdrawals for user across all accounts in the last 24 hours
+   * Calculate cumulative withdrawals for user across all accounts in the last 24 hours.
+   * When called from within a withdrawal transaction, pass txClient to ensure the
+   * aggregation sees the same transactional state as the reservation.
    */
-  public async get24HourWithdrawalTotal(userId: string): Promise<string> {
+  public async get24HourWithdrawalTotal(userId: string, txClient?: IDatabaseConnection): Promise<string> {
+    const conn = this.db(txClient);
     // Find all accounts owned by this user
-    const accRes = await this.database.query<any>(
+    const accRes = await conn.query<any>(
       'SELECT id FROM accounts WHERE user_id = $1',
       [userId]
     );
@@ -71,7 +83,7 @@ export class AmlService {
     const accountIds = accRes.rows.map((a) => a.id);
 
     // Sum ledger entries for WITHDRAWAL in last 24 hours, excluding failed/cancelled
-    const txRes = await this.database.query<any>(
+    const txRes = await conn.query<any>(
       `SELECT COALESCE(w.amount, le.amount) as amount
        FROM ledger_transactions lt
        JOIN ledger_entries le ON lt.id = le.transaction_id
@@ -95,17 +107,19 @@ export class AmlService {
   }
 
   /**
-   * Check withdrawal compliance (sanction check + KYC tier limits)
+   * Check withdrawal compliance (sanction check + KYC tier limits).
+   * When called from within a withdrawal transaction, pass txClient so the
+   * 24-hour aggregate query runs on the same transactional connection.
    */
   public async validateWithdrawalCompliance(params: {
     userId: string;
     asset: string;
     amount: string;
     destinationAddress?: string;
-  }): Promise<void> {
+  }, txClient?: IDatabaseConnection): Promise<void> {
     const { userId, asset, amount, destinationAddress } = params;
 
-    // 1. Sanctions screening
+    // 1. Sanctions screening (reference data — does not need transaction alignment)
     if (destinationAddress) {
       const sanctionCheck = await this.isAddressSanctioned(destinationAddress);
       if (sanctionCheck.sanctioned) {
@@ -122,7 +136,7 @@ export class AmlService {
       }
     }
 
-    // 2. Fetch KYC Profile and Tier
+    // 2. Fetch KYC Profile and Tier (static profile — does not need transaction alignment)
     const profile = await this.kyc.getProfile(userId);
     const tier: KycTier = profile.status === 'VERIFIED' ? profile.tier : 'TIER_0';
     const dailyLimit = KYC_TIER_DAILY_LIMITS[tier] || '0.000000000000000000';
@@ -135,8 +149,8 @@ export class AmlService {
       );
     }
 
-    // 3. Rolling 24-hour limit verification
-    const used24h = await this.get24HourWithdrawalTotal(userId);
+    // 3. Rolling 24-hour limit verification (MUST use txClient for transaction alignment)
+    const used24h = await this.get24HourWithdrawalTotal(userId, txClient);
     const projected24h = decimalAdd(used24h, amount);
 
     if (decimalCompare(projected24h, dailyLimit) > 0) {

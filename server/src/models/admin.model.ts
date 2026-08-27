@@ -11,7 +11,8 @@ export type AdminAuditAction =
   | 'SYSTEM_HALT'
   | 'SYSTEM_RESUME'
   | 'PAPER_DEPOSIT_ADMIN'
-  | 'MANUAL_LEDGER_ADJUSTMENT';
+  | 'MANUAL_LEDGER_ADJUSTMENT'
+  | 'RESOLVE_WITHDRAWAL';
 
 export interface AdminAuditLogEntity {
   id: string;

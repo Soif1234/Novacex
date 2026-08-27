@@ -24,6 +24,31 @@ import {
 import { eventBus } from '../market/event-bus';
 
 
+// ─── External-Boundary Transaction Types ──────────────────────────────────────
+
+/**
+ * Transaction types that legitimately represent an external asset entry or exit
+ * and therefore are permitted to be single-sided (unbalanced) in the ledger.
+ *
+ * - DEPOSIT:               external asset enters the exchange (single CREDIT)
+ * - WITHDRAWAL:            paper withdrawal path uses a single DEBIT (simulated exit)
+ * - WITHDRAWAL_SETTLE:     external asset leaves the exchange (single DEBIT)
+ * - TRADING_FEE:           fee accrues to the exchange from the user (single DEBIT)
+ * - FUTURES_PNL_REALIZED:  realized PnL transfers between trader and market (single CREDIT/DEBIT)
+ * - FUTURES_FUNDING_PAYMENT: funding rate paid/received to/from the market (single CREDIT/DEBIT)
+ *
+ * Every other transaction type is INTERNAL and MUST satisfy
+ * SUM(CREDIT) == SUM(DEBIT) per asset.
+ */
+const EXTERNAL_BOUNDARY_TX_TYPES: ReadonlySet<string> = new Set<string>([
+  'DEPOSIT',
+  'WITHDRAWAL',
+  'WITHDRAWAL_SETTLE',
+  'TRADING_FEE',
+  'FUTURES_PNL_REALIZED',
+  'FUTURES_FUNDING_PAYMENT',
+]);
+
 // ─── Result Types ────────────────────────────────────────────────────────────
 
 export interface LedgerTransactionResult {
@@ -170,7 +195,8 @@ export class LedgerService {
     transactionType: LedgerTxType,
     referenceId: string,
     description: string,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    externalTxClient?: IDatabaseConnection
   ): Promise<LedgerTransactionResult> {
     validateAmount(amount);
 
@@ -183,7 +209,7 @@ export class LedgerService {
       entries: [
         { accountId, asset, direction: 'CREDIT', amount, balancePool: 'available' },
       ],
-    });
+    }, externalTxClient);
   }
 
   // ── Debit ────────────────────────────────────────────────────────────────
@@ -199,7 +225,8 @@ export class LedgerService {
     transactionType: LedgerTxType,
     referenceId: string,
     description: string,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    externalTxClient?: IDatabaseConnection
   ): Promise<LedgerTransactionResult> {
     validateAmount(amount);
 
@@ -212,7 +239,7 @@ export class LedgerService {
       entries: [
         { accountId, asset, direction: 'DEBIT', amount, balancePool: 'available' },
       ],
-    });
+    }, externalTxClient);
   }
 
   // ── Reserve (available → locked) ─────────────────────────────────────────
@@ -336,6 +363,30 @@ export class LedgerService {
     // Validate all amounts upfront
     for (const entry of entries) {
       validateAmount(entry.amount);
+    }
+
+    // ── 0. Balance Enforcement (internal double-entry invariant) ─────────
+    // Every INTERNAL transaction must satisfy SUM(CREDIT) == SUM(DEBIT) per asset.
+    // External-boundary transaction types (DEPOSIT, WITHDRAWAL_SETTLE, etc.) are
+    // explicitly exempt. Validation happens BEFORE any wallet lock or mutation so a
+    // failure leaves the transaction completely unchanged.
+    if (!EXTERNAL_BOUNDARY_TX_TYPES.has(transactionType)) {
+      const perAssetTotals = new Map<string, { debits: string; credits: string }>();
+      for (const entry of entries) {
+        const totals = perAssetTotals.get(entry.asset) || { debits: decimalZero(), credits: decimalZero() };
+        if (entry.direction === 'DEBIT') {
+          totals.debits = decimalAdd(totals.debits, entry.amount);
+        } else {
+          totals.credits = decimalAdd(totals.credits, entry.amount);
+        }
+        perAssetTotals.set(entry.asset, totals);
+      }
+
+      for (const [asset, totals] of perAssetTotals) {
+        if (decimalCompare(totals.debits, totals.credits) !== 0) {
+          throw new UnbalancedTransactionError(totals.debits, totals.credits);
+        }
+      }
     }
 
     const transactionId = crypto.randomUUID();

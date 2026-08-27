@@ -10,6 +10,10 @@ import { RecordAuditLogDto } from '../../models/admin.model';
 import { validateAmount, decimalNormalize, decimalAdd } from '../ledger/decimal';
 import { logger } from '../../config/logger';
 import { AppError } from '../../middleware/errorHandler';
+import { custodyService } from '../custody/custody.service';
+import { CustodyTransactionNotFoundError } from '../custody/custody.errors';
+
+export type WithdrawalResolutionDirective = 'FAILED' | 'COMPLETED';
 
 export interface CryptoWithdrawDto {
   userId: string;
@@ -32,12 +36,18 @@ export class WithdrawalService {
     const { userId, asset, network, amount, destinationAddress, destinationMemo, referenceId } = dto;
     validateAmount(amount);
 
-    // Evaluate risk policy BEFORE taking the lock
-    const policyResult = await withdrawalPolicyService.evaluate(userId, 'unknown_yet', asset, network, amount, destinationAddress);
-    const initialCryptoStatus = policyResult.decision === 'APPROVE' ? 'APPROVED' : 'PENDING_REVIEW';
-    const reviewReason = policyResult.reasons.length > 0 ? policyResult.reasons.join(' | ') : null;
-
     return this.database.transaction(async (txClient) => {
+      // 0. Serialize concurrent withdrawals per user: lock the user row BEFORE the
+      //    AML aggregate is read so two simultaneous requests cannot both observe
+      //    the same pre-transaction 24h usage and collectively exceed the limit.
+      const userLockRes = await txClient.query<any>(
+        'SELECT id FROM users WHERE id = $1 FOR UPDATE',
+        [userId]
+      );
+      if (userLockRes.rows.length === 0) {
+        throw new AppError('User not found', 404, 'NOT_FOUND');
+      }
+
       // 1. Fetch FUNDING account
       const accRes = await txClient.query<any>(
         'SELECT id, type FROM accounts WHERE user_id = $1 AND type = $2',
@@ -77,15 +87,22 @@ export class WithdrawalService {
 
       const totalDeduction = decimalAdd(amount, withdrawalFee);
 
-      // 3. AML Checks
+      // 3. Evaluate risk policy INSIDE the transaction, after the user row is locked,
+      //    with the real account ID (closes the policy TOCTOU window).
+      const policyResult = await withdrawalPolicyService.evaluate(userId, accountId, asset, network, amount, destinationAddress);
+      const initialCryptoStatus = policyResult.decision === 'APPROVE' ? 'APPROVED' : 'PENDING_REVIEW';
+      const reviewReason = policyResult.reasons.length > 0 ? policyResult.reasons.join(' | ') : null;
+
+      // 4. AML Checks — pass txClient so the 24h aggregation runs on this
+      //    transaction's connection, aligned with the user row lock above.
       await this.aml.validateWithdrawalCompliance({
         userId,
         asset,
         amount,
         destinationAddress
-      });
+      }, txClient);
 
-      // 4. Reserve funds using WITHDRAWAL (counts towards AML instantly)
+      // 5. Reserve funds using WITHDRAWAL (counts towards AML instantly)
       const ledgerTxId = await this.ledger.postTransaction({
         accountId,
         transactionType: 'WITHDRAWAL',
@@ -98,7 +115,7 @@ export class WithdrawalService {
         metadata: { userId, destinationAddress, network, amount, fee: withdrawalFee }
       }, txClient);
 
-      // 5. Create withdrawal record
+      // 6. Create withdrawal record
       const withdrawalId = crypto.randomUUID();
       const insertRes = await txClient.query<any>(`
         INSERT INTO withdrawals (
@@ -338,48 +355,171 @@ export class WithdrawalService {
   }
 
   public async completeWithdrawal(id: string, txHash: string): Promise<void> {
-    const SYSTEM_VAULT = '11111111-1111-1111-1111-111111111111';
-
     await this.database.transaction(async (txClient) => {
       const wRes = await txClient.query<any>('SELECT * FROM withdrawals WHERE id = $1 FOR UPDATE', [id]);
       if (wRes.rows.length === 0) return;
       const w = wRes.rows[0];
-
       if (w.status !== 'PENDING') return;
+      await this.settleCompletedWithdrawal(w, txHash, txClient);
+    });
+  }
 
-      const settleEntries: any[] = [
-        { accountId: w.account_id, asset: w.asset, direction: 'DEBIT', amount: w.amount, balancePool: 'locked' }
+  /**
+   * Internal settlement logic shared by the status-worker completeWithdrawal and
+   * the admin UNKNOWN-resolve COMPLETED path.  MUST be called within an active
+   * transaction (txClient) that already holds the FOR UPDATE lock on the withdrawal row.
+   */
+  private async settleCompletedWithdrawal(w: any, txHash: string, txClient: IDatabaseConnection): Promise<void> {
+    const SYSTEM_VAULT = '11111111-1111-1111-1111-111111111111';
+
+    const settleEntries: any[] = [
+      { accountId: w.account_id, asset: w.asset, direction: 'DEBIT', amount: w.amount, balancePool: 'locked' }
+    ];
+    await this.ledger.postTransaction({
+      accountId: w.account_id,
+      transactionType: 'WITHDRAWAL_SETTLE',
+      referenceId: `wd_stl_${w.id}`,
+      description: `Settle crypto withdrawal ${w.asset}`,
+      entries: settleEntries
+    }, txClient);
+
+    if (parseFloat(w.fee) > 0) {
+      const feeEntries: any[] = [
+        { accountId: w.account_id, asset: w.asset, direction: 'DEBIT', amount: w.fee, balancePool: 'locked' },
+        { accountId: SYSTEM_VAULT, asset: w.asset, direction: 'CREDIT', amount: w.fee, balancePool: 'available' }
       ];
-
       await this.ledger.postTransaction({
         accountId: w.account_id,
-        transactionType: 'WITHDRAWAL_SETTLE',
-        referenceId: `wd_stl_${w.id}`,
-        description: `Settle crypto withdrawal ${w.asset}`,
-        entries: settleEntries
+        transactionType: 'WITHDRAWAL_FEE',
+        referenceId: `wd_fee_${w.id}`,
+        description: `Crypto withdrawal fee ${w.asset}`,
+        entries: feeEntries
       }, txClient);
+    }
 
-      if (parseFloat(w.fee) > 0) {
-        const feeEntries: any[] = [
-          { accountId: w.account_id, asset: w.asset, direction: 'DEBIT', amount: w.fee, balancePool: 'locked' },
-          { accountId: SYSTEM_VAULT, asset: w.asset, direction: 'CREDIT', amount: w.fee, balancePool: 'available' }
-        ];
-        await this.ledger.postTransaction({
-          accountId: w.account_id,
-          transactionType: 'WITHDRAWAL_FEE',
-          referenceId: `wd_fee_${w.id}`,
-          description: `Crypto withdrawal fee ${w.asset}`,
-          entries: feeEntries
-        }, txClient);
+    await txClient.query(
+      `UPDATE withdrawals
+       SET status = 'COMPLETED', crypto_status = 'COMPLETED', tx_hash = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [txHash || '', w.id]
+    );
+  }
+
+  /**
+   * P0-3: Safe evidence-based administrative resolution of UNKNOWN withdrawals.
+   *
+   * - FAILED:  provider confirms the withdrawal was never broadcast → release funds
+   * - COMPLETED: provider confirms successful on-chain settlement → complete the withdrawal
+   *
+   * FAIL CLOSED: if the provider is unavailable or cannot provide sufficient evidence,
+   * the resolution is rejected.
+   */
+  public async resolveWithdrawalAdmin(
+    withdrawalId: string,
+    adminUserId: string,
+    directive: WithdrawalResolutionDirective,
+    audit?: RecordAuditLogDto
+  ): Promise<void> {
+    await this.database.transaction(async (txClient) => {
+      // 1. Lock the withdrawal row (join the owning user for self-action checks)
+      const wRes = await txClient.query<any>(
+        `SELECT w.*, a.user_id
+         FROM withdrawals w
+         JOIN accounts a ON w.account_id = a.id
+         WHERE w.id = $1 FOR UPDATE`,
+        [withdrawalId]
+      );
+      if (wRes.rows.length === 0) throw new AppError('Withdrawal not found', 404, 'NOT_FOUND');
+      const w = wRes.rows[0];
+
+      // 2. Self-action restriction
+      if (w.user_id === adminUserId) {
+        throw new AppError('Administrators cannot resolve their own withdrawals', 403, 'FORBIDDEN_SELF_ACTION');
       }
 
-      await txClient.query(
-        `UPDATE withdrawals
-         SET status = 'COMPLETED', crypto_status = 'COMPLETED', tx_hash = $1, updated_at = NOW()
-         WHERE id = $2`,
-        [txHash || '', id]
-      );
+      // 3. Only UNKNOWN withdrawals can be resolved
+      if (w.status !== 'PENDING' || w.crypto_status !== 'UNKNOWN') {
+        throw new AppError('Only UNKNOWN withdrawals can be resolved', 400, 'INVALID_STATE');
+      }
+
+      // 4. Query the custody provider for authoritative evidence
+      const evidence = await this.queryWithdrawalEvidence(w);
+
+      if (directive === 'FAILED') {
+        if (!evidence.nonBroadcast) {
+          throw new AppError(
+            'Resolution rejected: provider cannot confirm the withdrawal was never broadcast',
+            409,
+            'RESOLUTION_EVIDENCE_INSUFFICIENT'
+          );
+        }
+        // Release the reserved funds (amount + fee) back to available
+        const totalDeduction = decimalAdd(w.amount, w.fee);
+        await this.ledger.postTransaction({
+          accountId: w.account_id,
+          transactionType: 'ADJUSTMENT',
+          referenceId: `wd_resolve_rel_${w.id}`,
+          description: `Release UNKNOWN resolved-as-failed crypto withdrawal ${w.asset}`,
+          entries: [
+            { accountId: w.account_id, asset: w.asset, direction: 'DEBIT', amount: totalDeduction, balancePool: 'locked' },
+            { accountId: w.account_id, asset: w.asset, direction: 'CREDIT', amount: totalDeduction, balancePool: 'available' }
+          ]
+        }, txClient);
+
+        await txClient.query(
+          `UPDATE withdrawals
+           SET status = 'FAILED', crypto_status = 'FAILED', failure_reason = $1, updated_at = NOW()
+           WHERE id = $2`,
+          ['Resolved as failed by administrator: provider confirmed non-broadcast', w.id]
+        );
+      } else {
+        // COMPLETED — require authoritative evidence of successful settlement
+        if (!evidence.confirmed) {
+          throw new AppError(
+            'Resolution rejected: provider cannot confirm successful settlement',
+            409,
+            'RESOLUTION_EVIDENCE_INSUFFICIENT'
+          );
+        }
+        await this.settleCompletedWithdrawal(w, evidence.txHash || '', txClient);
+      }
+
+      // 5. Audit INSIDE the same transaction (failure rolls back the resolution)
+      if (audit) {
+        await auditService.record(audit, txClient);
+      }
     });
+  }
+
+  /**
+   * Query the custody provider for authoritative evidence about an UNKNOWN withdrawal.
+   * FAIL CLOSED: if the provider is unavailable or custody is disabled, no evidence is
+   * produced and any requested resolution is rejected.
+   */
+  private async queryWithdrawalEvidence(w: any): Promise<{ nonBroadcast: boolean; confirmed: boolean; txHash?: string }> {
+    try {
+      const custodyResult = await custodyService.getWithdrawalStatus(w.id);
+      const status = custodyResult.status;
+      // A withdrawal recorded but never broadcast (PENDING/SIGNING), or explicitly
+      // failed/rejected/reversed is non-broadcast.  BROADCAST is in-flight and
+      // neither safe to fail nor confirmed.
+      return {
+        nonBroadcast: status === 'PENDING' || status === 'SIGNING' || status === 'FAILED' || status === 'REJECTED' || status === 'REVERSED',
+        confirmed: status === 'CONFIRMED',
+        txHash: custodyResult.providerReference,
+      };
+    } catch (err) {
+      if (err instanceof CustodyTransactionNotFoundError) {
+        // Authoritative: the provider has NO record of this withdrawal → never submitted/broadcast.
+        return { nonBroadcast: true, confirmed: false };
+      }
+      // Provider unavailable / custody disabled / capability missing → FAIL CLOSED.
+      logger.error('Withdrawal resolution: custody evidence query failed', {
+        withdrawalId: w.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { nonBroadcast: false, confirmed: false };
+    }
   }
 
   public async cancelWithdrawal(id: string): Promise<void> {

@@ -46,6 +46,7 @@ describe('WithdrawalService', () => {
   describe('cryptoWithdraw', () => {
     it('should successfully reserve a valid withdrawal from FUNDING account', async () => {
       mockTxClient.query
+        .mockResolvedValueOnce({ rows: [{ id: 'user-123' }] }) // user row lock (P0-1 serialization)
         .mockResolvedValueOnce({ rows: [{ id: 'account-123', type: 'FUNDING' }] }) // account
         .mockResolvedValueOnce({ rows: [{ is_active: true, min_withdrawal: '10', withdrawal_fee: '2', requires_memo: false, address_format: 'EVM_HEX' }] }) // network
         .mockResolvedValueOnce({ rows: [{ id: 'withdrawal-123', account_id: 'account-123', asset: 'USDT', network: 'ETH', amount: '100', fee: '2', status: 'PENDING', crypto_status: 'APPROVED' }] }); // insert
@@ -65,7 +66,7 @@ describe('WithdrawalService', () => {
         asset: 'USDT',
         amount: '100',
         destinationAddress: '0xabc'
-      });
+      }, mockTxClient);
 
       expect(mockLedger.postTransaction).toHaveBeenCalledWith(expect.objectContaining({
         transactionType: 'WITHDRAWAL',
@@ -77,7 +78,9 @@ describe('WithdrawalService', () => {
     });
 
     it('should fail if FUNDING account not found', async () => {
-      mockTxClient.query.mockResolvedValueOnce({ rows: [] });
+      mockTxClient.query
+        .mockResolvedValueOnce({ rows: [{ id: 'user-123' }] }) // user row lock
+        .mockResolvedValueOnce({ rows: [] }); // account not found
 
       await expect(withdrawalService.cryptoWithdraw({
         userId: 'user-123', asset: 'USDT', network: 'ETH', amount: '100', destinationAddress: '0xabc', referenceId: 'ref-123'
@@ -86,6 +89,7 @@ describe('WithdrawalService', () => {
 
     it('should fail if withdrawal amount is below minimum', async () => {
       mockTxClient.query
+        .mockResolvedValueOnce({ rows: [{ id: 'user-123' }] }) // user row lock
         .mockResolvedValueOnce({ rows: [{ id: 'account-123', type: 'FUNDING' }] })
         .mockResolvedValueOnce({ rows: [{ is_active: true, min_withdrawal: '200', withdrawal_fee: '2', requires_memo: false }] });
 
@@ -96,6 +100,7 @@ describe('WithdrawalService', () => {
 
     it('should fail if memo required but missing', async () => {
       mockTxClient.query
+        .mockResolvedValueOnce({ rows: [{ id: 'user-123' }] }) // user row lock
         .mockResolvedValueOnce({ rows: [{ id: 'account-123', type: 'FUNDING' }] })
         .mockResolvedValueOnce({ rows: [{ is_active: true, min_withdrawal: '10', withdrawal_fee: '2', requires_memo: true }] });
 

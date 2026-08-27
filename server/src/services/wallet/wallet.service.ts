@@ -375,52 +375,63 @@ export class WalletService {
     const cleanRef = dto.referenceId.trim();
     const destAddress = dto.destinationAddress?.trim() || 'PAPER_WITHDRAWAL_ADDRESS';
 
-    // 3. Pre-flight AML compliance checks (sanctions screening & 24h KYC tier limit)
-    await this.aml.validateWithdrawalCompliance({
-      userId: dto.userId,
-      asset: cleanAsset,
-      amount: dto.amount,
-      destinationAddress: destAddress,
-    });
+    // 3-4. Pre-flight AML compliance checks + debit within a single transaction.
+    // The user row is locked FIRST so concurrent paper withdrawals cannot both
+    // observe the same pre-transaction 24h usage and collectively exceed the
+    // KYC daily limit (same serialization as cryptoWithdraw).
+    return this.database.transaction(async (txClient) => {
+      await txClient.query<any>(
+        'SELECT id FROM users WHERE id = $1 FOR UPDATE',
+        [dto.userId]
+      );
 
-    // 4. Delegate mutation to LedgerService
-    const result = await this.ledger.debit(
-      dto.accountId,
-      cleanAsset,
-      dto.amount,
-      'WITHDRAWAL',
-      cleanRef,
-      dto.description || 'Paper Withdrawal',
-      {
-        mode: 'PAPER',
+      await this.aml.validateWithdrawalCompliance({
         userId: dto.userId,
+        asset: cleanAsset,
+        amount: dto.amount,
         destinationAddress: destAddress,
+      }, txClient);
+
+      // Delegate mutation to LedgerService within the same transaction
+      const result = await this.ledger.debit(
+        dto.accountId,
+        cleanAsset,
+        dto.amount,
+        'WITHDRAWAL',
+        cleanRef,
+        dto.description || 'Paper Withdrawal',
+        {
+          mode: 'PAPER',
+          userId: dto.userId,
+          destinationAddress: destAddress,
+          accountType: acc.type,
+        },
+        txClient
+      );
+
+      logger.info('Paper withdrawal completed', {
+        userId: dto.userId,
+        accountId: dto.accountId,
+        asset: cleanAsset,
+        amount: dto.amount,
+        referenceId: cleanRef,
+        transactionId: result.transactionId,
+      });
+
+      return {
+        mode: 'PAPER',
+        status: 'COMPLETED',
+        transactionId: result.transactionId,
+        accountId: dto.accountId,
         accountType: acc.type,
-      }
-    );
-
-    logger.info('Paper withdrawal completed', {
-      userId: dto.userId,
-      accountId: dto.accountId,
-      asset: cleanAsset,
-      amount: dto.amount,
-      referenceId: cleanRef,
-      transactionId: result.transactionId,
+        asset: cleanAsset,
+        amount: decimalNormalize(dto.amount),
+        balanceAfter: result.entries[0]?.balanceAfter || '0',
+        referenceId: cleanRef,
+        destinationAddress: destAddress,
+        createdAt: result.createdAt,
+      };
     });
-
-    return {
-      mode: 'PAPER',
-      status: 'COMPLETED',
-      transactionId: result.transactionId,
-      accountId: dto.accountId,
-      accountType: acc.type,
-      asset: cleanAsset,
-      amount: decimalNormalize(dto.amount),
-      balanceAfter: result.entries[0]?.balanceAfter || '0',
-      referenceId: cleanRef,
-      destinationAddress: destAddress,
-      createdAt: result.createdAt,
-    };
   }
 
   /**

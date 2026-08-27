@@ -250,5 +250,39 @@ export class AdminController {
       next(err);
     }
   }
+
+  /**
+   * POST /api/v1/admin/withdrawals/:id/resolve
+   * Evidence-based resolution of UNKNOWN withdrawals (P0-3).
+   * Body: { directive: 'FAILED' | 'COMPLETED', reason?: string }
+   */
+  public static async resolveWithdrawal(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { withdrawalService } = await import('../services/wallet/withdrawal.service');
+      const withdrawalId = req.params.id as string;
+      const adminId = req.user!.id;
+      const directive = req.body.directive as string;
+      const reason = typeof req.body.reason === 'string' ? req.body.reason : undefined;
+
+      if (directive !== 'FAILED' && directive !== 'COMPLETED') {
+        throw new AppError('directive must be either FAILED or COMPLETED', 400, 'INVALID_DIRECTIVE');
+      }
+
+      // Audit is recorded INSIDE the service method's transaction for atomicity.
+      await withdrawalService.resolveWithdrawalAdmin(withdrawalId, adminId, directive, {
+        adminUserId: adminId,
+        action: 'RESOLVE_WITHDRAWAL',
+        targetResourceType: 'WITHDRAWAL',
+        targetResourceId: withdrawalId,
+        previousState: { crypto_status: 'UNKNOWN' },
+        newState: { crypto_status: directive },
+        reason: reason || `Administrative UNKNOWN resolution -> ${directive}`
+      });
+
+      res.status(200).json({ success: true, message: `Withdrawal resolved as ${directive}` });
+    } catch (err) {
+      next(err);
+    }
+  }
 }
 

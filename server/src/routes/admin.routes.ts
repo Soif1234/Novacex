@@ -52,6 +52,13 @@ router.post(
   mutationRateLimiter(),
   AdminController.rejectWithdrawal
 );
+router.post(
+  '/withdrawals/:id/resolve',
+  requireCircuitBreaker('WITHDRAWALS'),
+  require2FA,
+  mutationRateLimiter(),
+  AdminController.resolveWithdrawal
+);
 
 export const adminRoutes = router;
 
