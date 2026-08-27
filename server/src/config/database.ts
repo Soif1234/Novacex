@@ -615,6 +615,8 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     const snapDepositAddresses = new Map(this.depositAddresses);
     const snapBlockchainDeposits = new Map(this.blockchainDeposits);
     const snapMonitorCheckpoints = new Map(this.monitorCheckpoints);
+    const snapWithdrawals = new Map([...this.withdrawals].map(([k, v]) => [k, { ...v }]));
+    const snapAdminAuditLogs = [...this.adminAuditLogs];
 
     try {
       const result = await callback(this);
@@ -645,6 +647,8 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       this.depositAddresses = snapDepositAddresses;
       this.blockchainDeposits = snapBlockchainDeposits;
       this.monitorCheckpoints = snapMonitorCheckpoints;
+      this.withdrawals = snapWithdrawals;
+      this.adminAuditLogs = snapAdminAuditLogs;
       throw err;
     }
   }
@@ -1442,6 +1446,7 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
         w.crypto_status = 'CANCELLED';
         w.review_reason = params[0];
         w.reviewed_by = params[1];
+        w.failure_reason = 'Rejected by administrator';
         this.withdrawals.set(wId, w);
       }
       return { rows: [], rowCount: 1 };

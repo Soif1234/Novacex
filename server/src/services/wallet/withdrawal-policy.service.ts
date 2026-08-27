@@ -37,12 +37,13 @@ export class WithdrawalPolicyService {
     }
 
     // 1. High-value threshold check (Safe decimal string comparison)
+    // LOCKED RULE: amount < threshold → APPROVE; amount == threshold → APPROVE; amount > threshold → REVIEW.
     const threshold = env.WITHDRAWAL_REVIEW_THRESHOLD;
     if (!threshold || threshold.trim() === '' || !/^\d+(\.\d+)?$/.test(threshold)) {
       reasons.push('WITHDRAWAL_REVIEW_THRESHOLD_NOT_CONFIGURED');
     } else {
-      if (decimalCompare(amount, threshold) >= 0) {
-        reasons.push(`High-value withdrawal: amount (${amount}) >= threshold (${threshold})`);
+      if (decimalCompare(amount, threshold) > 0) {
+        reasons.push(`High-value withdrawal: amount (${amount}) > threshold (${threshold})`);
       }
     }
 

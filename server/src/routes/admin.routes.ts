@@ -2,7 +2,9 @@ import { Router } from 'express';
 import { AdminController } from '../controllers/admin.controller';
 import { CircuitBreakerController } from '../controllers/circuit-breaker.controller';
 import { ReconciliationController } from '../controllers/reconciliation.controller';
-import { requireAuth, requireRole } from '../middleware/auth';
+import { requireAuth, requireRole, require2FA } from '../middleware/auth';
+import { requireCircuitBreaker } from '../middleware/circuitBreaker';
+import { mutationRateLimiter } from '../middleware/rateLimit';
 
 const router = Router();
 
@@ -35,10 +37,21 @@ router.get('/metrics', AdminController.getMetrics);
 router.get('/metrics/prometheus', AdminController.getPrometheusMetrics);
 
 // Withdrawal Approval (Phase 9.7)
-import { requireCircuitBreaker } from '../middleware/circuitBreaker';
 router.get('/withdrawals/pending', AdminController.getPendingWithdrawals);
-router.post('/withdrawals/:id/approve', requireCircuitBreaker('WITHDRAWALS'), AdminController.approveWithdrawal);
-router.post('/withdrawals/:id/reject', requireCircuitBreaker('WITHDRAWALS'), AdminController.rejectWithdrawal);
+router.post(
+  '/withdrawals/:id/approve',
+  requireCircuitBreaker('WITHDRAWALS'),
+  require2FA,
+  mutationRateLimiter(),
+  AdminController.approveWithdrawal
+);
+router.post(
+  '/withdrawals/:id/reject',
+  requireCircuitBreaker('WITHDRAWALS'),
+  require2FA,
+  mutationRateLimiter(),
+  AdminController.rejectWithdrawal
+);
 
 export const adminRoutes = router;
 

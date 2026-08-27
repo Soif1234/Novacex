@@ -5,6 +5,8 @@ import { WithdrawalEntity } from '../../models/ledger.model';
 import { ledgerService, LedgerService } from '../ledger/ledger.service';
 import { amlService, AmlService } from '../compliance/aml.service';
 import { withdrawalPolicyService } from './withdrawal-policy.service';
+import { auditService } from '../admin/audit.service';
+import { RecordAuditLogDto } from '../../models/admin.model';
 import { validateAmount, decimalNormalize, decimalAdd } from '../ledger/decimal';
 import { logger } from '../../config/logger';
 import { AppError } from '../../middleware/errorHandler';
@@ -162,7 +164,7 @@ export class WithdrawalService {
     return res.rows;
   }
 
-  public async approveWithdrawalAdmin(withdrawalId: string, adminUserId: string, reviewReason?: string): Promise<void> {
+  public async approveWithdrawalAdmin(withdrawalId: string, adminUserId: string, reviewReason?: string, audit?: RecordAuditLogDto): Promise<void> {
     await this.database.transaction(async (txClient) => {
       const wRes = await txClient.query<any>(
         `SELECT w.*, a.user_id
@@ -188,10 +190,16 @@ export class WithdrawalService {
          WHERE id = $3`,
         [adminUserId, reviewReason || null, withdrawalId]
       );
+
+      // Record audit INSIDE the same transaction for atomicity.
+      // If the audit INSERT fails, the whole transaction rolls back.
+      if (audit) {
+        await auditService.record(audit, txClient);
+      }
     });
   }
 
-  public async rejectWithdrawalAdmin(withdrawalId: string, adminUserId: string, reviewReason: string): Promise<void> {
+  public async rejectWithdrawalAdmin(withdrawalId: string, adminUserId: string, reviewReason: string, audit?: RecordAuditLogDto): Promise<void> {
     await this.database.transaction(async (txClient) => {
       const wRes = await txClient.query<any>(
         `SELECT w.*, a.user_id
@@ -231,6 +239,12 @@ export class WithdrawalService {
          WHERE id = $3`,
         [reviewReason, adminUserId, withdrawalId]
       );
+
+      // Record audit INSIDE the same transaction for atomicity.
+      // If the audit INSERT fails, the whole transaction rolls back.
+      if (audit) {
+        await auditService.record(audit, txClient);
+      }
     });
   }
 

@@ -206,9 +206,8 @@ export class AdminController {
       const adminId = req.user!.id;
       const reason = typeof req.body.reason === 'string' ? req.body.reason : undefined;
 
-      await withdrawalService.approveWithdrawalAdmin(withdrawalId, adminId, reason);
-
-      await auditService.record({
+      // Audit is recorded INSIDE the service method's transaction for atomicity.
+      await withdrawalService.approveWithdrawalAdmin(withdrawalId, adminId, reason, {
         adminUserId: adminId,
         action: 'APPROVE_WITHDRAWAL',
         targetResourceType: 'WITHDRAWAL',
@@ -235,9 +234,8 @@ export class AdminController {
         throw new AppError('Rejection reason is required', 400, 'MISSING_REASON');
       }
 
-      await withdrawalService.rejectWithdrawalAdmin(withdrawalId, adminId, reason);
-
-      await auditService.record({
+      // Audit is recorded INSIDE the service method's transaction for atomicity.
+      await withdrawalService.rejectWithdrawalAdmin(withdrawalId, adminId, reason, {
         adminUserId: adminId,
         action: 'REJECT_WITHDRAWAL',
         targetResourceType: 'WITHDRAWAL',

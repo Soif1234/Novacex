@@ -106,13 +106,24 @@ describe('Phase 9.7: Withdrawal Policy & Admin Approval', () => {
       expect(res.decision).toBe('APPROVE');
     });
 
-    it('8. threshold exact-boundary behavior', async () => {
+    it('8. threshold exact-boundary behavior (amount == threshold -> APPROVE)', async () => {
       (db as any).withdrawals.set('w1', {
         id: 'w1', account_id: accountId, asset: 'USDT', network: 'ERC20',
         destination_address: '0x123', status: 'COMPLETED'
       });
       const res = await withdrawalPolicyService.evaluate(userId, accountId, 'USDT', 'ERC20', '10000', '0x123');
+      expect(res.decision).toBe('APPROVE');
+      expect(res.reasons.length).toBe(0);
+    });
+
+    it('8b. amount just above threshold -> REVIEW', async () => {
+      (db as any).withdrawals.set('w1', {
+        id: 'w1', account_id: accountId, asset: 'USDT', network: 'ERC20',
+        destination_address: '0x123', status: 'COMPLETED'
+      });
+      const res = await withdrawalPolicyService.evaluate(userId, accountId, 'USDT', 'ERC20', '10000.000000000000000001', '0x123');
       expect(res.decision).toBe('REVIEW');
+      expect(res.reasons[0]).toContain('High-value');
     });
 
     it('9. threshold missing -> REVIEW', async () => {
@@ -202,13 +213,93 @@ describe('Phase 9.7: Withdrawal Policy & Admin Approval', () => {
       expect(w.crypto_status).toBe('CANCELLED');
     });
 
-    it('18. rejection releases reservation', async () => {
+    it('18. rejection releases the FULL reservation (amount=100, fee=5 -> 105)', async () => {
       const wId = 'w_pending';
-      (db as any).withdrawals.set(wId, { id: wId, account_id: fundingAccountId, amount: '10', fee: '1', asset: 'USDT', status: 'PENDING', crypto_status: 'PENDING_REVIEW' });
+      (db as any).withdrawals.set(wId, { id: wId, account_id: fundingAccountId, amount: '100', fee: '5', asset: 'USDT', status: 'PENDING', crypto_status: 'PENDING_REVIEW' });
 
       await withdrawalService.rejectWithdrawalAdmin(wId, adminId, 'Fraud');
 
-      expect(ledgerService.postTransaction).toHaveBeenCalled();
+      // LedgerService must have been called with the exact ADJUSTMENT semantics
+      const postSpy = ledgerService.postTransaction as any;
+      expect(postSpy).toHaveBeenCalledTimes(1);
+      const call = postSpy.mock.calls[0];
+      const input = call[0];
+      const txClient = call[1];
+
+      expect(input.transactionType).toBe('ADJUSTMENT');
+      expect(input.referenceId).toBe(`wd_rel_${wId}`);
+      expect(input.accountId).toBe(fundingAccountId);
+
+      // Release leg: DEBIT locked 105
+      const debitLeg = input.entries.find((e: any) => e.direction === 'DEBIT');
+      expect(debitLeg).toBeDefined();
+      expect(debitLeg.amount).toBe('105.000000000000000000');
+      expect(debitLeg.balancePool).toBe('locked');
+      expect(debitLeg.accountId).toBe(fundingAccountId);
+      expect(debitLeg.asset).toBe('USDT');
+
+      // Release leg: CREDIT available 105
+      const creditLeg = input.entries.find((e: any) => e.direction === 'CREDIT');
+      expect(creditLeg).toBeDefined();
+      expect(creditLeg.amount).toBe('105.000000000000000000');
+      expect(creditLeg.balancePool).toBe('available');
+      expect(creditLeg.accountId).toBe(fundingAccountId);
+      expect(creditLeg.asset).toBe('USDT');
+
+      // The ledger call must run inside the same transaction client
+      expect(txClient).toBeDefined();
+
+      // Terminal withdrawal state
+      const w = (db as any).withdrawals.get(wId);
+      expect(w.status).toBe('REJECTED');
+      expect(w.crypto_status).toBe('CANCELLED');
+      expect(w.failure_reason).toBe('Rejected by administrator');
+    });
+
+    it('18b. audit failure rolls back the approval (no state change, no audit loss)', async () => {
+      const wId = 'w_audit_fail';
+      (db as any).withdrawals.set(wId, { id: wId, account_id: fundingAccountId, status: 'PENDING', crypto_status: 'PENDING_REVIEW' });
+
+      // Simulate audit insert failure INSIDE the transaction
+      (auditService.record as any).mockRejectedValueOnce(new Error('audit db down'));
+
+      await expect(withdrawalService.approveWithdrawalAdmin(wId, adminId, 'Looks good', {
+        adminUserId: adminId,
+        action: 'APPROVE_WITHDRAWAL',
+        targetResourceType: 'WITHDRAWAL',
+        targetResourceId: wId,
+        previousState: { crypto_status: 'PENDING_REVIEW' },
+        newState: { crypto_status: 'APPROVED' },
+        reason: 'Looks good'
+      })).rejects.toThrow('audit db down');
+
+      // Transaction rolled back -> withdrawal still PENDING_REVIEW, NOT APPROVED
+      const w = (db as any).withdrawals.get(wId);
+      expect(w.crypto_status).toBe('PENDING_REVIEW');
+      expect(w.reviewed_by).toBeUndefined();
+    });
+
+    it('18c. admin rejection records audit inside the transaction', async () => {
+      const wId = 'w_rej_audit';
+      (db as any).withdrawals.set(wId, { id: wId, account_id: fundingAccountId, amount: '100', fee: '5', asset: 'USDT', status: 'PENDING', crypto_status: 'PENDING_REVIEW' });
+
+      await withdrawalService.rejectWithdrawalAdmin(wId, adminId, 'Fraud', {
+        adminUserId: adminId,
+        action: 'REJECT_WITHDRAWAL',
+        targetResourceType: 'WITHDRAWAL',
+        targetResourceId: wId,
+        previousState: { crypto_status: 'PENDING_REVIEW' },
+        newState: { crypto_status: 'CANCELLED' },
+        reason: 'Fraud'
+      });
+
+      expect(auditService.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'REJECT_WITHDRAWAL', targetResourceId: wId, reason: 'Fraud' }),
+        expect.anything()
+      );
+      const auditCall = (auditService.record as any).mock.calls.find((c: any[]) => c[0]?.action === 'REJECT_WITHDRAWAL');
+      expect(auditCall).toBeDefined();
+      expect(auditCall[1]).toBeDefined(); // transaction client passed
     });
   });
 });
@@ -262,5 +353,41 @@ describe('Phase 9.7: Circuit Breaker Integration', () => {
     const claimSpy = vi.spyOn(withdrawalService, 'claimApprovedWithdrawals').mockResolvedValue([]);
     await (withdrawalProcessingWorker as any).execute();
     expect(claimSpy).not.toHaveBeenCalled(); // Processing skipped entirely due to circuit breaker
+  });
+});
+
+describe('Phase 9.7: Admin Withdrawal Routes carry required security middleware', () => {
+  it('approve/reject routes include require2FA and a rate limiter in the chain', async () => {
+    const { adminRoutes } = await import('../src/routes/admin.routes');
+
+    const layers: any[] = (adminRoutes as any).stack ?? [];
+    const approveLayer = layers.find(
+      (l: any) => l.route && String(l.route.path) === '/withdrawals/:id/approve' && l.route.methods && l.route.methods.post
+    );
+    const rejectLayer = layers.find(
+      (l: any) => l.route && String(l.route.path) === '/withdrawals/:id/reject' && l.route.methods && l.route.methods.post
+    );
+
+    expect(approveLayer).toBeDefined();
+    expect(rejectLayer).toBeDefined();
+
+    const handlerNames = (route: any) =>
+      (route.stack ?? []).map((h: any) => h.handle?.name || h.name || 'anonymous');
+
+    const approveNames = handlerNames(approveLayer.route);
+    const rejectNames = handlerNames(rejectLayer.route);
+
+    // require2FA must be present in both chains
+    expect(approveNames).toContain('require2FA');
+    expect(rejectNames).toContain('require2FA');
+
+    // A rate limiter (mutationRateLimiter() -> anonymous) must be present:
+    // chain should contain at least circuit breaker + require2FA + rate limiter + controller
+    expect(approveNames.length).toBeGreaterThanOrEqual(4);
+    expect(rejectNames.length).toBeGreaterThanOrEqual(4);
+
+    // Controller is the final handler
+    expect(approveNames[approveNames.length - 1]).toBe('approveWithdrawal');
+    expect(rejectNames[rejectNames.length - 1]).toBe('rejectWithdrawal');
   });
 });

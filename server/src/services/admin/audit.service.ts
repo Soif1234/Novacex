@@ -10,14 +10,16 @@ export class AuditService {
   constructor(private database: IDatabaseConnection = db) {}
 
   /**
-   * Append an immutable admin audit log entry
+   * Append an immutable admin audit log entry.
+   * When `client` is provided, the INSERT runs inside that transaction for atomicity.
    */
-  public async record(dto: RecordAuditLogDto): Promise<AdminAuditLogEntity> {
+  public async record(dto: RecordAuditLogDto, client?: IDatabaseConnection): Promise<AdminAuditLogEntity> {
+    const db = client ?? this.database;
     const prevJson = dto.previousState ? JSON.stringify(dto.previousState) : null;
     const newJson = dto.newState ? JSON.stringify(dto.newState) : null;
     const targetType = dto.targetResourceType || 'USER';
 
-    const res = await this.database.query<any>(
+    const res = await db.query<any>(
       `INSERT INTO admin_audit_logs (
         admin_user_id, action, target_user_id, target_resource_type, target_resource_id,
         previous_state, new_state, reason, ip_address, user_agent, created_at
