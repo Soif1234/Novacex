@@ -91,7 +91,7 @@ export class AmlService {
        WHERE lt.account_id = ANY($1)
          AND lt.transaction_type = 'WITHDRAWAL'
          AND le.direction = 'DEBIT'
-         AND (w.id IS NULL OR w.status NOT IN ('FAILED', 'REJECTED', 'CANCELLED'))
+         AND (w.id IS NULL OR (w.status NOT IN ('FAILED', 'REJECTED') AND w.crypto_status <> 'CANCELLED'))
          AND lt.created_at >= NOW() - INTERVAL '24 hours'`,
       [accountIds]
     );

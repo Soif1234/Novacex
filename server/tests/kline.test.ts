@@ -149,18 +149,27 @@ describe('Market Data Infrastructure / OHLCV K-Lines (Phase 6.2)', () => {
   });
 
   it('7. Handles invalid numerical values safely', async () => {
-    eventBus.publish({
-      type: 'market.trade',
-      payload: { tradeId: 'inv1', symbol: 'BTCUSDT', price: 'NaN', quantity: '1', isMaker: false, timestamp: 1600000020000 }
-    });
-    eventBus.publish({
-      type: 'market.trade',
-      payload: { tradeId: 'inv2', symbol: 'BTCUSDT', price: '60000', quantity: '-1', isMaker: false, timestamp: 1600000020000 }
-    });
-    await new Promise(resolve => setTimeout(resolve, 20));
+    // Isolate from the Phase 8.6 external market-data fallback: with no valid
+    // candles persisted, getHistoricalKLines must NOT reach a live external
+    // source and return external candles. Disable the fallback for this test.
+    const externalEnabled = (env as any).EXTERNAL_MARKET_DATA_ENABLED;
+    (env as any).EXTERNAL_MARKET_DATA_ENABLED = false;
+    try {
+      eventBus.publish({
+        type: 'market.trade',
+        payload: { tradeId: 'inv1', symbol: 'BTCUSDT', price: 'NaN', quantity: '1', isMaker: false, timestamp: 1600000020000 }
+      });
+      eventBus.publish({
+        type: 'market.trade',
+        payload: { tradeId: 'inv2', symbol: 'BTCUSDT', price: '60000', quantity: '-1', isMaker: false, timestamp: 1600000020000 }
+      });
+      await new Promise(resolve => setTimeout(resolve, 20));
 
-    const klines = await klineService.getHistoricalKLines('SPOT', 'BTCUSDT', '1m');
-    expect(klines).toHaveLength(0); // Should skip invalid trades
+      const klines = await klineService.getHistoricalKLines('SPOT', 'BTCUSDT', '1m');
+      expect(klines).toHaveLength(0); // Should skip invalid trades
+    } finally {
+      (env as any).EXTERNAL_MARKET_DATA_ENABLED = externalEnabled;
+    }
   });
 });
 

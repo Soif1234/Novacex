@@ -167,6 +167,8 @@ export class FuturesLiquidationService {
             currentAvail = decimalAdd(currentAvail, decimalAdd(stepIM, userNet));
             totalInsuranceDelta = decimalAdd(totalInsuranceDelta, stepFee);
         } else {
+            // The deduction covers the user's FULL remaining obligation (trading
+            // loss plus fee) exactly as before: lossToCover = |userNet| = |PnL - fee|.
             const lossToCover = decimalSubtract('0', userNet);
             const virtualAvail = decimalAdd(currentAvail, stepIM);
             
@@ -175,10 +177,21 @@ export class FuturesLiquidationService {
             
             if (pos.marginMode === 'ISOLATED') {
                actualDeduction = decimalCompare(stepIM, lossToCover) >= 0 ? lossToCover : stepIM;
-               deficitToInsurance = decimalSubtract(lossToCover, actualDeduction);
             } else {
                actualDeduction = decimalCompare(virtualAvail, lossToCover) >= 0 ? lossToCover : virtualAvail;
-               deficitToInsurance = decimalSubtract(lossToCover, actualDeduction);
+            }
+
+            // ADL-recoverable deficit = the UNCOVERED TRADING LOSS only. The
+            // trading fee is a separate revenue item, already paid out of the
+            // user's deduction and credited to the insurance fund below; folding
+            // it into the deficit would make ADL recover the fee a second time
+            // (double-count) and overdraw the fund. Clamp at zero so a fully
+            // covered liquidation books no deficit, preserving the original
+            // fully-covered fee economics.
+            const uncoveredObligation = decimalSubtract(lossToCover, actualDeduction);
+            deficitToInsurance = decimalSubtract(uncoveredObligation, stepFee);
+            if (decimalCompare(deficitToInsurance, '0') < 0) {
+                deficitToInsurance = '0';
             }
             
             totalUserDeduction = decimalAdd(totalUserDeduction, actualDeduction);

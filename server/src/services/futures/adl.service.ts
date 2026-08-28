@@ -3,6 +3,7 @@ import { LedgerService, ledgerService } from '../ledger/ledger.service';
 import { logger } from '../../config/logger';
 import { futuresRiskService, FuturesRiskService } from './risk.service';
 import { developmentMarkPriceProvider, IMarkPriceProvider } from './mark-price.provider';
+import { INSURANCE_FUND_ACCOUNT_ID } from './insurance-fund.service';
 import {
   decimalAdd,
   decimalSubtract,
@@ -274,8 +275,16 @@ export class FuturesAdlService {
             [finalRemainingQty, finalRemainingIM, finalMM, totalAccumulatedRealizedPnl, finalStatus, cp.id]
           );
 
-          // Post ledger transaction:
-          // Counterparty receives their released initial margin + profit at bankruptcy price
+          // Post ledger transaction (double-entry, per-asset zero-sum):
+          //  1. DEBIT  counterparty locked  releasedIM          — release the counterparty's locked IM
+          //  2. CREDIT counterparty available releasedIM        — return the IM to the counterparty (self-funded by #1)
+          //  3. DEBIT  insurance fund         actualExtractedProfit — fund the counterparty's realized profit at
+          //                                                            the bankruptcy price from the bankrupt
+          //                                                            position's loss value held by the fund
+          //  4. CREDIT counterparty available actualExtractedProfit — counterparty's realized profit (funded by #3)
+          //  5. DEBIT  insurance fund         actualExtractedProfit — fund the ADL suspense deficit recovery
+          //  6. CREDIT ADL suspense           actualExtractedProfit — recover the suspense receivable (funded by #5)
+          // Total debits MUST equal total credits per asset.
           const userTotalCredit = decimalAdd(releasedIM, actualExtractedProfit);
           const adlRef = `FUTURES-ADL-${event.id}-${cp.id}-${new Date(cp.updatedAt).getTime()}`;
 
@@ -286,7 +295,10 @@ export class FuturesAdlService {
             description: `ADL Counterparty Close: ${event.symbol} ${targetSide} ${reduceQty} @ ${bankruptcyPrice}`,
             entries: [
               { accountId: cp.accountId, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: releasedIM, balancePool: 'locked' },
-              { accountId: cp.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: userTotalCredit, balancePool: 'available' },
+              { accountId: cp.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: releasedIM, balancePool: 'available' },
+              { accountId: INSURANCE_FUND_ACCOUNT_ID, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: actualExtractedProfit, balancePool: 'available' },
+              { accountId: cp.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: actualExtractedProfit, balancePool: 'available' },
+              { accountId: INSURANCE_FUND_ACCOUNT_ID, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: actualExtractedProfit, balancePool: 'available' },
               { accountId: ADL_SUSPENSE_ACCOUNT_ID, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: actualExtractedProfit, balancePool: 'available' },
             ],
           }, txClient);

@@ -36,17 +36,23 @@ describe('Phase 8.1: PostgreSQL Worker Supervisor Integration Tests', () => {
     await db.close();
   });
 
-  it('1. Starts all 5 background workers against live PostgreSQL database with 0 errors', async () => {
+  it('1. Starts all 11 background workers against live PostgreSQL database with 0 errors', async () => {
     await expect(supervisor.startAll()).resolves.not.toThrow();
 
     const workerNames = supervisor.getWorkerNames();
-    expect(workerNames.length).toBe(5);
+    expect(workerNames.length).toBe(11);
     expect(workerNames).toEqual([
       'LiquidationWorker',
       'FundingWorker',
       'ReconciliationWorker',
+      'BlockchainMonitorWorker',
+      'ConfirmationWorker',
       'KlineService',
       'ConditionalTriggerService',
+      'DepositCreditingWorker',
+      'WithdrawalProcessingWorker',
+      'WithdrawalStatusWorker',
+      'NotificationWorker',
     ]);
 
     const statuses = supervisor.getStatuses();
@@ -56,6 +62,7 @@ describe('Phase 8.1: PostgreSQL Worker Supervisor Integration Tests', () => {
     expect(statuses['ReconciliationWorker']).toBeDefined();
     expect(statuses['KlineService']).toBeDefined();
     expect(statuses['ConditionalTriggerService']).toBeDefined();
+    expect(statuses['NotificationWorker']).toBeDefined();
   });
 
   it('2. Stops all background workers cleanly with zero dangling handles', async () => {

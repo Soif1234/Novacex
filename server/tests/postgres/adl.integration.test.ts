@@ -162,6 +162,18 @@ describe('Phase 6.4B Auto-Deleveraging (ADL) Integration', () => {
     return res.rows[0]?.available_balance ?? '0';
   }
 
+  /** Get wallet balances (available + locked) for an account. */
+  async function getWalletBalance(accountId: string): Promise<{ available: string; locked: string }> {
+    const res = await db.query<any>(
+      'SELECT available_balance, locked_balance FROM wallet_balances WHERE account_id = $1 AND asset = $2',
+      [accountId, 'FUTURES_USDT']
+    );
+    return {
+      available: res.rows[0]?.available_balance ?? '0',
+      locked: res.rows[0]?.locked_balance ?? '0',
+    };
+  }
+
   // ── Tests ───────────────────────────────────────────────────────────────
 
   it('1. Insurance Fund covers full deficit → no ADL event created', async () => {
@@ -274,6 +286,40 @@ describe('Phase 6.4B Auto-Deleveraging (ADL) Integration', () => {
     // Suspense should have been recovered to zero (or positive)
     const suspenseBal = await getSuspenseBalance();
     expect(decimalCompare(suspenseBal, '0')).toBeGreaterThanOrEqual(0);
+
+    // ── Accounting validation ────────────────────────────────────────────
+    // With the fee excluded from the liquidation deficit (uncovered trading
+    // loss = 1,000), CP2's full close at the bankruptcy price recovers the
+    // entire deficit: CP2 receives released IM (1,000) + realized profit
+    // (1,000), the suspense returns to zero, and the Insurance Fund, which
+    // funded both credits, returns to zero. CP1 is never touched.
+    const cp2Bal = await getWalletBalance(accCp2);
+    expect(cp2Bal.available).toBe('3000');
+    expect(cp2Bal.locked).toBe('0');
+
+    const cp1Bal = await getWalletBalance(accCp1);
+    expect(cp1Bal.available).toBe('1000');
+    expect(cp1Bal.locked).toBe('5000');
+
+    const bankruptBal = await getWalletBalance(accBankrupt);
+    expect(bankruptBal.available).toBe('0');
+    expect(bankruptBal.locked).toBe('0');
+
+    const ifBal = await getWalletBalance(INSURANCE_FUND_ACCOUNT_ID);
+    expect(ifBal.available).toBe('0');
+    expect(ifBal.locked).toBe('0');
+
+    expect(decimalCompare(suspenseBal, '0')).toBe(0);
+
+    // System total across the five fixture accounts is conserved (9,000).
+    const totalRes = await db.query<any>(
+      `SELECT COALESCE(SUM(available_balance + locked_balance), 0) AS total
+       FROM wallet_balances
+       WHERE asset = 'FUTURES_USDT'
+         AND account_id = ANY($1)`,
+      [[accCp1, accCp2, accBankrupt, INSURANCE_FUND_ACCOUNT_ID, ADL_SUSPENSE_ACCOUNT_ID]]
+    );
+    expect(String(totalRes.rows[0].total)).toBe('9000');
   });
 
   it('4. UNRESOLVED when no profitable counterparties exist', async () => {
