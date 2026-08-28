@@ -173,7 +173,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
 
   useEffect(() => {
     // If the slider is actively controlling the quantity, re-calculate when inputs change.
-    if (sliderPercentage.gt(0)) {
+    if (sliderPercentage > 0) {
        const activePrice = new Decimal((orderType === 'LIMIT' && priceInput) ? priceInput : ticker?.lastPrice || market?.lastPrice || '0');
        if (activePrice.gt(0)) {
            const allocatedMargin = availMargin.mul(sliderPercentage).div(100);
@@ -538,7 +538,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
               className="w-full h-1.5 bg-gray-850 rounded-lg appearance-none cursor-pointer accent-cyan-400"
             />
             <div className="flex justify-between text-[10px] text-gray-500 font-mono font-bold mt-1">
-              <span className={sliderPercentage.gte(0) ? "text-cyan-400" : ""}>0%</span>
+              <span className={sliderPercentage >= 0 ? "text-cyan-400" : ""}>0%</span>
               <span className={sliderPercentage >= 25 ? "text-cyan-400" : ""}>25%</span>
               <span className={sliderPercentage >= 50 ? "text-cyan-400" : ""}>50%</span>
               <span className={sliderPercentage >= 75 ? "text-cyan-400" : ""}>75%</span>
