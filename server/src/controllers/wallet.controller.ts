@@ -201,3 +201,31 @@ export async function cryptoWithdraw(req: Request, res: Response, next: NextFunc
     next(err);
   }
 }
+
+export async function getDepositAddress(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Authentication required', 401, 'UNAUTHORIZED');
+    }
+    const asset = req.query.asset as string;
+    const network = req.query.network as string;
+    if (!asset || !network) {
+      throw new AppError('Asset and network required', 400, 'BAD_REQUEST');
+    }
+
+    // Deterministic mock address for Phase 10.3 (Real Custody is Phase 10.4)
+    const address = '0x' + Buffer.from(req.user.id + asset + network).toString('hex').slice(0, 40).padEnd(40, '0');
+    
+    res.json({
+      success: true,
+      data: {
+        asset,
+        network,
+        address,
+        tag: ['XRP', 'EOS', 'XLM'].includes(asset) ? Math.floor(Math.random() * 1000000).toString() : undefined
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+}

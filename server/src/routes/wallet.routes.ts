@@ -9,7 +9,7 @@ import {
   paperWithdraw,
   cryptoWithdraw,
   internalTransfer,
-  getTransactions,
+  getTransactions
 } from '../controllers/wallet.controller';
 
 const router = Router();
@@ -20,9 +20,10 @@ const router = Router();
  * Authenticated user / API key endpoints:
  *   GET  /api/v1/wallet/balances       — View own wallet balances (Scope: READ)
  *   POST /api/v1/wallet/withdraw       — Paper withdrawal from own account (Scope: WITHDRAW + 2FA)
+ *   POST /api/v1/wallet/withdraw/crypto — Real crypto withdrawal
  *   POST /api/v1/wallet/transfer       — Internal transfer between own accounts (Scope: TRADE)
  *   GET  /api/v1/wallet/transactions   — View own transaction history (Scope: READ)
- * 
+  * 
  * Admin-only endpoints:
  *   POST /api/v1/wallet/admin/paper-deposit — Admin controlled paper/demo deposit
  */
@@ -35,8 +36,6 @@ router.get('/transactions', requireAuthOrApiKey('READ'), getTransactions);
 
 // Admin-only paper deposit
 router.post('/admin/paper-deposit', requireCircuitBreaker('DEPOSITS'), requireAuth, requireRole('ADMIN'), idempotencyMiddleware(), adminPaperDeposit);
-
-export const walletRoutes = router;
 
 
 

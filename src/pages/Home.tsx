@@ -1,3 +1,4 @@
+import { Decimal } from 'decimal.js';
 import React, { useState } from 'react';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -21,17 +22,17 @@ export function Home({ onNavigate }: { onNavigate: (tab: string, symbol?: string
   const [hideBalance, setHideBalance] = useState(false);
   const [marketTab, setMarketTab] = useState<'hot' | 'gainers' | 'losers' | 'volume'>('hot');
 
-  const calculateValue = (asset: string, amountStr: string) => {
-    if (asset === 'USDT' || asset === 'FUTURES_USDT') return Number(amountStr);
-    const amount = Number(amountStr);
+  const calculateValue = (asset: string, amountStr: string): Decimal => {
+    if (asset === 'USDT' || asset === 'FUTURES_USDT') return new Decimal(amountStr || '0');
+    const amount = new Decimal(amountStr || '0');
     const market = markets.find(m => m.baseAsset === asset);
-    if (!market || !amount) return 0;
-    return amount * market.price;
+    if (!market || amount.isZero()) return new Decimal(0);
+    return amount.mul(market.price);
   };
 
-  const totalBalanceUSDT = Object.entries(balances).reduce((total, [asset, amount]) => {
-    return total + calculateValue(asset, amount);
-  }, 0);
+  const totalBalanceUSDT = Object.entries(balances).reduce((total: Decimal, [asset, amount]) => {
+    return total.plus(calculateValue(asset, amount as string));
+  }, new Decimal(0));
 
   // Market Intelligence filtering
   const displayedMarkets = React.useMemo(() => {
@@ -62,8 +63,8 @@ export function Home({ onNavigate }: { onNavigate: (tab: string, symbol?: string
             >
               <span className="text-xs font-bold text-gray-300">{m.baseAsset}/USDT</span>
               <span className="text-xs font-mono font-bold text-white">${m.price >= 1 ? m.price.toFixed(2) : m.price.toFixed(4)}</span>
-              <span className={`text-[10px] font-bold flex items-center ${m.change24h >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {m.change24h >= 0 ? '+' : ''}{m.change24h.toFixed(2)}%
+              <span className={`text-[10px] font-bold flex items-center ${m.change24h.gte(0) ? 'text-emerald-400' : 'text-red-400'}`}>
+                {m.change24h.gte(0) ? '+' : ''}{m.change24h.toFixed(2)}%
               </span>
             </button>
           ))}
@@ -96,7 +97,7 @@ export function Home({ onNavigate }: { onNavigate: (tab: string, symbol?: string
 
             <div className="flex items-baseline gap-2 mb-1">
               <span className="text-3xl md:text-4xl font-black text-white font-mono tabular-nums tracking-tight">
-                {hideBalance ? '••••••••' : `$${totalBalanceUSDT.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                {hideBalance ? '••••••••' : `$${totalBalanceUSDT.toNumber().toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
               </span>
               <span className="text-xs font-bold text-gray-400 font-mono">USDT</span>
             </div>
@@ -239,10 +240,10 @@ export function Home({ onNavigate }: { onNavigate: (tab: string, symbol?: string
                     ${m.price >= 1 ? m.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : m.price.toFixed(4)}
                   </div>
                   <div className={`text-[11px] font-extrabold font-mono inline-flex items-center gap-0.5 ${
-                    m.change24h >= 0 ? 'text-emerald-400' : 'text-red-400'
+                    m.change24h.gte(0) ? 'text-emerald-400' : 'text-red-400'
                   }`}>
-                    {m.change24h >= 0 ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                    {Math.abs(m.change24h).toFixed(2)}%
+                    {m.change24h.gte(0) ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+                    {new Decimal(m.change24h).abs().toFixed(2)}%
                   </div>
                 </div>
               </div>

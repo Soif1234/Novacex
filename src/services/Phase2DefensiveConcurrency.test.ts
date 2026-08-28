@@ -12,7 +12,6 @@ import { ledgerService } from './wallet/LedgerService';
 import { futuresOrderService } from './futures/FuturesOrderService';
 import { orderService } from './OrderService';
 import { orderCoreService } from './orders/OrderCoreService';
-import { demoTransactionService } from './wallet/DemoTransactionService';
 import { internalTransferService } from './wallet/InternalTransferService';
 import { priceAlertService } from './alerts/PriceAlertService';
 import { userPreferencesStore } from '../store/userPreferencesStore';
@@ -143,13 +142,9 @@ describe.skip('Phase 2 — UI Concurrency & Defensive Data Handling Test Suite',
       expect(orderCoreService.getOrders()[0].id).toBe('spot-2');
     });
 
-    it('11. DemoTransactionService and InternalTransferService recover from corrupted storage', () => {
-      sessionStorage.setItem('mallick_demo_txs', '{ corrupt');
+    it('11. InternalTransferService recovers from corrupted storage', () => {
       sessionStorage.setItem('mallick_demo_transfers', '[ null, 123, "foo" ]');
-
-      expect(() => (demoTransactionService as any).load()).not.toThrow();
       expect(() => (internalTransferService as any).load()).not.toThrow();
-      expect(demoTransactionService.getTransactions()).toEqual([]);
       expect(internalTransferService.getTransfers()).toEqual([]);
     });
 

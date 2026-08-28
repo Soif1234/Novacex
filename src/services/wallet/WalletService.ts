@@ -1,4 +1,3 @@
-import { futuresOrderService } from '../futures/FuturesOrderService';
 import { Decimal } from 'decimal.js';
 import { Asset, WalletBalances } from './types';
 import { apiClient } from '../api/client';
@@ -30,10 +29,19 @@ export class WalletService {
       }
     }
 
-    const futuresPositions = (accountId ? futuresOrderService.getPositions(accountId) : futuresOrderService.getAllPositions()).filter(p => p.status === 'OPEN');
+    let futuresPositions: any[] = [];
+    try {
+      const posRes = await apiClient.get<any>('/futures/positions', accountId ? { accountId } : undefined);
+      futuresPositions = Array.isArray(posRes) ? posRes : (posRes?.data || []);
+    } catch (err) {
+      console.warn('Failed to fetch positions for PnL', err);
+    }
+    
     let unrealizedPnl = new Decimal(0);
     for (const p of futuresPositions) {
-      unrealizedPnl = unrealizedPnl.plus(new Decimal(p.unrealizedPnl || '0'));
+      if (p.status === 'OPEN') {
+        unrealizedPnl = unrealizedPnl.plus(new Decimal(p.unrealizedPnl || '0'));
+      }
     }
 
     const futuresTotal = new Decimal(futuresUsdtAsset.totalBalance).plus(unrealizedPnl);

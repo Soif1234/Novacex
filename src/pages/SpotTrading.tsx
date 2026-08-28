@@ -57,8 +57,9 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
     ? (markets.find(m => m.id === selectedSymbol || (m.baseAsset === targetBase && m.quoteAsset === targetQuote) || m.baseAsset === targetBase) || markets[0])
     : null;
 
-  const currentPrice = parseFloat(ticker?.lastPrice || market?.price?.toString() || '0');
-  const currentChange = parseFloat(ticker?.priceChangePercent || market?.change24h?.toString() || '0');
+  const currentPriceStr = ticker?.lastPrice || market?.price?.toString() || '0';
+  const currentPrice = new Decimal(currentPriceStr);
+  const currentChange = new Decimal(ticker?.priceChangePercent || market?.change24h?.toString() || '0');
   
   const [liveOrderBook, setLiveOrderBook] = useState<OrderBook | null>(null);
 
@@ -74,7 +75,7 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
   const orderBook = React.useMemo(() => {
     if (liveOrderBook) return liveOrderBook;
     if (!market) return { asks: [], bids: [] };
-    return OrderBookService.generateSimulatedBook(market.baseAsset, currentPrice, 8, 0.0005);
+    return OrderBookService.generateSimulatedBook(market.baseAsset, currentPrice.toNumber(), 8, 0.0005);
   }, [liveOrderBook, market?.baseAsset, currentPrice]);
 
   const maxTotal = React.useMemo(() => {
@@ -86,7 +87,7 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
   const chartData = React.useMemo(() => {
     if (!market) return [];
     const data = [];
-    let current = currentPrice * 0.95;
+    let current = currentPrice.mul(0.95);
     
     // Stable random based on asset
     let seed = market.baseAsset.charCodeAt(0) + market.baseAsset.charCodeAt(market.baseAsset.length - 1);
@@ -97,7 +98,7 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
 
     for(let i=0; i < 20; i++) {
       data.push({ time: i, price: current });
-      current = current + (random() - 0.5) * (currentPrice * 0.015);
+      current = current.plus(currentPrice.mul(0.015).mul(random() - 0.5));
     }
     data.push({ time: 20, price: currentPrice });
     return data;
@@ -120,20 +121,20 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
     );
   }
 
-  const isPositive = currentChange >= 0;
+  const isPositive = currentChange.gte(0);
   
-  const availableQuote = new Decimal(balances[market.quoteAsset] || '0').toNumber();
-  const availableBase = new Decimal(balances[market.baseAsset] || '0').toNumber();
+  const availableQuote = new Decimal(balances[market.quoteAsset] || '0');
+  const availableBase = new Decimal(balances[market.baseAsset] || '0');
   const available = orderSide === 'BUY' ? availableQuote : availableBase;
   const availableAsset = orderSide === 'BUY' ? market.quoteAsset : market.baseAsset;
   
-  const priceToUse = orderType === 'LIMIT' ? (priceInput ? new Decimal(priceInput).toNumber() : 0) : currentPrice;
-  const estimatedTotal = (amountInput ? new Decimal(amountInput).toNumber() : 0) * priceToUse;
+  const priceToUse = orderType === 'LIMIT' ? new Decimal(priceInput || '0') : new Decimal(currentPriceStr || '0');
+  const estimatedTotal = new Decimal(amountInput || '0').mul(priceToUse);
   
   // Fee calculation (0.1% of received asset)
   let estimatedFee = '0';
   let feeAsset = '';
-  if (amountInput && priceToUse > 0) {
+  if (amountInput && priceToUse.gt(0)) {
     if (orderSide === 'BUY') {
       estimatedFee = FeeService.calculateFee(amountInput);
       feeAsset = market.baseAsset;
@@ -182,12 +183,12 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
 
   const setPercentage = (percent: number) => {
     if (orderSide === 'BUY') {
-      const budget = availableQuote * (percent / 100);
-      if (priceToUse > 0) {
-        setAmountInput((budget / priceToUse).toFixed(6).replace(/\.?0+$/, ''));
+      const budget = availableQuote.mul(percent).div(100);
+      if (priceToUse.gt(0)) {
+        setAmountInput(budget.div(priceToUse).toFixed(6).replace(/\.?0+$/, ''));
       }
     } else {
-      const amt = availableBase * (percent / 100);
+      const amt = availableBase.mul(percent).div(100);
       setAmountInput(amt.toFixed(6).replace(/\.?0+$/, ''));
     }
   };
@@ -261,7 +262,7 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
         </div>
         <div className="flex flex-col">
           <span className="text-gray-500 text-[10px] font-sans">24h Turnover</span>
-          <span className="text-gray-400">${((market.volume * currentPrice) / 1000000).toFixed(2)}M</span>
+          <span className="text-gray-400">${(new Decimal(market.volume).mul(currentPrice).div(1000000)).toNumber().toFixed(2)}M</span>
         </div>
       </div>
 
@@ -370,7 +371,7 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
           <div className="bg-gray-950/60 border border-gray-850 rounded-xl p-2.5 mb-3 flex items-center justify-between text-xs font-mono">
             <span className="text-gray-500 font-sans text-[11px]">Order Value</span>
             <span className="font-bold text-white tabular-nums">
-              {estimatedTotal > 0 ? estimatedTotal.toFixed(2) : '0.00'} {market.quoteAsset}
+              {estimatedTotal.gt(0) ? estimatedTotal.toFixed(2) : '0.00'} {market.quoteAsset}
             </span>
           </div>
           
@@ -378,11 +379,11 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
           <div className="space-y-1 mb-4 text-[11px]">
             <div className="flex justify-between text-gray-500">
               <span>Fee Rate (0.1%)</span>
-              <span className="font-mono text-gray-400">{estimatedFee ? `${parseFloat(estimatedFee).toLocaleString(undefined, {maximumFractionDigits: 6})} ${feeAsset}` : '--'}</span>
+              <span className="font-mono text-gray-400">{estimatedFee ? `${new Decimal(estimatedFee).toDecimalPlaces(6).toString()} ${feeAsset}` : '--'}</span>
             </div>
             <div className="flex justify-between text-gray-500">
               <span>Available Balance</span>
-              <span className="font-mono text-cyan-400 font-bold">{available.toLocaleString(undefined, { maximumFractionDigits: 4 })} {availableAsset}</span>
+              <span className="font-mono text-cyan-400 font-bold">{new Decimal(available).toFixed(4)} {availableAsset}</span>
             </div>
           </div>
 
@@ -440,7 +441,7 @@ export function SpotTrading({ selectedSymbol: initialSymbol = 'BTCUSDT', onNavig
           >
             <div className="flex items-center gap-1">
               <span className={`text-base font-black tabular-nums ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-                {currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                {currentPrice.toNumber().toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
               </span>
               {isPositive ? <ArrowUpRight size={15} className="text-emerald-400" /> : <ArrowDownRight size={15} className="text-red-400" />}
             </div>

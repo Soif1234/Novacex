@@ -8,6 +8,88 @@ import { Card } from '../components/ui/Card';
 import { useAuth } from '../contexts/AuthContext';
 import { apiClient } from '../services/api/client';
 
+
+function WithdrawalsTab() {
+  const [withdrawals, setWithdrawals] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const loadWithdrawals = async () => {
+    setIsLoading(true);
+    try {
+      const res = await apiClient.get<any>('/admin/withdrawals/pending');
+      setWithdrawals(res.data || []);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load withdrawals');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadWithdrawals();
+  }, []);
+
+  const handleAction = async (id: string, action: 'approve' | 'reject' | 'resolve', extra?: any) => {
+    try {
+      if (action === 'resolve') {
+        await apiClient.post(`/admin/withdrawals/${id}/resolve`, { directive: extra });
+      } else {
+        await apiClient.post(`/admin/withdrawals/${id}/${action}`);
+      }
+      await loadWithdrawals();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <h3 className="text-white font-bold text-sm mb-4">Pending & Unknown Withdrawals</h3>
+        {error && <div className="text-red-500 mb-4">{error}</div>}
+        {isLoading ? (
+          <div className="text-gray-400 text-sm">Loading...</div>
+        ) : withdrawals.length === 0 ? (
+          <div className="text-gray-400 text-sm">No pending withdrawals</div>
+        ) : (
+          <div className="space-y-4">
+            {withdrawals.map((w: any) => (
+              <div key={w.id} className="bg-gray-950 border border-gray-800 rounded-lg p-4 flex flex-col gap-2">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <div className="text-white font-bold">{w.amount} {w.asset}</div>
+                    <div className="text-xs text-gray-400 font-mono mt-1">User: {w.userId}</div>
+                    <div className="text-xs text-gray-400 font-mono mt-1">To: {w.destinationAddress} ({w.network})</div>
+                    <div className="text-xs text-gray-500 mt-1">ID: {w.id}</div>
+                  </div>
+                  <div className={`px-2 py-1 rounded text-xs font-bold ${w.cryptoStatus === 'UNKNOWN' ? 'bg-purple-500/20 text-purple-400' : 'bg-amber-500/20 text-amber-400'}`}>
+                    {w.cryptoStatus || 'PENDING_REVIEW'}
+                  </div>
+                </div>
+                
+                <div className="mt-2 flex gap-2">
+                  {(w.cryptoStatus === 'UNKNOWN') ? (
+                    <>
+                      <button onClick={() => handleAction(w.id, 'resolve', 'COMPLETED')} className="px-3 py-1.5 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 rounded text-xs font-bold transition-colors">Resolve as COMPLETED</button>
+                      <button onClick={() => handleAction(w.id, 'resolve', 'FAILED')} className="px-3 py-1.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded text-xs font-bold transition-colors">Resolve as FAILED</button>
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={() => handleAction(w.id, 'approve')} className="px-3 py-1.5 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 rounded text-xs font-bold transition-colors">Approve</button>
+                      <button onClick={() => handleAction(w.id, 'reject')} className="px-3 py-1.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded text-xs font-bold transition-colors">Reject</button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function Admin({ onNavigate }: { onNavigate: (tab: string) => void }) {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState('system');
@@ -72,6 +154,7 @@ export function Admin({ onNavigate }: { onNavigate: (tab: string) => void }) {
         {activeTab === 'users' && <UsersTab />}
         {activeTab === 'reconciliation' && <ReconciliationTab />}
         {activeTab === 'audit' && <AuditTab />}
+        {activeTab === 'withdrawals' && <WithdrawalsTab />}
       </div>
     </div>
   );

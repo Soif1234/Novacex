@@ -1,3 +1,4 @@
+import { Decimal } from 'decimal.js';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Menu, ChevronDown, Activity, Info, ArrowUpRight, ArrowDownRight, AlertTriangle, Bell } from 'lucide-react';
 import { Button } from '../components/ui/Button';
@@ -99,7 +100,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
   
 
   const market = markets.find(m => m.symbol === selectedSymbol) || markets[0];
-  const availMargin = parseFloat(balances['USDT'] || '0');
+  const availMargin = new Decimal(balances['USDT'] || '0');
 
   useEffect(() => {
     const updateData = () => {
@@ -172,13 +173,13 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
 
   useEffect(() => {
     // If the slider is actively controlling the quantity, re-calculate when inputs change.
-    if (sliderPercentage > 0) {
-       const activePrice = parseFloat((orderType === 'LIMIT' && priceInput) ? priceInput : ticker?.lastPrice || market?.lastPrice || '0');
-       if (activePrice > 0) {
-           const allocatedMargin = availMargin * (sliderPercentage / 100);
-           const targetNotional = allocatedMargin * leverage;
-           const qty = targetNotional / activePrice;
-           setQuantityInput(parseFloat(qty.toFixed(market?.quantityPrecision || 3)).toString());
+    if (sliderPercentage.gt(0)) {
+       const activePrice = new Decimal((orderType === 'LIMIT' && priceInput) ? priceInput : ticker?.lastPrice || market?.lastPrice || '0');
+       if (activePrice.gt(0)) {
+           const allocatedMargin = availMargin.mul(sliderPercentage).div(100);
+            const targetNotional = allocatedMargin.mul(leverage);
+           const qty = targetNotional.div(activePrice);
+           setQuantityInput(new Decimal(qty).toDecimalPlaces(market?.quantityPrecision || 3, Decimal.ROUND_DOWN).toString());
        }
     }
   }, [sliderPercentage, leverage, availMargin, priceInput, orderType, market]);
@@ -222,12 +223,12 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
     return <div className="flex items-center justify-center min-h-screen text-gray-500">Loading futures markets...</div>;
   }
 
-  const isPositive = parseFloat(ticker?.priceChangePercent || market.change24h || '0') >= 0;
+  const isPositive = new Decimal(ticker?.priceChangePercent || market.change24h || '0').gte(0);
 
 
-  const activePrice = parseFloat((orderType === 'LIMIT' && priceInput) ? priceInput : ticker?.lastPrice || market.lastPrice || '0');
-  const maxNotional = availMargin * leverage;
-  const maxQuantity = activePrice > 0 ? maxNotional / activePrice : 0;
+  const activePrice = new Decimal((orderType === 'LIMIT' && priceInput) ? priceInput : ticker?.lastPrice || market.lastPrice || '0');
+  const maxNotional = availMargin.mul(leverage);
+  const maxQuantity = activePrice.gt(0) ? maxNotional.div(activePrice) : new Decimal(0);
   
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseInt(e.target.value);
@@ -236,22 +237,22 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
        setQuantityInput('');
        return;
     }
-    const allocatedMargin = availMargin * (val / 100);
-    const targetNotional = allocatedMargin * leverage;
-    if (activePrice > 0) {
-       const qty = targetNotional / activePrice;
+    const allocatedMargin = availMargin.mul(val).div(100);
+    const targetNotional = allocatedMargin.mul(leverage);
+    if (activePrice.gt(0)) {
+       const qty = targetNotional.div(activePrice);
        // Format to precision but strip trailing zeros dynamically
        let qtyStr = qty.toFixed(market.quantityPrecision);
        // Remove trailing zeros and dot if needed (or just use parseFloat to string)
-       setQuantityInput(parseFloat(qtyStr).toString());
+       setQuantityInput(new Decimal(qtyStr).toString());
     }
   };
   
   const handleQuantityChange = (e: React.ChangeEvent<HTMLInputElement>) => {
      setQuantityInput(e.target.value);
-     const qty = parseFloat(e.target.value);
-     if (qty > 0 && maxQuantity > 0) {
-        let pct = (qty / maxQuantity) * 100;
+     const qty = new Decimal(e.target.value || '0');
+     if (qty.gt(0) && maxQuantity.gt(0)) {
+        let pct = qty.div(maxQuantity).mul(100).toNumber();
         if (pct > 100) pct = 100;
         setSliderPercentage(Math.round(pct));
      } else {
@@ -259,11 +260,11 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
      }
   };
 
-  const calculatedMargin = activePrice > 0 && parseFloat(quantityInput || '0') > 0
-    ? (parseFloat(quantityInput) * activePrice) / leverage
+  const calculatedMargin = activePrice.gt(0) && new Decimal(quantityInput || '0').gt(0)
+    ? new Decimal(quantityInput || '0').mul(activePrice).div(leverage)
     : 0;
   
-  const estimatedFeeResult = (parseFloat(quantityInput || '0') > 0 && activePrice > 0)
+  const estimatedFeeResult = (new Decimal(quantityInput || '0').gt(0) && activePrice.gt(0))
     ? futuresFeeService.getEstimatedFee(quantityInput, activePrice.toString(), orderType)
     : null;
 
@@ -364,21 +365,21 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
         <div className="flex justify-between items-center text-xs">
           <div>
             <div className={`text-xl font-black font-mono tracking-tight ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-              {parseFloat(ticker?.lastPrice || market.lastPrice || '0').toLocaleString(undefined, { minimumFractionDigits: market.quantityPrecision, maximumFractionDigits: market.quantityPrecision > 4 ? market.quantityPrecision : 4 })}
+              {new Decimal(ticker?.lastPrice || market.lastPrice || '0').toNumber().toLocaleString(undefined, { minimumFractionDigits: market.quantityPrecision, maximumFractionDigits: market.quantityPrecision > 4 ? market.quantityPrecision : 4 })}
             </div>
             <div className={`text-[11px] font-mono font-bold flex items-center gap-0.5 ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-              {isPositive ? '+' : ''}{parseFloat(market.change24h).toFixed(2)}%
+              {isPositive ? '+' : ''}{new Decimal(market.change24h || '0').toFixed(2)}%
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-right text-[10px] font-mono">
             <div className="text-gray-500 font-sans">Index Price</div>
-            <div className="text-gray-300 font-bold">${parseFloat(market.indexPrice || '0').toFixed(2)}</div>
+            <div className="text-gray-300 font-bold">${new Decimal(market.indexPrice || '0').toFixed(2)}</div>
             <div className="text-gray-500 font-sans">Mark Price</div>
-            <div className="text-cyan-400 font-bold">${parseFloat(market.markPrice || '0').toFixed(2)}</div>
+            <div className="text-cyan-400 font-bold">${new Decimal(market.markPrice || '0').toFixed(2)}</div>
             <div className="text-gray-500 font-sans">Funding Rate</div>
             <div className="text-amber-400 font-bold">
-              {Number(fundingRate) > 0 ? '+' : ''}{(Number(fundingRate) * 100).toFixed(4)}%
+              {new Decimal(fundingRate || '0').gt(0) ? '+' : ''}{new Decimal(fundingRate || '0').mul(100).toFixed(4)}%
             </div>
             <div className="text-gray-500 font-sans">Next Funding</div>
             <div className="text-amber-300 font-bold">{nextFundingStr}</div>
@@ -537,7 +538,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
               className="w-full h-1.5 bg-gray-850 rounded-lg appearance-none cursor-pointer accent-cyan-400"
             />
             <div className="flex justify-between text-[10px] text-gray-500 font-mono font-bold mt-1">
-              <span className={sliderPercentage >= 0 ? "text-cyan-400" : ""}>0%</span>
+              <span className={sliderPercentage.gte(0) ? "text-cyan-400" : ""}>0%</span>
               <span className={sliderPercentage >= 25 ? "text-cyan-400" : ""}>25%</span>
               <span className={sliderPercentage >= 50 ? "text-cyan-400" : ""}>50%</span>
               <span className={sliderPercentage >= 75 ? "text-cyan-400" : ""}>75%</span>
@@ -549,19 +550,19 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
           <div className="space-y-1 mb-4 text-[11px] font-mono">
             <div className="flex justify-between text-gray-500 font-sans">
               <span>Max Tradable Qty</span>
-              <span className="text-gray-300 font-mono">{maxQuantity.toLocaleString(undefined, { maximumFractionDigits: market.quantityPrecision })} {market.baseAsset}</span>
+              <span className="text-gray-300 font-mono">{maxQuantity.toNumber().toLocaleString(undefined, { maximumFractionDigits: market.quantityPrecision })} {market.baseAsset}</span>
             </div>
             <div className="flex justify-between text-gray-500 font-sans">
               <span>Available Margin</span>
-              <span className="text-white font-mono font-bold">{availMargin.toLocaleString(undefined, { maximumFractionDigits: 2 })} USDT</span>
+              <span className="text-white font-mono font-bold">{availMargin.toNumber().toLocaleString(undefined, { maximumFractionDigits: 2 })} USDT</span>
             </div>
             <div className="flex justify-between text-gray-500 font-sans">
               <span>Position Notional</span>
-              <span className="text-gray-300 font-mono">{estimatedFeeResult ? Number(estimatedFeeResult.notional).toFixed(2) : '0.00'} USDT</span>
+              <span className="text-gray-300 font-mono">{estimatedFeeResult ? new Decimal(estimatedFeeResult.notional || '0').toFixed(2) : '0.00'} USDT</span>
             </div>
             <div className="flex justify-between text-gray-500 font-sans">
               <span>Est. Trading Fee</span>
-              <span className="text-gray-400 font-mono">{estimatedFeeResult ? Number(estimatedFeeResult.feeAmount).toFixed(4) : '0.0000'} USDT</span>
+              <span className="text-gray-400 font-mono">{estimatedFeeResult ? new Decimal(estimatedFeeResult.feeAmount || '0').toFixed(4) : '0.0000'} USDT</span>
             </div>
           </div>
 
@@ -616,11 +617,11 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
           >
             <div className="flex items-center gap-1">
               <span className={`text-sm font-black tabular-nums ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-                {parseFloat(market.lastPrice).toLocaleString(undefined, { minimumFractionDigits: market.quantityPrecision, maximumFractionDigits: market.quantityPrecision })}
+                {new Decimal(market.lastPrice || '0').toNumber().toLocaleString(undefined, { minimumFractionDigits: market.quantityPrecision, maximumFractionDigits: market.quantityPrecision })}
               </span>
               {isPositive ? <ArrowUpRight size={14} className="text-emerald-400" /> : <ArrowDownRight size={14} className="text-red-400" />}
             </div>
-            <span className="text-gray-500 text-[10px] font-mono">≈ ${parseFloat(market.indexPrice).toFixed(2)}</span>
+            <span className="text-gray-500 text-[10px] font-mono">≈ ${new Decimal(market.indexPrice || '0').toFixed(2)}</span>
           </div>
 
           {/* Bids (Buy Orders) */}
@@ -648,7 +649,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
             className={`pb-2.5 text-xs font-black transition-all cursor-pointer ${historyTab === 'positions' ? 'text-cyan-400 border-b-2 border-cyan-400' : 'text-gray-400 hover:text-gray-200'}`} 
             onClick={() => setHistoryTab('positions')}
           >
-            Positions ({positions.filter(p => p.status === 'OPEN' && parseFloat(p.quantity) > 0).length})
+            Positions ({positions.filter(p => p.status === 'OPEN' && new Decimal(p.quantity || '0').gt(0)).length})
           </button>
           <button 
             type="button"
@@ -688,12 +689,12 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
         </div>
 
         <div className="flex flex-col gap-2.5">
-            {historyTab === 'positions' && positions.filter(p => p.status === 'OPEN' && parseFloat(p.quantity) > 0 && p.symbol === selectedSymbol).map(pos => {
+            {historyTab === 'positions' && positions.filter(p => p.status === 'OPEN' && new Decimal(p.quantity || '0').gt(0) && p.symbol === selectedSymbol).map(pos => {
               const currentMarket = markets.find(m => m.symbol === pos.symbol) || market;
               const liveMarkPrice = currentMarket?.markPrice || pos.markPrice;
               const liveUpnl = futuresRiskService.calculateUnrealizedPnl(pos, liveMarkPrice);
               const liveRoe = futuresRiskService.calculateRoe(liveUpnl, pos.initialMargin);
-              const isPnlPositive = parseFloat(liveUpnl) >= 0;
+              const isPnlPositive = new Decimal(liveUpnl || '0').gte(0);
               
               return (
               <div key={pos.positionId} className="bg-gray-900/90 p-4 rounded-2xl flex flex-col gap-3 border border-gray-800/80 shadow-md">
@@ -704,7 +705,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
                       {pos.side} {pos.leverage}x
                     </span>
                   </div>
-                  <span className="text-gray-400 font-mono text-xs font-bold">Margin: ${parseFloat(pos.initialMargin).toFixed(2)}</span>
+                  <span className="text-gray-400 font-mono text-xs font-bold">Margin: ${new Decimal(pos.initialMargin || '0').toFixed(2)}</span>
                 </div>
                 
                 <div className="grid grid-cols-3 gap-2 text-xs font-mono">
@@ -714,23 +715,23 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
                   </div>
                   <div className="flex flex-col text-center">
                     <span className="text-gray-500 text-[10px] font-sans">Entry Price</span>
-                    <span className="text-white font-bold">${parseFloat(pos.entryPrice).toFixed(2)}</span>
+                    <span className="text-white font-bold">${new Decimal(pos.entryPrice || '0').toFixed(2)}</span>
                   </div>
                   <div className="flex flex-col text-right">
                     <span className="text-gray-500 text-[10px] font-sans">Mark Price</span>
-                    <span className="text-cyan-400 font-bold">${parseFloat(liveMarkPrice).toFixed(2)}</span>
+                    <span className="text-cyan-400 font-bold">${new Decimal(liveMarkPrice || '0').toFixed(2)}</span>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 text-xs font-mono pt-1 border-t border-gray-800/60">
                    <div className="flex flex-col">
                       <span className="text-gray-500 text-[10px] font-sans">Est. Liq. Price</span>
-                      <span className="text-amber-400 font-black">${parseFloat(pos.liquidationPrice).toFixed(2)}</span>
+                      <span className="text-amber-400 font-black">${new Decimal(pos.liquidationPrice || '0').toFixed(2)}</span>
                    </div>
                    <div className="flex flex-col text-right">
                       <span className="text-gray-500 text-[10px] font-sans">Unrealized PnL (ROE%)</span>
                       <span className={`font-black ${isPnlPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-                         {isPnlPositive ? '+' : ''}${parseFloat(liveUpnl).toFixed(2)} ({liveRoe === 'Infinity' || isNaN(parseFloat(liveRoe)) ? '--' : parseFloat(liveRoe).toFixed(2)}%)
+                         {isPnlPositive ? '+' : ''}${new Decimal(liveUpnl || '0').abs().toFixed(2)} ({liveRoe === 'Infinity' || new Decimal(liveRoe || '0').isNaN() || !new Decimal(liveRoe || '0').isFinite() ? '--' : new Decimal(liveRoe || '0').toFixed(2)}%)
                       </span>
                    </div>
                 </div>
@@ -776,16 +777,16 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
                <div key={f.id} className="bg-gray-900 p-3 rounded-lg flex flex-col gap-2 border border-gray-800 text-xs text-gray-300">
                   <div className="flex justify-between">
                      <span className="font-bold text-white">{f.symbol} {f.side}</span>
-                     <span>Rate: {(parseFloat(f.fundingRate) * 100).toFixed(4)}%</span>
+                     <span>Rate: {(new Decimal(f.fundingRate || '0').mul(100)).toFixed(4)}%</span>
                   </div>
                   <div className="flex justify-between">
                      <span>{f.payerReceiver === 'RECEIVER' ? 'Received' : 'Paid'}</span>
-                     <span className={f.payerReceiver === 'RECEIVER' ? 'text-emerald-500' : 'text-red-500'}>{parseFloat(f.fundingAmount).toFixed(4)} USDT</span>
+                     <span className={f.payerReceiver === 'RECEIVER' ? 'text-emerald-500' : 'text-red-500'}>{new Decimal(f.fundingAmount || '0').toFixed(4)} USDT</span>
                   </div>
                </div>
             ))}
 
-            {historyTab === 'fees' && trades.filter(t => parseFloat(t.fee) > 0 && t.symbol === selectedSymbol).map(t => (
+            {historyTab === 'fees' && trades.filter(t => new Decimal(t.fee || '0').gt(0) && t.symbol === selectedSymbol).map(t => (
                <div key={t.id + '_fee'} className="bg-gray-900 p-3 rounded-lg flex flex-col gap-2 border border-gray-800 text-xs text-gray-300">
                   <div className="flex justify-between">
                      <span className="font-bold text-white">{t.symbol}</span>
@@ -793,7 +794,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
                   </div>
                   <div className="flex justify-between">
                      <span>Fee:</span>
-                     <span className="text-gray-300">{parseFloat(t.fee).toFixed(4)} USDT</span>
+                     <span className="text-gray-300">{new Decimal(t.fee || '0').toFixed(4)} USDT</span>
                   </div>
                </div>
             ))}
@@ -921,7 +922,7 @@ export function Futures({ onNavigate }: { onNavigate?: (tab: string, symbol?: st
               <Button variant="outline" className="flex-1" onClick={() => { setActionPositionId(null); setModalError(null); }}>Cancel</Button>
               <Button 
                 className="flex-1 bg-emerald-600 hover:bg-emerald-500" 
-                disabled={isUpdatingMargin || !marginAmount || Number(marginAmount) <= 0}
+                disabled={isUpdatingMargin || !marginAmount || new Decimal(marginAmount || '0').lte(0)}
                 onClick={async () => {
                    if (isUpdatingMarginRef.current) return;
                    isUpdatingMarginRef.current = true;

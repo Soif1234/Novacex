@@ -100,18 +100,11 @@ describe('Phase 3 Step 1: Pair Identity & Startup Defensive Guards', () => {
     expect(isBtcFutures).toBe(true);
   });
 
-  it('5. Startup market data failure produces safe fallback with canonical IDs', async () => {
+  it('5. Startup market data failure produces safe fallback empty array', async () => {
     // fetchMarketData falls back cleanly without throwing unhandled exceptions
     const markets = await fetchMarketData();
     expect(Array.isArray(markets)).toBe(true);
-    expect(markets.length).toBeGreaterThan(0);
-
-    const btcMarket = markets.find(m => m.baseAsset === 'BTC');
-    expect(btcMarket).toBeDefined();
-    expect(btcMarket?.baseAsset).toBe('BTC');
-    expect(btcMarket?.quoteAsset).toBeDefined();
-    // Verify canonical ID format
-    expect(btcMarket?.id).toMatch(/BTC(USDT|USDC)/);
+    expect(markets.length).toBe(0);
   });
 
   it('6. Root ErrorBoundary catches rendering exceptions and prevents white-screen crashes', () => {

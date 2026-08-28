@@ -38,12 +38,12 @@ export function useWallet(accountId?: string) {
 
                     const unsubWs = wsClient.subscribe('user:balances', fetchWallet);
     
-    const interval = setInterval(fetchWallet, 10000);
+    
 
     return () => {
       isMounted = false;
                               unsubWs();
-      clearInterval(interval);
+      
     };
   }, [accountId]);
 

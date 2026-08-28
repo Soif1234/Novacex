@@ -7,11 +7,13 @@ import { useAuth } from '../contexts/AuthContext';
 import { useWallet } from '../hooks/useWallet';
 import { useTransactionHistory } from '../hooks/useTransactionHistory';
 import { 
-  Asset, internalTransferService, WalletType, demoTransactionService
+  Asset, internalTransferService, WalletType
 } from '../services/wallet';
 import { securityService } from '../services/user/SecurityService';
 import { TransactionType, Transaction } from '../services/transactions';
 import { safeFormatDate } from '../services/storageUtil';
+import { apiClient } from '../services/api/client';
+import { Decimal } from 'decimal.js';
 
 
 import { ErrorBoundary } from '../components/ErrorBoundary';
@@ -88,20 +90,20 @@ export function Assets() {
         <div className="bg-gray-900/40 p-4 rounded-xl border border-gray-800">
           <div className="flex justify-between items-center mb-4">
             <span className="text-gray-400">Total Futures Balance</span>
-            <span className="text-white font-bold">{Number(balances.futuresTotal).toFixed(2)} USDT</span>
+            <span className="text-white font-bold">{new Decimal(balances.futuresTotal || '0').toNumber().toFixed(2)} USDT</span>
           </div>
           <div className="flex justify-between items-center mb-2">
             <span className="text-gray-500 text-sm">Available Margin</span>
-            <span className="text-gray-300 text-sm">{Number(balances.futuresAvailable).toFixed(2)} USDT</span>
+            <span className="text-gray-300 text-sm">{new Decimal(balances.futuresAvailable || '0').toNumber().toFixed(2)} USDT</span>
           </div>
           <div className="flex justify-between items-center mb-2">
             <span className="text-gray-500 text-sm">Locked Margin</span>
-            <span className="text-gray-300 text-sm">{Number(balances.futuresLocked).toFixed(2)} USDT</span>
+            <span className="text-gray-300 text-sm">{new Decimal(balances.futuresLocked || '0').toNumber().toFixed(2)} USDT</span>
           </div>
           <div className="flex justify-between items-center">
             <span className="text-gray-500 text-sm">Unrealized PNL</span>
-            <span className={`text-sm font-medium ${Number(balances.unrealizedPnl) >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-              {Number(balances.unrealizedPnl) >= 0 ? '+' : ''}{Number(balances.unrealizedPnl).toFixed(2)} USDT
+            <span className={`text-sm font-medium ${new Decimal(balances.unrealizedPnl || '0').toNumber() >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+              {new Decimal(balances.unrealizedPnl || '0').toNumber() >= 0 ? '+' : ''}{new Decimal(balances.unrealizedPnl || '0').toNumber().toFixed(2)} USDT
             </span>
           </div>
         </div>
@@ -128,7 +130,7 @@ export function Assets() {
 
             <div className="flex items-baseline gap-2 mb-4">
               <span className="text-3xl md:text-4xl font-black text-white font-mono tabular-nums tracking-tight">
-                ${Number(balances.total).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                ${new Decimal(balances.total || '0').toNumber().toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
               <span className="text-xs font-mono font-bold text-gray-400">USDT</span>
             </div>
@@ -292,9 +294,11 @@ function HistoryTab() {
 function HistoryRow({ entry, onClick }: { entry: Transaction; key?: React.Key; onClick?: () => void }) {
   const isCredit = entry.direction === 'CREDIT';
   
-  const typeBadgeColors: Record<TransactionType, string> = {
+  const typeBadgeColors: Record<string, string> = {
     DEPOSIT: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
     WITHDRAWAL: 'bg-red-500/10 text-red-400 border-red-500/20',
+    PENDING_REVIEW: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+    UNKNOWN: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
     TRANSFER: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
     REALIZED_PNL: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
     TRADING_FEE: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
@@ -547,34 +551,12 @@ function TransferModal({ onClose, balances, userId = 'demo-user-1' }: { onClose:
 }
 
 function DepositModal({ onClose, userId }: { onClose: () => void; userId: string }) {
-  const [asset, setAsset] = useState('USDT');
-  const [amount, setAmount] = useState('');
-  const [error, setError] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const isSubmittingRef = useRef(false);
-
-  const handleDeposit = async () => {
-    if (isSubmittingRef.current) return;
-    isSubmittingRef.current = true;
-    setIsSubmitting(true);
-    setError('');
-    try {
-      await demoTransactionService.createDeposit(asset, amount, userId);
-      onClose();
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      isSubmittingRef.current = false;
-      setIsSubmitting(false);
-    }
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="w-full sm:w-[400px] bg-gray-900 border-t sm:border border-gray-800 rounded-t-3xl sm:rounded-3xl overflow-hidden shadow-2xl animate-in slide-in-from-bottom-10 sm:slide-in-from-bottom-0 sm:fade-in-0 duration-300">
         <div className="px-5 py-4 border-b border-gray-800 flex justify-between items-center">
           <h2 className="text-lg font-bold text-white flex items-center gap-2">
-            <Download size={20} className="text-blue-500" /> Demo Deposit
+            <Download size={20} className="text-blue-500" /> Crypto Deposit
           </h2>
           <button onClick={onClose} className="p-2 text-gray-400 hover:text-white rounded-full hover:bg-gray-800 transition-colors">
             <X size={20} />
@@ -582,56 +564,19 @@ function DepositModal({ onClose, userId }: { onClose: () => void; userId: string
         </div>
         
         <div className="p-5 flex flex-col gap-5">
-          <div className="bg-blue-500/10 border border-blue-500/20 text-blue-400 px-4 py-3 rounded-xl text-sm font-medium flex gap-2">
-            <div>ℹ️</div>
-            <div>Demo only — no real funds are transferred. This adds simulated balance to your account.</div>
-          </div>
-
-          {error && (
-             <div className="bg-red-500/10 border border-red-500/50 text-red-500 px-3 py-2 rounded-lg text-sm font-medium">
-               {error}
-             </div>
-          )}
-
-          <div>
-            <div className="text-xs text-gray-500 font-medium mb-2">Asset</div>
-            <select 
-              value={asset}
-              onChange={(e) => setAsset(e.target.value)}
-              className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-3 px-4 text-white font-bold outline-none transition-colors appearance-none"
-            >
-              <option value="USDT">USDT - Tether US</option>
-              <option value="BTC">BTC - Bitcoin</option>
-              <option value="ETH">ETH - Ethereum</option>
-              <option value="SOL">SOL - Solana</option>
-              <option value="BNB">BNB - Binance Coin</option>
-              <option value="XRP">XRP - Ripple</option>
-              <option value="DOGE">DOGE - Dogecoin</option>
-            </select>
-          </div>
-
-          <div>
-            <div className="text-xs text-gray-500 font-medium mb-2">Amount</div>
-            <div className="relative">
-              <input 
-                type="number" 
-                value={amount}
-                onChange={e => setAmount(e.target.value)}
-                placeholder="0.00"
-                className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-3 pl-4 pr-16 text-white font-bold placeholder-gray-600 outline-none transition-colors"
-              />
-              <div className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 font-bold text-sm">
-                {asset}
-              </div>
+          <div className="bg-amber-500/10 border border-amber-500/20 text-amber-500 px-4 py-3 rounded-xl text-sm flex gap-3">
+            <div className="text-xl">🔒</div>
+            <div>
+              <p className="font-bold mb-1">Deposits Disabled</p>
+              <p className="text-amber-500/80">Real cryptocurrency deposits are currently disabled pending mainnet custody integration (Phase 10.4). No deposit addresses can be generated at this time.</p>
             </div>
           </div>
-
+          
           <button 
-            disabled={!amount || isSubmitting}
-            onClick={handleDeposit}
-            className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:hover:bg-blue-600 text-white font-bold py-3.5 rounded-xl transition-colors mt-2"
+            onClick={onClose}
+            className="w-full bg-gray-800 hover:bg-gray-700 text-white font-bold py-3 rounded-xl transition-colors mt-2"
           >
-            {isSubmitting ? 'Processing...' : 'Confirm Deposit'}
+            Understood
           </button>
         </div>
       </div>
@@ -641,6 +586,7 @@ function DepositModal({ onClose, userId }: { onClose: () => void; userId: string
 
 function WithdrawModal({ onClose, balances, assets, userId }: { onClose: () => void, balances: any, assets: Asset[], userId: string }) {
   const [asset, setAsset] = useState('USDT');
+  const [network, setNetwork] = useState('ERC20');
   const [amount, setAmount] = useState('');
   const [destination, setDestination] = useState('');
   const [totpCode, setTotpCode] = useState('');
@@ -664,12 +610,22 @@ function WithdrawModal({ onClose, balances, assets, userId }: { onClose: () => v
     setError('');
     try {
       if (!destination.trim()) {
-        throw new Error('Destination address or label is required');
+        throw new Error('Destination address is required');
       }
       if (is2FAActive && (!totpCode || totpCode.length !== 6)) {
         throw new Error('Please enter a valid 6-digit 2FA code');
       }
-      await demoTransactionService.createWithdrawal(asset, amount, destination, available, userId);
+      const val = new Decimal(amount || '0');
+      if (val.isNaN() || val.lte(0)) throw new Error('Invalid amount');
+      if (val.gt(new Decimal(available || '0'))) throw new Error('Insufficient balance');
+
+      await apiClient.post('/wallet/withdraw/crypto', {
+        asset,
+        network,
+        amount,
+        destinationAddress: destination,
+        totpCode: totpCode || undefined
+      });
       onClose();
     } catch (err: any) {
       setError(err.message);
@@ -684,107 +640,107 @@ function WithdrawModal({ onClose, balances, assets, userId }: { onClose: () => v
       <div className="w-full sm:w-[400px] bg-gray-900 border-t sm:border border-gray-800 rounded-t-3xl sm:rounded-3xl overflow-hidden shadow-2xl animate-in slide-in-from-bottom-10 sm:slide-in-from-bottom-0 sm:fade-in-0 duration-300">
         <div className="px-5 py-4 border-b border-gray-800 flex justify-between items-center">
           <h2 className="text-lg font-bold text-white flex items-center gap-2">
-            <Upload size={20} className="text-red-500" /> Demo Withdrawal
+            <Upload size={20} className="text-red-500" /> Crypto Withdrawal
           </h2>
           <button onClick={onClose} className="p-2 text-gray-400 hover:text-white rounded-full hover:bg-gray-800 transition-colors">
             <X size={20} />
           </button>
         </div>
         
-        <div className="p-5 flex flex-col gap-4">
-          <div className="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-2.5 rounded-xl text-xs font-medium">
-            Demo environment only — simulated balance deducted from your spot account.
-          </div>
-
-          {kycStatus && (
-            <div className="bg-gray-800/60 border border-gray-700/60 p-3 rounded-xl space-y-1 text-xs">
-              <div className="flex justify-between text-gray-400">
-                <span>24h Rolling Quota:</span>
-                <span className="text-emerald-400 font-bold">{kycStatus.tier}</span>
-              </div>
-              <div className="flex justify-between text-gray-300">
-                <span>Remaining Today:</span>
-                <span className="font-bold text-white">{kycStatus.remaining24hUsdt} / {kycStatus.dailyLimitUsdt} USDT</span>
-              </div>
-            </div>
-          )}
-
+        <div className="p-5 flex flex-col gap-5">
           {error && (
-             <div className="bg-red-500/10 border border-red-500/50 text-red-500 px-3 py-2 rounded-lg text-xs font-medium">
+             <div className="bg-red-500/10 border border-red-500/50 text-red-500 px-3 py-2 rounded-lg text-sm font-medium">
                {error}
              </div>
           )}
 
-          <div>
-            <div className="text-xs text-gray-500 font-medium mb-1.5">Asset</div>
-            <select 
-              value={asset}
-              onChange={(e) => { setAsset(e.target.value); setAmount(''); }}
-              className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-2.5 px-4 text-white font-bold outline-none transition-colors appearance-none text-sm"
-            >
-              <option value="USDT">USDT - Tether US</option>
-              <option value="BTC">BTC - Bitcoin</option>
-              <option value="ETH">ETH - Ethereum</option>
-              <option value="SOL">SOL - Solana</option>
-              <option value="BNB">BNB - Binance Coin</option>
-              <option value="XRP">XRP - Ripple</option>
-              <option value="DOGE">DOGE - Dogecoin</option>
-            </select>
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <div className="text-xs text-gray-500 font-medium mb-2">Asset</div>
+              <select 
+                value={asset}
+                onChange={(e) => setAsset(e.target.value)}
+                className="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-red-500/50 transition-colors"
+              >
+                <option value="USDT">USDT (Tether)</option>
+                <option value="BTC">BTC (Bitcoin)</option>
+                <option value="ETH">ETH (Ethereum)</option>
+                <option value="USDC">USDC (USD Coin)</option>
+              </select>
+            </div>
+            <div className="flex-1">
+              <div className="text-xs text-gray-500 font-medium mb-2">Network</div>
+              <select 
+                value={network}
+                onChange={(e) => setNetwork(e.target.value)}
+                className="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-red-500/50 transition-colors"
+              >
+                <option value="ERC20">ERC20</option>
+                <option value="TRC20">TRC20</option>
+                <option value="BSC">BSC</option>
+                <option value="BITCOIN">BITCOIN</option>
+              </select>
+            </div>
           </div>
 
           <div>
-            <div className="text-xs text-gray-500 font-medium mb-1.5">Destination Address / Label</div>
+            <div className="text-xs text-gray-500 font-medium mb-2">Destination Address</div>
             <input 
-              type="text" 
+              type="text"
+              placeholder="Paste exact address"
               value={destination}
-              onChange={e => setDestination(e.target.value)}
-              placeholder="e.g. 0x71C... or External Wallet"
-              className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-2.5 px-4 text-white font-bold placeholder-gray-600 outline-none transition-colors text-sm"
+              onChange={(e) => setDestination(e.target.value)}
+              className="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-red-500/50 transition-colors placeholder:text-gray-700"
             />
           </div>
 
           <div>
-            <div className="flex justify-between items-end mb-1.5">
-              <div className="text-xs text-gray-500 font-medium">Amount</div>
-              <div className="text-xs text-gray-400">Available: <span className="font-bold text-gray-200">{Number(available).toFixed(4)}</span></div>
+            <div className="flex justify-between mb-2">
+              <span className="text-xs text-gray-500 font-medium">Amount</span>
+              <span className="text-xs text-gray-400">Available: {new Decimal(available || '0').toFixed(2)} {asset}</span>
             </div>
             <div className="relative">
               <input 
-                type="number" 
-                value={amount}
-                onChange={e => setAmount(e.target.value)}
+                type="number"
                 placeholder="0.00"
-                className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-2.5 pl-4 pr-16 text-white font-bold placeholder-gray-600 outline-none transition-colors text-sm"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                className="w-full bg-gray-950 border border-gray-800 rounded-xl pl-4 pr-16 py-3 text-white focus:outline-none focus:border-red-500/50 transition-colors placeholder:text-gray-700"
               />
               <button 
                 onClick={() => setAmount(available)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-blue-500 font-bold text-xs hover:text-blue-400"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-red-500 hover:text-red-400"
               >
                 MAX
               </button>
             </div>
           </div>
-
+          
           {is2FAActive && (
             <div>
-              <div className="text-xs text-gray-400 font-bold mb-1.5 flex items-center gap-1">
-                <span>Two-Factor Authentication Code</span>
-              </div>
+              <div className="text-xs text-gray-500 font-medium mb-2">Authenticator Code (2FA)</div>
               <input 
-                type="text" 
+                type="text"
                 maxLength={6}
+                placeholder="000000"
                 value={totpCode}
-                onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
-                placeholder="6-digit code"
-                className="w-full bg-gray-800/80 border border-gray-700 focus:border-blue-500 rounded-xl py-2.5 px-4 text-white font-mono text-center tracking-widest outline-none transition-colors text-sm"
+                onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                className="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-red-500/50 transition-colors placeholder:text-gray-700 tracking-[0.5em] text-center font-mono text-lg"
               />
+            </div>
+          )}
+          
+          {(!kycStatus || kycStatus.tier === 'TIER_1') && (
+            <div className="bg-amber-500/10 border border-amber-500/20 text-amber-500 px-4 py-3 rounded-xl text-xs flex gap-2">
+              <div>⚠️</div>
+              <div>Withdrawals require Tier 2 KYC. Please verify your identity first.</div>
             </div>
           )}
 
           <button 
-            disabled={!amount || !destination.trim() || isSubmitting}
             onClick={handleWithdraw}
-            className="w-full bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:hover:bg-red-600 text-white font-bold py-3 rounded-xl transition-colors mt-2 text-sm"
+            disabled={isSubmitting}
+            className="w-full bg-red-500 hover:bg-red-400 text-white font-bold py-4 rounded-xl transition-colors mt-2 disabled:opacity-50 flex justify-center items-center gap-2"
           >
             {isSubmitting ? 'Processing...' : 'Confirm Withdrawal'}
           </button>
@@ -793,7 +749,6 @@ function WithdrawModal({ onClose, balances, assets, userId }: { onClose: () => v
     </div>
   );
 }
-
 
 function TransactionDetailModal({ tx, onClose }: { tx: Transaction; onClose: () => void }) {
   const dateStr = safeFormatDate(tx.createdAt);

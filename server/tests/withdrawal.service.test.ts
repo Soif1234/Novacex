@@ -24,7 +24,7 @@ describe('WithdrawalService', () => {
     };
 
     mockDb = {
-      query: vi.fn(),
+      query: vi.fn().mockResolvedValue({ rows: [{ email: 'test@example.com' }] }),
       transaction: vi.fn(async (cb) => await cb(mockTxClient)),
     } as unknown as IDatabaseConnection;
 
