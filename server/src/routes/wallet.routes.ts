@@ -37,5 +37,4 @@ router.get('/transactions', requireAuthOrApiKey('READ'), getTransactions);
 // Admin-only paper deposit
 router.post('/admin/paper-deposit', requireCircuitBreaker('DEPOSITS'), requireAuth, requireRole('ADMIN'), idempotencyMiddleware(), adminPaperDeposit);
 
-
-
+export const walletRoutes = router;
