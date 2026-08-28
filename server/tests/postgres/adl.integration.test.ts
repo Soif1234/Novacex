@@ -294,20 +294,20 @@ describe('Phase 6.4B Auto-Deleveraging (ADL) Integration', () => {
     // (1,000), the suspense returns to zero, and the Insurance Fund, which
     // funded both credits, returns to zero. CP1 is never touched.
     const cp2Bal = await getWalletBalance(accCp2);
-    expect(cp2Bal.available).toBe('3000');
-    expect(cp2Bal.locked).toBe('0');
+    expect(cp2Bal.available).toBe('3000.000000000000000000');
+    expect(cp2Bal.locked).toBe('0.000000000000000000');
 
     const cp1Bal = await getWalletBalance(accCp1);
-    expect(cp1Bal.available).toBe('1000');
-    expect(cp1Bal.locked).toBe('5000');
+    expect(cp1Bal.available).toBe('1000.000000000000000000');
+    expect(cp1Bal.locked).toBe('5000.000000000000000000');
 
     const bankruptBal = await getWalletBalance(accBankrupt);
-    expect(bankruptBal.available).toBe('0');
-    expect(bankruptBal.locked).toBe('0');
+    expect(bankruptBal.available).toBe('0.000000000000000000');
+    expect(bankruptBal.locked).toBe('0.000000000000000000');
 
     const ifBal = await getWalletBalance(INSURANCE_FUND_ACCOUNT_ID);
-    expect(ifBal.available).toBe('0');
-    expect(ifBal.locked).toBe('0');
+    expect(ifBal.available).toBe('0.000000000000000000');
+    expect(ifBal.locked).toBe('0.000000000000000000');
 
     expect(decimalCompare(suspenseBal, '0')).toBe(0);
 
@@ -319,7 +319,7 @@ describe('Phase 6.4B Auto-Deleveraging (ADL) Integration', () => {
          AND account_id = ANY($1)`,
       [[accCp1, accCp2, accBankrupt, INSURANCE_FUND_ACCOUNT_ID, ADL_SUSPENSE_ACCOUNT_ID]]
     );
-    expect(String(totalRes.rows[0].total)).toBe('9000');
+    expect(String(totalRes.rows[0].total)).toBe('9000.000000000000000000');
   });
 
   it('4. UNRESOLVED when no profitable counterparties exist', async () => {
