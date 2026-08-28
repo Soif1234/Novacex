@@ -1,3 +1,5 @@
+import { NotificationEventType, KycApprovedEvent } from '../notification/notification.types';
+import { eventBus } from '../market/event-bus';
 import { db, IDatabaseConnection } from '../../config/database';
 import {
   KycTier,
@@ -182,6 +184,18 @@ export class KycService {
         [assignedTier, dto.reviewerId, dto.userId]
       );
       logger.info('KYC submission approved', { userId: dto.userId, tier: assignedTier, reviewerId: dto.reviewerId });
+
+      const uRes = await this.database.query<any>('SELECT email FROM users WHERE id = $1', [dto.userId]);
+      if (uRes.rows.length > 0) {
+        eventBus.publish({
+          id: "", timestamp: Date.now(), version: "1.0.0", type: NotificationEventType.KYC_APPROVED,
+          payload: {
+            userId: dto.userId,
+            email: uRes.rows[0].email,
+            tier: assignedTier
+          }
+        });
+      }
     } else {
       if (!dto.rejectionReason || !dto.rejectionReason.trim()) {
         throw new AppError('Rejection reason is required when rejecting KYC', 400, 'MISSING_REJECTION_REASON');

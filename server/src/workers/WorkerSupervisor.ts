@@ -9,6 +9,9 @@ import { withdrawalProcessingWorker } from './WithdrawalProcessingWorker';
 import { withdrawalStatusWorker } from './WithdrawalStatusWorker';
 import { klineService } from '../services/market/kline.service';
 import { conditionalTriggerService } from '../services/market/conditional.service';
+import { NotificationWorker } from './NotificationWorker';
+
+const notificationWorker = new NotificationWorker();
 
 export interface IManagedWorker {
   name: string;
@@ -96,6 +99,13 @@ export class WorkerSupervisor {
       start: () => withdrawalStatusWorker.start(),
       stop: () => withdrawalStatusWorker.stop(),
       getStatus: () => ({ isRunning: (withdrawalStatusWorker as any).isRunning ?? false }),
+    });
+
+    this.register({
+      name: 'NotificationWorker',
+      start: () => notificationWorker.start(),
+      stop: () => notificationWorker.stop(),
+      getStatus: () => notificationWorker.getStatus(),
     });
   }
 

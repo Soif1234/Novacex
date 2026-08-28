@@ -54,6 +54,10 @@ export interface EnvironmentConfig {
   EXTERNAL_MARKET_DATA_URL: string;
   EXTERNAL_MARKET_DATA_FUTURES_URL: string;
   EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS: number;
+  NOTIFICATION_PROVIDER?: string;
+  SENDGRID_API_KEY?: string;
+  NOTIFICATION_FROM_EMAIL?: string;
+  NOTIFICATION_FROM_NAME?: string;
   /**
    * Phase 9.2: custody abstraction layer master switch.
    * MUST remain false until the real-money custody system is fully built
@@ -232,6 +236,10 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
       'BLOCKCHAIN_CONFIRMATION_POLL_INTERVAL_MS',
     ),
     WITHDRAWAL_REVIEW_THRESHOLD: process.env.WITHDRAWAL_REVIEW_THRESHOLD,
+    NOTIFICATION_PROVIDER: process.env.NOTIFICATION_PROVIDER,
+    SENDGRID_API_KEY: process.env.SENDGRID_API_KEY,
+    NOTIFICATION_FROM_EMAIL: process.env.NOTIFICATION_FROM_EMAIL,
+    NOTIFICATION_FROM_NAME: process.env.NOTIFICATION_FROM_NAME,
     ...overrides
   };
 

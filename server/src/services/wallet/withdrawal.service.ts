@@ -12,6 +12,8 @@ import { logger } from '../../config/logger';
 import { AppError } from '../../middleware/errorHandler';
 import { custodyService } from '../custody/custody.service';
 import { CustodyTransactionNotFoundError } from '../custody/custody.errors';
+import { eventBus } from '../market/event-bus';
+import { NotificationEventType, WithdrawalNotificationEvent } from '../notification/notification.types';
 
 export type WithdrawalResolutionDirective = 'FAILED' | 'COMPLETED';
 
@@ -36,7 +38,7 @@ export class WithdrawalService {
     const { userId, asset, network, amount, destinationAddress, destinationMemo, referenceId } = dto;
     validateAmount(amount);
 
-    return this.database.transaction(async (txClient) => {
+    const withdrawal = await this.database.transaction(async (txClient) => {
       // 0. Serialize concurrent withdrawals per user: lock the user row BEFORE the
       //    AML aggregate is read so two simultaneous requests cannot both observe
       //    the same pre-transaction 24h usage and collectively exceed the limit.
@@ -146,10 +148,28 @@ export class WithdrawalService {
         updatedAt: row.updated_at
       };
     });
+
+    const uRes = await this.database.query<any>('SELECT email FROM users WHERE id = $1', [userId]);
+    if (uRes.rows.length > 0) {
+      const eventType = withdrawal.cryptoStatus === 'PENDING_REVIEW' ? NotificationEventType.WITHDRAWAL_PENDING_REVIEW : NotificationEventType.WITHDRAWAL_REQUESTED;
+      eventBus.publish({
+        id: "", timestamp: Date.now(), version: "1.0.0", type: eventType,
+        payload: {
+          userId,
+          email: uRes.rows[0].email,
+          withdrawalId: withdrawal.id,
+          asset,
+          amount,
+          network
+        }
+      });
+    }
+
+    return withdrawal;
   }
 
   public async approveWithdrawal(withdrawalId: string): Promise<void> {
-    await this.database.transaction(async (txClient) => {
+    const approved = await this.database.transaction(async (txClient) => {
       const wRes = await txClient.query<any>(
         'SELECT status, crypto_status FROM withdrawals WHERE id = $1 FOR UPDATE',
         [withdrawalId]
@@ -182,7 +202,7 @@ export class WithdrawalService {
   }
 
   public async approveWithdrawalAdmin(withdrawalId: string, adminUserId: string, reviewReason?: string, audit?: RecordAuditLogDto): Promise<void> {
-    await this.database.transaction(async (txClient) => {
+    const approved = await this.database.transaction(async (txClient) => {
       const wRes = await txClient.query<any>(
         `SELECT w.*, a.user_id
          FROM withdrawals w
@@ -217,7 +237,7 @@ export class WithdrawalService {
   }
 
   public async rejectWithdrawalAdmin(withdrawalId: string, adminUserId: string, reviewReason: string, audit?: RecordAuditLogDto): Promise<void> {
-    await this.database.transaction(async (txClient) => {
+    const rejected = await this.database.transaction(async (txClient) => {
       const wRes = await txClient.query<any>(
         `SELECT w.*, a.user_id
          FROM withdrawals w
