@@ -63,8 +63,8 @@ export function Home({ onNavigate }: { onNavigate: (tab: string, symbol?: string
             >
               <span className="text-xs font-bold text-gray-300">{m.baseAsset}/USDT</span>
               <span className="text-xs font-mono font-bold text-white">${m.price >= 1 ? m.price.toFixed(2) : m.price.toFixed(4)}</span>
-              <span className={`text-[10px] font-bold flex items-center ${m.change24h.gte(0) ? 'text-emerald-400' : 'text-red-400'}`}>
-                {m.change24h.gte(0) ? '+' : ''}{m.change24h.toFixed(2)}%
+              <span className={`text-[10px] font-bold flex items-center ${new Decimal(m.change24h).gte(0) ? 'text-emerald-400' : 'text-red-400'}`}>
+                {new Decimal(m.change24h).gte(0) ? '+' : ''}{m.change24h.toFixed(2)}%
               </span>
             </button>
           ))}
@@ -240,9 +240,9 @@ export function Home({ onNavigate }: { onNavigate: (tab: string, symbol?: string
                     ${m.price >= 1 ? m.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : m.price.toFixed(4)}
                   </div>
                   <div className={`text-[11px] font-extrabold font-mono inline-flex items-center gap-0.5 ${
-                    m.change24h.gte(0) ? 'text-emerald-400' : 'text-red-400'
+                    new Decimal(m.change24h).gte(0) ? 'text-emerald-400' : 'text-red-400'
                   }`}>
-                    {m.change24h.gte(0) ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+                    {new Decimal(m.change24h).gte(0) ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
                     {new Decimal(m.change24h).abs().toFixed(2)}%
                   </div>
                 </div>
