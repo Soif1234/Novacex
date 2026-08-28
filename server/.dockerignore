@@ -1,0 +1,64 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Production build output
+dist/
+build/
+coverage/
+
+# Environment variables & secrets
+.env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example
+
+# Git metadata
+.git/
+.github/
+
+# Tooling & IDE
+.antigravity/
+.vscode/
+.idea/
+.claude/
+.agents/
+.neon/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS Files & Logs
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test artifacts and debug/scratch scripts
+scratch/
+*.cjs
+*.js
+*.patch
+test_*.ts
+test_*.js
+patch_*.ts
+patch_*.js
+debug_*.js
+vitest_output.txt
+test_output.txt
+test_summary.txt
+questions.txt
+last_message.txt
+*_REPORT.md
+*_AUDIT.md
+*_VERIFICATION.md
+*_DESIGN_LOCK.md

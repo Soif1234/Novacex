@@ -1,0 +1,56 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test-and-build:
+    name: Test and Build
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ./server
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: './server/package-lock.json'
+
+      - name: Spin up Database & Redis for Integration Tests
+        run: docker compose -f docker-compose.yml up -d postgres redis
+
+      - name: Wait for PostgreSQL
+        run: |
+          echo "Waiting for postgres to be ready..."
+          timeout 30s sh -c 'until docker exec mallick_postgres pg_isready -U mallick -d mallick_exchange; do sleep 1; done'
+
+      - name: Wait for Redis
+        run: |
+          echo "Waiting for redis to be ready..."
+          timeout 30s sh -c 'until docker exec mallick_redis redis-cli ping; do sleep 1; done'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Tests
+        # The test suite connects to the local docker-compose infrastructure.
+        run: npm test
+
+      - name: Build Application
+        run: npm run build
+
+      - name: Docker Build Security Check
+        # Verify the Docker image builds correctly and satisfies requirements
+        run: docker build -f Dockerfile .
