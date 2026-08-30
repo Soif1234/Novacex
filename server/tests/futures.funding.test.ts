@@ -19,6 +19,7 @@ describe('Phase 6.3 - Adaptive Funding Engine', () => {
     futuresFundingService['staticFundingRate'] = null;
 
     dbPool = db as DatabasePool; // assuming it exports 'db' which is an instance
+    await dbPool.connect(); // required for db.transaction used by settlement
     // Clear out positions for isolated testing
     // Using internal arrays if it's the mock db, or we can just mock the query method
     vi.spyOn(dbPool, 'query').mockImplementation(async (sql: string, params?: any[]) => {
@@ -150,14 +151,14 @@ describe('Phase 6.3 - Adaptive Funding Engine', () => {
         accountId: 'acc-1',
         transactionType: 'FUTURES_FUNDING_PAYMENT',
         entries: [expect.objectContaining({ direction: 'DEBIT', amount: '5.000000000000000000' })]
-      }));
+      }), expect.anything());
 
       // Short receives 5 USDT (CREDIT)
       expect(ledgerService.postTransaction).toHaveBeenCalledWith(expect.objectContaining({
         accountId: 'acc-2',
         transactionType: 'FUTURES_FUNDING_PAYMENT',
         entries: [expect.objectContaining({ direction: 'CREDIT', amount: '5.000000000000000000' })]
-      }));
+      }), expect.anything());
     });
 
     it('2. Short pays long when funding is negative', async () => {
@@ -172,13 +173,13 @@ describe('Phase 6.3 - Adaptive Funding Engine', () => {
       expect(ledgerService.postTransaction).toHaveBeenCalledWith(expect.objectContaining({
         accountId: 'acc-1',
         entries: [expect.objectContaining({ direction: 'CREDIT', amount: '9.997000000000000000' })]
-      }));
+      }), expect.anything());
 
       // Short pays 10 USDT (DEBIT)
       expect(ledgerService.postTransaction).toHaveBeenCalledWith(expect.objectContaining({
         accountId: 'acc-2',
         entries: [expect.objectContaining({ direction: 'DEBIT', amount: '9.997000000000000000' })]
-      }));
+      }), expect.anything());
     });
 
     it('3. zero funding produces zero transfer', async () => {
@@ -196,7 +197,7 @@ describe('Phase 6.3 - Adaptive Funding Engine', () => {
       // Ensure reference ID uses the epoch
       expect(ledgerService.postTransaction).toHaveBeenCalledWith(expect.objectContaining({
         referenceId: `FUNDING-BTCUSDT-${epochId}-pos-long`
-      }));
+      }), expect.anything());
     });
     
     it('5. spot exclusion - does not query spot orders', async () => {

@@ -167,6 +167,8 @@ export class FuturesAdlService {
               realizedPnl: String(row.realized_pnl || '0'),
               upnl,
               roe,
+              maintenanceMarginRate: String(row.maintenance_margin_rate || '0.005'),
+              collateralAsset: String(row.collateral_asset || 'FUTURES_USDT'),
               updatedAt: row.updated_at,
             };
           })
@@ -210,21 +212,27 @@ export class FuturesAdlService {
         for (const cp of rankedCandidates) {
           if (decimalCompare(remainingDeficit, '0') <= 0) break;
 
-          // Full profit possible at bankruptcy price
+          const fullProfitAtMark = this.risk.calculateRealizedPnl(
+            targetSide as any, cp.qty, cp.entryPrice, currentMarkPrice
+          );
           const fullProfitAtBankruptcy = this.risk.calculateRealizedPnl(
             targetSide as any, cp.qty, cp.entryPrice, bankruptcyPrice
           );
 
-          // Skip if candidate does not produce positive profit at bankruptcy price
-          if (decimalCompare(fullProfitAtBankruptcy, '0') <= 0) continue;
+          // The deficit recovered by closing at bankruptcy instead of mark
+          const deniedProfit = decimalSubtract(fullProfitAtMark, fullProfitAtBankruptcy);
+
+          // If the price hasn't moved beyond bankruptcy, no deficit can be recovered.
+          if (decimalCompare(deniedProfit, '0') <= 0) continue;
 
           let reduceQty = cp.qty;
+          let recoveredDeficit = deniedProfit;
           let actualExtractedProfit = fullProfitAtBankruptcy;
           let finalStatus = 'CLOSED';
 
-          if (decimalCompare(fullProfitAtBankruptcy, remainingDeficit) > 0) {
-            // Partial reduction: reduce only what is needed to cover remaining deficit
-            const ratio = decimalDivide(remainingDeficit, fullProfitAtBankruptcy);
+          if (decimalCompare(deniedProfit, remainingDeficit) > 0) {
+            // Partial reduction
+            const ratio = decimalDivide(remainingDeficit, deniedProfit);
             reduceQty = decimalMultiply(cp.qty, ratio);
 
             // Precision alignment to lot size
@@ -247,9 +255,14 @@ export class FuturesAdlService {
             actualExtractedProfit = this.risk.calculateRealizedPnl(
               targetSide as any, reduceQty, cp.entryPrice, bankruptcyPrice
             );
+            recoveredDeficit = decimalSubtract(
+              this.risk.calculateRealizedPnl(targetSide as any, reduceQty, cp.entryPrice, currentMarkPrice),
+              actualExtractedProfit
+            );
 
             if (decimalCompare(reduceQty, cp.qty) >= 0) {
               reduceQty = cp.qty;
+              recoveredDeficit = deniedProfit;
               actualExtractedProfit = fullProfitAtBankruptcy;
               finalStatus = 'CLOSED';
             } else {
@@ -262,7 +275,7 @@ export class FuturesAdlService {
           const finalRemainingQty = decimalSubtract(cp.qty, reduceQty);
           const finalRemainingIM = decimalSubtract(cp.im, releasedIM);
           const finalMM = this.risk.calculateMaintenanceMargin(
-            finalRemainingQty, cp.entryPrice, '0.005'
+            finalRemainingQty, cp.entryPrice, cp.maintenanceMarginRate
           );
           const totalAccumulatedRealizedPnl = decimalAdd(cp.realizedPnl, actualExtractedProfit);
 
@@ -276,35 +289,39 @@ export class FuturesAdlService {
           );
 
           // Post ledger transaction (double-entry, per-asset zero-sum):
-          //  1. DEBIT  counterparty locked  releasedIM          — release the counterparty's locked IM
-          //  2. CREDIT counterparty available releasedIM        — return the IM to the counterparty (self-funded by #1)
-          //  3. DEBIT  insurance fund         actualExtractedProfit — fund the counterparty's realized profit at
-          //                                                            the bankruptcy price from the bankrupt
-          //                                                            position's loss value held by the fund
-          //  4. CREDIT counterparty available actualExtractedProfit — counterparty's realized profit (funded by #3)
-          //  5. DEBIT  insurance fund         actualExtractedProfit — fund the ADL suspense deficit recovery
-          //  6. CREDIT ADL suspense           actualExtractedProfit — recover the suspense receivable (funded by #5)
-          // Total debits MUST equal total credits per asset.
-          const userTotalCredit = decimalAdd(releasedIM, actualExtractedProfit);
+          // 1. Return the counterparty's IM
+          // 2. The IF pays the counterparty their earned profit up to the bankruptcy price
+          // 3. The IF returns the recovered deficit back to the ADL Suspense account
           const adlRef = `FUTURES-ADL-${event.id}-${cp.id}-${new Date(cp.updatedAt).getTime()}`;
+          const entries: any[] = [
+            { accountId: cp.accountId, asset: cp.collateralAsset, direction: 'DEBIT', amount: releasedIM, balancePool: 'locked' },
+            { accountId: cp.accountId, asset: cp.collateralAsset, direction: 'CREDIT', amount: releasedIM, balancePool: 'available' }
+          ];
+
+          if (decimalCompare(actualExtractedProfit, '0') > 0) {
+            entries.push(
+              { accountId: INSURANCE_FUND_ACCOUNT_ID, asset: cp.collateralAsset, direction: 'DEBIT', amount: actualExtractedProfit, balancePool: 'available' },
+              { accountId: cp.accountId, asset: cp.collateralAsset, direction: 'CREDIT', amount: actualExtractedProfit, balancePool: 'available' }
+            );
+          }
+
+          if (decimalCompare(recoveredDeficit, '0') > 0) {
+            entries.push(
+              { accountId: INSURANCE_FUND_ACCOUNT_ID, asset: cp.collateralAsset, direction: 'DEBIT', amount: recoveredDeficit, balancePool: 'available' },
+              { accountId: ADL_SUSPENSE_ACCOUNT_ID, asset: cp.collateralAsset, direction: 'CREDIT', amount: recoveredDeficit, balancePool: 'available' }
+            );
+          }
 
           await this.ledger.postTransaction({
             accountId: cp.accountId,
             transactionType: 'FUTURES_LIQUIDATION' as any,
             referenceId: adlRef,
             description: `ADL Counterparty Close: ${event.symbol} ${targetSide} ${reduceQty} @ ${bankruptcyPrice}`,
-            entries: [
-              { accountId: cp.accountId, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: releasedIM, balancePool: 'locked' },
-              { accountId: cp.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: releasedIM, balancePool: 'available' },
-              { accountId: INSURANCE_FUND_ACCOUNT_ID, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: actualExtractedProfit, balancePool: 'available' },
-              { accountId: cp.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: actualExtractedProfit, balancePool: 'available' },
-              { accountId: INSURANCE_FUND_ACCOUNT_ID, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: actualExtractedProfit, balancePool: 'available' },
-              { accountId: ADL_SUSPENSE_ACCOUNT_ID, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: actualExtractedProfit, balancePool: 'available' },
-            ],
+            entries
           }, txClient);
 
-          remainingDeficit = decimalSubtract(remainingDeficit, actualExtractedProfit);
-          totalExtracted = decimalAdd(totalExtracted, actualExtractedProfit);
+          remainingDeficit = decimalSubtract(remainingDeficit, recoveredDeficit);
+          totalExtracted = decimalAdd(totalExtracted, recoveredDeficit);
 
           lastCpAccountId = cp.accountId;
           lastCpPositionId = cp.id;

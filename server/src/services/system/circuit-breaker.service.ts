@@ -14,6 +14,9 @@ import { logger } from '../../config/logger';
 export class CircuitBreakerService {
   private audit: AuditService;
   private cachedState: SystemCircuitBreakerEntity | null = null;
+  private cachedAt: number = 0;
+  /** Cache TTL in milliseconds — prevents multi-node staleness. */
+  private readonly cacheTTLMs = 3000;
 
   constructor(
     private database: IDatabaseConnection = db,
@@ -27,31 +30,76 @@ export class CircuitBreakerService {
    */
   public resetCache(): void {
     this.cachedState = null;
+    this.cachedAt = 0;
   }
 
   /**
-   * Fetch current circuit breaker operational state
+   * Fetch current circuit breaker operational state.
+   * Fail-closed: when the DB row is missing or the query fails, the system
+   * defaults to HALT_ALL in **production** (trading halts) and to
+   * SYSTEM_ACTIVE in dev/test (migration 014 seeds the row).
+   * Cache is refreshed every `cacheTTLMs` milliseconds so multi-node
+   * halt/resume propagates within a bounded time window.
    */
   public async getState(): Promise<SystemCircuitBreakerEntity> {
-    if (this.cachedState) {
+    const now = Date.now();
+    if (this.cachedState && (now - this.cachedAt) < this.cacheTTLMs) {
       return this.cachedState;
     }
 
-    const res = await this.database.query<any>(
-      `SELECT id, mode,
-              is_spot_trading_enabled AS "isSpotTradingEnabled",
-              is_futures_trading_enabled AS "isFuturesTradingEnabled",
-              is_withdrawals_enabled AS "isWithdrawalsEnabled",
-              is_deposits_enabled AS "isDepositsEnabled",
-              halt_reason AS "haltReason",
-              halted_by AS "haltedBy",
-              updated_at AS "updatedAt"
-       FROM system_circuit_breakers
-       WHERE id = 'SYSTEM_GLOBAL'`
-    );
+    let row: any;
+    try {
+      const res = await this.database.query<any>(
+        `SELECT id, mode,
+                is_spot_trading_enabled AS "isSpotTradingEnabled",
+                is_futures_trading_enabled AS "isFuturesTradingEnabled",
+                is_withdrawals_enabled AS "isWithdrawalsEnabled",
+                is_deposits_enabled AS "isDepositsEnabled",
+                halt_reason AS "haltReason",
+                halted_by AS "haltedBy",
+                updated_at AS "updatedAt"
+         FROM system_circuit_breakers
+         WHERE id = 'SYSTEM_GLOBAL'`
+      );
+      row = res.rows[0];
+    } catch (err: any) {
+      // DB query failure — fail closed
+      logger.error('Circuit breaker state query failed, defaulting to fail-closed', { error: err.message });
+      const failClosed: SystemCircuitBreakerEntity = {
+        id: 'SYSTEM_GLOBAL',
+        mode: 'HALT_ALL',
+        isSpotTradingEnabled: false,
+        isFuturesTradingEnabled: false,
+        isWithdrawalsEnabled: false,
+        isDepositsEnabled: false,
+        haltReason: 'CIRCUIT_BREAKER_STATE_UNAVAILABLE',
+        haltedBy: null,
+        updatedAt: new Date(),
+      };
+      this.cachedState = failClosed;
+      this.cachedAt = now;
+      return failClosed;
+    }
 
-    if (res.rows.length === 0) {
-      // Default fallback
+    if (!row) {
+      // Missing row — fail closed in production, default active in dev/test
+      if (process.env.NODE_ENV === 'production') {
+        const failClosed: SystemCircuitBreakerEntity = {
+          id: 'SYSTEM_GLOBAL',
+          mode: 'HALT_ALL',
+          isSpotTradingEnabled: false,
+          isFuturesTradingEnabled: false,
+          isWithdrawalsEnabled: false,
+          isDepositsEnabled: false,
+          haltReason: 'CIRCUIT_BREAKER_STATE_MISSING',
+          haltedBy: null,
+          updatedAt: new Date(),
+        };
+        this.cachedState = failClosed;
+        this.cachedAt = now;
+        return failClosed;
+      }
+      // Default fallback for dev/test environments
       const defaultState: SystemCircuitBreakerEntity = {
         id: 'SYSTEM_GLOBAL',
         mode: 'SYSTEM_ACTIVE',
@@ -64,10 +112,10 @@ export class CircuitBreakerService {
         updatedAt: new Date(),
       };
       this.cachedState = defaultState;
+      this.cachedAt = now;
       return defaultState;
     }
 
-    const row = res.rows[0];
     const state: SystemCircuitBreakerEntity = {
       id: row.id,
       mode: row.mode,
@@ -81,6 +129,7 @@ export class CircuitBreakerService {
     };
 
     this.cachedState = state;
+    this.cachedAt = Date.now();
     return state;
   }
 
@@ -197,6 +246,7 @@ export class CircuitBreakerService {
     };
 
     this.cachedState = newState;
+    this.cachedAt = Date.now();
 
     // Record immutable audit log
     await this.audit.record({
@@ -299,6 +349,7 @@ export class CircuitBreakerService {
     };
 
     this.cachedState = newState;
+    this.cachedAt = Date.now();
 
     // Record immutable audit log
     await this.audit.record({

@@ -22,7 +22,10 @@ import {
   CustodyTransactionStatus,
   DepositAddress,
   GetOrCreateDepositAddressRequest,
+  TreasuryTransferRequest,
   WithdrawalRequest,
+  ReplacementGasPolicy,
+  SweepStatusResult,
 } from './custody.types';
 
 // ---------------------------------------------------------------------------
@@ -60,8 +63,41 @@ export interface ICustodyReadAdapter {
   /** Look up a withdrawal request by client-provided id. */
   getWithdrawalStatus(clientWithdrawalId: string): Promise<WithdrawalRequest>;
 
+  /**
+   * Phase 10.4 (unfreeze): status lookup for a treasury transfer by its
+   * immutable treasuryIntentId. providerReference MUST be the physical
+   * blockchain tx hash once one exists.
+   */
+  getTreasuryTransferStatus?(treasuryIntentId: string): Promise<WithdrawalRequest>;
+
   /** Look up a custody transaction by provider transaction id. */
   getTransaction(providerTransactionId: string): Promise<CustodyTransaction>;
+
+  /** Check the status of a broadcasted sweep transaction. */
+  checkSweepStatus?(txHash: string, network: string): Promise<SweepStatusResult>;
+
+  /**
+   * P2 (6E-4C-2): presence probe for a broadcast sweep transaction —
+   * still pending in mempool vs mined vs dropped. `nonceConsumed` reports
+   * whether the chain nonce has moved past the artifact's nonce (evidence of
+   * an external replacement).
+   */
+  getSweepTxPresence?(
+    txHash: string,
+    network: string,
+    expectedNonce?: number
+  ): Promise<{ present: boolean; mined: boolean; nonceConsumed: boolean | null }>;
+
+  /**
+   * P2 (6E-4C-2): physical-vs-database reconciliation for one forwarder
+   * group. Purely operational — records custody_reconciliation_events, never
+   * touches user balances.
+   */
+  reconcileDepositAddress?(
+    network: string,
+    address: string,
+    asset: string
+  ): Promise<{ expectedRemaining: string; physical: string; status: 'BALANCED' | 'EXTRA_FUNDS' | 'SHORTFALL' }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +114,50 @@ export interface ICustodyWriteAdapter {
   requestWithdrawal(request: WithdrawalRequest): Promise<WithdrawalRequest>;
 
   /**
+   * Request a replacement/speed-up transaction for a pending withdrawal.
+   */
+  replaceWithdrawal?(clientWithdrawalId: string, gasPolicy: ReplacementGasPolicy): Promise<WithdrawalRequest>;
+
+  /**
+   * Request a cancellation transaction (0 value to self) for a pending withdrawal.
+   */
+  cancelWithdrawal?(clientWithdrawalId: string, gasPolicy: ReplacementGasPolicy): Promise<WithdrawalRequest>;
+
+  /**
+   * Instruct the custody provider to sweep the balance of a deposit address to the hot wallet.
+   * Groups multiple pending sweep requests for the same address.
+   */
+  sweepDepositAddress?(
+    network: string,
+    depositAddress: string,
+    asset: string,
+    pendingSweepIds: string[]
+  ): Promise<string>;
+  /**
+   * Check the status of a broadcasted sweep transaction.
+   */
+  checkSweepStatus?(txHash: string, network: string): Promise<SweepStatusResult>;
+
+  /**
+   * P2 (6E-4C-2): presence probe for a broadcast sweep transaction.
+   */
+  getSweepTxPresence?(
+    txHash: string,
+    network: string,
+    expectedNonce?: number
+  ): Promise<{ present: boolean; mined: boolean; nonceConsumed: boolean | null }>;
+
+  /**
+   * P2 (6E-4C-2): physical-vs-database custody reconciliation.
+   */
+  reconcileDepositAddress?(
+    network: string,
+    address: string,
+    asset: string
+  ): Promise<{ expectedRemaining: string; physical: string; status: 'BALANCED' | 'EXTRA_FUNDS' | 'SHORTFALL' }>;
+
+
+  /**
    * Advance the status of a mock/simulated transaction. Used by the mock to
    * model lifecycle transitions deterministically in tests. Real providers
    * would instead report status through lookups after blockchain events.
@@ -86,6 +166,21 @@ export interface ICustodyWriteAdapter {
     providerTransactionId: string,
     status: CustodyTransactionStatus,
   ): Promise<CustodyTransaction>;
+
+  /**
+   * Phase 10.4 (unfreeze): dedicated HOUSE TREASURY transfer operation.
+   *
+   * Structurally SEPARATE from requestWithdrawal (customer path):
+   *   - correlation is treasuryIntentId (never a customer withdrawal id),
+   *   - the principal is the house treasury, never a customer account,
+   *   - artifacts are persisted in the treasury custody artifact store
+   *     (never in the customer withdrawal_transactions table),
+   *   - no customer ledger/wallet semantics are reachable from here.
+   * Providers advertise it via CustodyProviderCapability.TREASURY_TRANSFER.
+   * Optional: providers without treasury support simply omit it and the CAL
+   * fails closed with CustodyCapabilityUnavailableError.
+   */
+  submitTreasuryTransfer?(request: TreasuryTransferRequest): Promise<WithdrawalRequest>;
 }
 
 // ---------------------------------------------------------------------------

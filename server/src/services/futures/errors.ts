@@ -81,3 +81,43 @@ export class PositionAlreadyLiquidatedError extends FuturesError {
     super(`Position "${positionId}" has already been liquidated or closed`, 400, FuturesErrorCode.POSITION_ALREADY_LIQUIDATED, { positionId });
   }
 }
+
+/**
+ * Raised when a liquidation request targets a position that does not belong
+ * to the authenticated account (cross-account liquidation attempt).
+ */
+export class LiquidationNotAuthorizedError extends FuturesError {
+  constructor(positionId: string) {
+    super(`Access denied: position "${positionId}" does not belong to the authenticated account`, 403, FuturesErrorCode.ACCOUNT_OWNERSHIP_DENIED, { positionId });
+  }
+}
+
+/**
+ * Raised when a supplied or sourced mark price is invalid or implausible
+ * (non-positive, non-numeric, NaN/Infinity, or outside sanity bounds).
+ */
+export class InvalidMarkPriceError extends FuturesError {
+  constructor(positionId: string, reason: string) {
+    super(`Invalid mark price for position "${positionId}": ${reason}`, 400, FuturesErrorCode.INVALID_PRICE, { positionId, reason });
+  }
+}
+
+/**
+ * Raised when the authoritative mark price source is unavailable or unsafe
+ * in the current environment (fail-closed behavior).
+ */
+export class MarkPriceUnavailableError extends FuturesError {
+  constructor(symbol: string, reason: string) {
+    super(`Authoritative mark price unavailable for ${symbol}: ${reason}`, 503, FuturesErrorCode.INVALID_PRICE, { symbol, reason });
+  }
+}
+
+/**
+ * Raised when a risk-sensitive futures operation is attempted while the
+ * futures trading circuit breaker is halted (fail-closed behavior).
+ */
+export class FuturesHaltedError extends FuturesError {
+  constructor(symbol: string, reason?: string) {
+    super(`Futures trading is currently halted${reason ? `: ${reason}` : ''}`, 503, FuturesErrorCode.CONTRACT_DISABLED, { symbol, reason });
+  }
+}

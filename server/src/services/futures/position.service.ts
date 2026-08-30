@@ -17,7 +17,7 @@ import {
   decimalZero,
   decimalMin,
 } from '../ledger/decimal';
-import { PositionNotFoundError, NoPositionToCloseError } from './errors';
+import { PositionNotFoundError, NoPositionToCloseError, PositionAlreadyLiquidatedError } from './errors';
 
 export interface CreatePositionParams {
   accountId: string;
@@ -29,6 +29,8 @@ export interface CreatePositionParams {
   marginMode: MarginMode;
   maintenanceMarginRate: string;
   availableMargin?: string;
+  /** Asset in which margin was actually locked. If omitted, defaults to 'FUTURES_USDT'. */
+  collateralAsset?: string;
 }
 
 export interface ReducePositionResult {
@@ -53,39 +55,46 @@ export class FuturesPositionService {
 
   /**
    * Get an active OPEN position for an account, symbol, and side.
+   * If lock is true, applies FOR UPDATE to prevent concurrent modifications (requires a transaction).
    */
   public async getOpenPosition(
     accountId: string,
     symbol: string,
-    side: PositionSide
+    side: PositionSide,
+    txClient?: IDatabaseConnection,
+    lock: boolean = false
   ): Promise<FuturesPositionEntity | null> {
     const cleanSymbol = symbol.trim().toUpperCase();
-    const res = await this.database.query<any>(
-      "SELECT * FROM futures_positions WHERE account_id = $1 AND symbol = $2 AND side = $3 AND status = 'OPEN'",
-      [accountId, cleanSymbol, side]
-    );
-
-    const row = res.rows[0];
-    if (!row) return null;
-    return this.mapPosition(row);
+    const dbClient = txClient ?? this.database;
+    const query = lock
+      ? "SELECT * FROM futures_positions WHERE account_id = $1 AND symbol = $2 AND side = $3 AND status = 'OPEN' FOR UPDATE"
+      : "SELECT * FROM futures_positions WHERE account_id = $1 AND symbol = $2 AND side = $3 AND status = 'OPEN'";
+    const res = await dbClient.query<any>(query, [accountId, cleanSymbol, side]);
+    return res.rows[0] ? this.mapPosition(res.rows[0]) : null;
   }
 
   /**
    * Get all active OPEN positions for an account.
    */
-  public async getOpenPositions(accountId: string): Promise<FuturesPositionEntity[]> {
-    const res = await this.database.query<any>(
-      "SELECT * FROM futures_positions WHERE account_id = $1 AND status = 'OPEN'",
-      [accountId]
-    );
+  public async getOpenPositions(
+    accountId: string,
+    txClient?: IDatabaseConnection,
+    lock: boolean = false
+  ): Promise<FuturesPositionEntity[]> {
+    const dbClient = txClient ?? this.database;
+    const query = lock
+      ? "SELECT * FROM futures_positions WHERE account_id = $1 AND status = 'OPEN' FOR UPDATE"
+      : "SELECT * FROM futures_positions WHERE account_id = $1 AND status = 'OPEN'";
+    const res = await dbClient.query<any>(query, [accountId]);
     return res.rows.map(r => this.mapPosition(r));
   }
 
   /**
    * Get position by ID.
    */
-  public async getPositionById(positionId: string): Promise<FuturesPositionEntity | null> {
-    const res = await this.database.query<any>(
+  public async getPositionById(positionId: string, txClient?: IDatabaseConnection): Promise<FuturesPositionEntity | null> {
+    const dbClient = txClient ?? this.database;
+    const res = await dbClient.query<any>(
       'SELECT * FROM futures_positions WHERE id = $1',
       [positionId]
     );
@@ -97,7 +106,8 @@ export class FuturesPositionService {
   /**
    * Create a new OPEN position in the database.
    */
-  public async createPosition(params: CreatePositionParams): Promise<FuturesPositionEntity> {
+  public async createPosition(params: CreatePositionParams, txClient?: IDatabaseConnection): Promise<FuturesPositionEntity> {
+    const dbClient = txClient ?? this.database;
     const {
       accountId,
       symbol,
@@ -108,6 +118,7 @@ export class FuturesPositionService {
       marginMode,
       maintenanceMarginRate,
       availableMargin = '0',
+      collateralAsset = 'FUTURES_USDT',
     } = params;
 
     const cleanSymbol = symbol.trim().toUpperCase();
@@ -144,16 +155,19 @@ export class FuturesPositionService {
       maintenanceMargin,
       realizedPnl: decimalZero(),
       status: 'OPEN',
+      collateralAsset,
+      maintenanceMarginRate,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
 
-    await this.database.query(
+    await dbClient.query(
       `INSERT INTO futures_positions (
         id, account_id, symbol, side, quantity, entry_price, mark_price, liquidation_price,
         leverage, margin_mode, initial_margin, maintenance_margin, realized_pnl, status,
+        collateral_asset, maintenance_margin_rate,
         created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
       [
         position.id,
         position.accountId,
@@ -169,6 +183,8 @@ export class FuturesPositionService {
         position.maintenanceMargin,
         position.realizedPnl,
         position.status,
+        position.collateralAsset,
+        position.maintenanceMarginRate,
         position.createdAt,
         position.updatedAt,
       ]
@@ -185,8 +201,11 @@ export class FuturesPositionService {
     addQuantity: string,
     addPrice: string,
     maintenanceMarginRate: string,
-    availableMargin = '0'
+    availableMargin = '0',
+    txClient?: IDatabaseConnection
   ): Promise<FuturesPositionEntity> {
+    const dbClient = txClient ?? this.database;
+
     const qAdd = decimalNormalize(addQuantity);
     const pAdd = decimalNormalize(addPrice);
 
@@ -229,13 +248,14 @@ export class FuturesPositionService {
     position.initialMargin = newInitialMargin;
     position.maintenanceMargin = newMaintenanceMargin;
     position.liquidationPrice = newLiquidationPrice;
+    position.maintenanceMarginRate = maintenanceMarginRate;
     position.updatedAt = new Date();
 
-    await this.database.query(
+    const incRes = await dbClient.query(
       `UPDATE futures_positions SET
         quantity = $1, entry_price = $2, mark_price = $3, liquidation_price = $4,
-        initial_margin = $5, maintenance_margin = $6, updated_at = NOW()
-      WHERE id = $7`,
+        initial_margin = $5, maintenance_margin = $6, maintenance_margin_rate = $7, updated_at = NOW()
+      WHERE id = $8 AND status = 'OPEN'`,
       [
         position.quantity,
         position.entryPrice,
@@ -243,9 +263,19 @@ export class FuturesPositionService {
         position.liquidationPrice,
         position.initialMargin,
         position.maintenanceMargin,
+        position.maintenanceMarginRate,
         position.id,
       ]
     );
+
+    // Increase-vs-liquidation race guard: if the position was concurrently
+    // liquidated (status != OPEN), the guarded UPDATE affects zero rows.
+    const incAffected =
+      incRes?.rowCount ??
+      (incRes && 'rows' in incRes ? ((incRes as any).rows || []).length : 0);
+    if (incAffected === 0) {
+      throw new PositionAlreadyLiquidatedError(position.id);
+    }
 
     return position;
   }
@@ -258,8 +288,10 @@ export class FuturesPositionService {
     reduceQuantity: string,
     reducePrice: string,
     maintenanceMarginRate: string,
-    availableMargin = '0'
+    availableMargin = '0',
+    txClient?: IDatabaseConnection
   ): Promise<ReducePositionResult> {
+    const dbClient = txClient ?? this.database;
     const qReduce = decimalNormalize(reduceQuantity);
     const pReduce = decimalNormalize(reducePrice);
     const currentQty = position.quantity;
@@ -320,11 +352,11 @@ export class FuturesPositionService {
     position.status = status;
     position.updatedAt = new Date();
 
-    await this.database.query(
+    const reduceRes = await dbClient.query(
       `UPDATE futures_positions SET
         quantity = $1, mark_price = $2, initial_margin = $3, maintenance_margin = $4,
         liquidation_price = $5, realized_pnl = $6, status = $7, updated_at = NOW()
-      WHERE id = $8`,
+      WHERE id = $8 AND status = 'OPEN'`,
       [
         position.quantity,
         position.markPrice,
@@ -336,6 +368,17 @@ export class FuturesPositionService {
         position.id,
       ]
     );
+
+    // Close-vs-liquidation race guard: if the position is no longer OPEN
+    // (e.g. a concurrent liquidation flipped it to LIQUIDATED), the guarded
+    // UPDATE affects zero rows. Throw so a stale CLOSED update can never
+    // overwrite a LIQUIDATED position.
+    const affectedRows =
+      reduceRes?.rowCount ??
+      (reduceRes && 'rows' in reduceRes ? ((reduceRes as any).rows || []).length : 0);
+    if (affectedRows === 0) {
+      throw new PositionAlreadyLiquidatedError(position.id);
+    }
 
     return {
       updatedPosition: position,
@@ -408,6 +451,8 @@ export class FuturesPositionService {
       maintenanceMargin: r.maintenanceMargin || r.maintenance_margin,
       realizedPnl: r.realizedPnl || r.realized_pnl || decimalZero(),
       status: r.status,
+      collateralAsset: r.collateralAsset || r.collateral_asset || 'FUTURES_USDT',
+      maintenanceMarginRate: r.maintenanceMarginRate || r.maintenance_margin_rate || '0.005',
       createdAt: new Date(r.createdAt || r.created_at),
       updatedAt: new Date(r.updatedAt || r.updated_at),
     };

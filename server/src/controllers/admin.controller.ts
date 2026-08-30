@@ -284,5 +284,36 @@ export class AdminController {
       next(err);
     }
   }
+  public static async speedUpWithdrawal(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { withdrawalService } = await import('../services/wallet/withdrawal.service');
+      const withdrawalId = req.params.id as string;
+      const gasMultiplier = req.body.gasMultiplier ? parseFloat(req.body.gasMultiplier) : 1.15;
+
+      const result = await withdrawalService.replaceWithdrawal(withdrawalId, req.user!.id, {
+        minimumMultiplier: gasMultiplier
+      });
+
+      res.status(200).json({ success: true, transaction: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  public static async cancelWithdrawal(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { withdrawalService } = await import('../services/wallet/withdrawal.service');
+      const withdrawalId = req.params.id as string;
+      const gasMultiplier = req.body.gasMultiplier ? parseFloat(req.body.gasMultiplier) : 1.15;
+
+      const result = await withdrawalService.cancelWithdrawalOnChain(withdrawalId, req.user!.id, {
+        minimumMultiplier: gasMultiplier
+      });
+
+      res.status(200).json({ success: true, transaction: result });
+    } catch (err) {
+      next(err);
+    }
+  }
 }
 

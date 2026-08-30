@@ -111,13 +111,38 @@ export class FuturesTpSlService {
     }
   }
 
-  public async getConfigForPosition(positionId: string): Promise<FuturesTpSlConfigEntity | null> {
+  /**
+   * Retrieve the TP/SL config for a position.
+   *
+   * When `userId` is provided, ownership is enforced: the position must belong
+   * to a FUTURES account of that user, otherwise an AccountOwnershipDeniedError
+   * is thrown (no cross-account existence leak).
+   */
+  public async getConfigForPosition(positionId: string, userId?: string): Promise<FuturesTpSlConfigEntity | null> {
     const res = await this.database.query<any>(
       'SELECT * FROM futures_tpsl_configs WHERE position_id = $1',
       [positionId]
     );
     const row = res.rows[0];
     if (!row) return null;
+
+    if (userId) {
+      const posRes = await this.database.query<any>(
+        'SELECT account_id AS "accountId" FROM futures_positions WHERE id = $1',
+        [positionId]
+      );
+      const pos = posRes.rows[0];
+      const accountId = pos?.accountId || row.accountId || row.account_id;
+      const accRes = await this.database.query<any>(
+        'SELECT id, user_id AS "userId" FROM accounts WHERE id = $1',
+        [accountId]
+      );
+      const acc = accRes.rows[0];
+      if (!acc || (acc.userId || acc.user_id) !== userId) {
+        throw new AccountOwnershipDeniedError(accountId);
+      }
+    }
+
     return {
       id: row.id,
       positionId: row.positionId || row.position_id,
