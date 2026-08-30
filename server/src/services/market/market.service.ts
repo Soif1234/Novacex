@@ -9,6 +9,7 @@ import {
   OrderBookLevel,
 } from './types';
 import { EventBus, eventBus } from './event-bus';
+import { db } from '../../config/database';
 import { matchingEngine, MatchingEngine } from '../spot/matching.engine';
 import { developmentMarkPriceProvider, IMarkPriceProvider } from '../futures/mark-price.provider';
 import {
@@ -147,12 +148,12 @@ export class MarketDataService {
   /**
    * Get OrderBook snapshot from authoritative matching engine.
    */
-  public getOrderBook(symbol: string, depth = 50): OrderBookSnapshot {
+  public async getOrderBook(symbol: string, depth = 50): Promise<OrderBookSnapshot> {
     const cleanSym = symbol.trim().toUpperCase();
-    const book = this.engine.getDepth(cleanSym, depth);
+    const book = await this.engine.getDepth(db, cleanSym, depth);
 
-    const bids: OrderBookLevel[] = book.bids.map(b => [b.price, b.quantity]);
-    const asks: OrderBookLevel[] = book.asks.map(a => [a.price, a.quantity]);
+    const bids: OrderBookLevel[] = book.bids.map((b: any) => [b.price, b.quantity]);
+    const asks: OrderBookLevel[] = book.asks.map((a: any) => [a.price, a.quantity]);
 
     return {
       symbol: cleanSym,
@@ -289,14 +290,14 @@ export class MarketDataService {
   /**
    * Emit an incremental OrderBook update event from current matching engine state.
    */
-  public emitOrderBookUpdate(symbol: string): OrderBookUpdate {
+  public async emitOrderBookUpdate(symbol: string): Promise<OrderBookUpdate> {
     const cleanSym = symbol.trim().toUpperCase();
     const prevSeq = this.getCurrentSequence(cleanSym);
     const seq = this.nextSequence(cleanSym);
-    const book = this.engine.getDepth(cleanSym, 20);
+    const book = await this.engine.getDepth(db, cleanSym, 20);
 
-    const bids: OrderBookLevel[] = book.bids.map(b => [b.price, b.quantity]);
-    const asks: OrderBookLevel[] = book.asks.map(a => [a.price, a.quantity]);
+    const bids: OrderBookLevel[] = book.bids.map((b: any) => [b.price, b.quantity]);
+    const asks: OrderBookLevel[] = book.asks.map((a: any) => [a.price, a.quantity]);
 
     const update: OrderBookUpdate = {
       symbol: cleanSym,

@@ -262,12 +262,49 @@ export class BlockchainMonitorService {
     const events: BlockchainEvent[] = [];
 
     if (this.network === 'ETHEREUM') {
-      // Fetch ERC-20 Transfer events for approved contracts
-      const logs = await this.source.getLogs({
-        fromBlock,
-        toBlock,
-        topics: [[ERC20_TRANSFER_TOPIC]],
-      });
+      const allAddresses = await this.getActiveDepositAddresses();
+      if (allAddresses.length === 0) {
+        return []; // Empty address set: avoid querying the entire chain unnecessarily
+      }
+
+      const assetRes = await this.database.query<any>(
+        `SELECT DISTINCT contract_address
+         FROM asset_networks
+         WHERE network = $1 AND contract_address IS NOT NULL`,
+        [this.network]
+      );
+      const tokenContracts = assetRes.rows.map((r: any) => r.contract_address);
+
+      let logs: any[] = [];
+      if (tokenContracts.length > 0) {
+        const ADDRESS_BATCH_SIZE = 500;
+        for (let i = 0; i < allAddresses.length; i += ADDRESS_BATCH_SIZE) {
+          const batch = allAddresses.slice(i, i + ADDRESS_BATCH_SIZE);
+          const paddedAddresses = batch.map((addr: string) =>
+            '0x' + addr.toLowerCase().replace('0x', '').padStart(64, '0')
+          );
+
+          const batchLogs = await this.source.getLogs({
+            fromBlock,
+            toBlock,
+            addresses: tokenContracts,
+            topics: [
+              [ERC20_TRANSFER_TOPIC],
+              null,
+              paddedAddresses
+            ],
+          });
+          logs.push(...batchLogs);
+        }
+
+        // Defensively deduplicate logs to ensure a legitimate event appears exactly once
+        const uniqueLogs = new Map<string, any>();
+        for (const log of logs) {
+          const key = `${log.transactionHash}:${log.logIndex}`;
+          uniqueLogs.set(key, log);
+        }
+        logs = Array.from(uniqueLogs.values());
+      }
 
       for (const log of logs) {
         if (log.removed) continue; // Skip reorg-removed logs
@@ -585,10 +622,16 @@ export class BlockchainMonitorService {
     status: BlockchainDepositStatus,
     rejection: MonitorRejection | null,
   ): Promise<void> {
+    let eventType: 'NATIVE' | 'ERC20' | undefined = undefined;
+    if (event.chainId === 'ethereum') {
+      eventType = event.tokenContract ? 'ERC20' : 'NATIVE';
+    }
+
     const id = computeBlockchainEventId(
       event.chainId,
       event.transactionHash,
       event.logIndex,
+      eventType
     );
 
     const now = new Date();
@@ -902,26 +945,22 @@ export class BlockchainMonitorService {
    * by asset (used to distinguish native ETH detection from ERC-20 logs).
    */
   private async getActiveDepositAddresses(asset?: string): Promise<string[]> {
-    try {
-      if (asset) {
-        const res = await this.database.query<any>(
-          `SELECT DISTINCT blockchain_address AS "blockchainAddress"
-           FROM deposit_addresses
-           WHERE network = $1 AND asset = $2 AND status IN ('ACTIVE', 'ROTATED', 'REVOKED')`,
-          [this.network, asset],
-        );
-        return res.rows.map((r: any) => r.blockchainAddress);
-      }
+    if (asset) {
       const res = await this.database.query<any>(
         `SELECT DISTINCT blockchain_address AS "blockchainAddress"
          FROM deposit_addresses
-         WHERE network = $1 AND status IN ('ACTIVE', 'ROTATED', 'REVOKED')`,
-        [this.network],
+         WHERE network = $1 AND asset = $2 AND status IN ('ACTIVE', 'ROTATED', 'REVOKED')`,
+        [this.network, asset],
       );
       return res.rows.map((r: any) => r.blockchainAddress);
-    } catch {
-      return [];
     }
+    const res = await this.database.query<any>(
+      `SELECT DISTINCT blockchain_address AS "blockchainAddress"
+       FROM deposit_addresses
+       WHERE network = $1 AND status IN ('ACTIVE', 'ROTATED', 'REVOKED')`,
+      [this.network],
+    );
+    return res.rows.map((r: any) => r.blockchainAddress);
   }
 
   /**

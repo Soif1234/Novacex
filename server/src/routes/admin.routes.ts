@@ -5,6 +5,8 @@ import { ReconciliationController } from '../controllers/reconciliation.controll
 import { requireAuth, requireRole, require2FA } from '../middleware/auth';
 import { requireCircuitBreaker } from '../middleware/circuitBreaker';
 import { mutationRateLimiter } from '../middleware/rateLimit';
+// Treasury Operations (Phase 10.6)
+import { TreasuryController } from '../controllers/treasury.controller';
 
 const router = Router();
 
@@ -58,6 +60,31 @@ router.post(
   require2FA,
   mutationRateLimiter(),
   AdminController.resolveWithdrawal
+);
+
+router.post(
+  '/withdrawals/:id/speedup',
+  requireCircuitBreaker('WITHDRAWALS'),
+  require2FA,
+  mutationRateLimiter(),
+  AdminController.speedUpWithdrawal
+);
+router.post(
+  '/withdrawals/:id/cancel',
+  requireCircuitBreaker('WITHDRAWALS'),
+  require2FA,
+  mutationRateLimiter(),
+  AdminController.cancelWithdrawal
+);
+
+// Treasury Operations (Phase 10.6) — Safe consolidation, ADMIN + 2FA only.
+// Destination is NEVER admin input: TreasuryManager resolves the trusted Safe
+// anchor from immutable env configuration and verifies it on-chain.
+router.post(
+  '/treasury/consolidate',
+  require2FA,
+  mutationRateLimiter(),
+  TreasuryController.consolidateToSafe
 );
 
 export const adminRoutes = router;

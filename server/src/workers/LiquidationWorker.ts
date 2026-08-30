@@ -1,7 +1,8 @@
 import { futuresLiquidationService } from '../services/futures/liquidation.service';
 import { db } from '../config/database';
 import { logger } from '../config/logger';
-import { developmentMarkPriceProvider } from '../services/futures/mark-price.provider';
+import { marketDataService } from '../services/market/market.service';
+import { circuitBreakerService } from '../services/system/circuit-breaker.service';
 
 export class LiquidationWorker {
   private intervalId: NodeJS.Timeout | null = null;
@@ -32,6 +33,13 @@ export class LiquidationWorker {
 
   private async pollAndLiquidate() {
     try {
+      // Circuit breaker gate: skip the entire cycle if futures trading is halted.
+      const breaker = await circuitBreakerService.isSubsystemOperational('FUTURES_TRADING');
+      if (!breaker.operational) {
+        logger.info('Liquidation worker paused: futures trading is halted', { reason: breaker.reason });
+        return;
+      }
+
       // For efficiency, first get distinct symbols of open positions
       const symbolsRes = await db.query<any>(
         `SELECT DISTINCT symbol FROM futures_positions WHERE status = 'OPEN'`,
@@ -42,8 +50,19 @@ export class LiquidationWorker {
         if (!this.isRunning) break;
         const symbol = row.symbol;
         
-        // Fetch current live mark price
-        const markPrice = await developmentMarkPriceProvider.getMarkPrice(symbol);
+        // Fetch current live mark price from the authoritative source (marketDataService).
+        let markPrice: string;
+        try {
+          const markData = await marketDataService.getMarkPrice(symbol);
+          markPrice = markData.price;
+          if (!markPrice || parseFloat(markPrice) <= 0) {
+            logger.error('Liquidation worker: invalid mark price from marketDataService', { symbol, markPrice });
+            continue; // fail-closed: skip this symbol rather than liquidating at a bad price
+          }
+        } catch (err: any) {
+          logger.error('Liquidation worker: failed to fetch mark price, skipping symbol', { symbol, error: err.message });
+          continue; // fail-closed
+        }
 
         // Find potentially liquidatable positions based on the live mark price
         const positionsRes = await db.query<any>(

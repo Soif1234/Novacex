@@ -1,4 +1,5 @@
 import { TreasuryMonitorService } from '../services/treasury/treasury-monitor.service';
+import { TreasuryManagerService } from '../services/treasury/treasury-manager.service';
 import { logger } from '../config/logger';
 
 export class TreasuryMonitorWorker {
@@ -6,9 +7,9 @@ export class TreasuryMonitorWorker {
   private isRunning = false;
 
   constructor(
-    private readonly service: TreasuryMonitorService,
-    private readonly pollIntervalMs: number = 30000,
-    private readonly rpcUrl: string
+    private readonly monitorService: TreasuryMonitorService,
+    private readonly managerService: TreasuryManagerService,
+    private readonly pollIntervalMs: number = 30000
   ) {}
 
   public start(): void {
@@ -31,7 +32,10 @@ export class TreasuryMonitorWorker {
     if (this.isRunning) return;
     this.isRunning = true;
     try {
-      await this.service.runOnce(this.rpcUrl);
+      // 1. Recover any stuck intents
+      await this.managerService.recoverPendingIntents();
+      // 2. Scan block range
+      await this.monitorService.runOnce();
     } catch (err: any) {
       logger.error(`TreasuryMonitorWorker: Error during run: ${err.message}`);
     } finally {
@@ -39,3 +43,18 @@ export class TreasuryMonitorWorker {
     }
   }
 }
+
+import { db } from '../config/database';
+import { treasuryService } from '../services/treasury/treasury.service';
+import { treasuryManagerService } from '../services/treasury/treasury-manager.service';
+import { SafeVerificationService } from '../services/treasury/safe-verification.service';
+import { env } from '../config/env';
+
+const safeVerifier = new SafeVerificationService();
+const treasuryMonitorService = new TreasuryMonitorService(treasuryService, safeVerifier, 'ETHEREUM');
+
+export const treasuryMonitorWorker = new TreasuryMonitorWorker(
+  treasuryMonitorService,
+  treasuryManagerService,
+  30000
+);

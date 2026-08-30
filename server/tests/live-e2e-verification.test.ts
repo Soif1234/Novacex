@@ -471,22 +471,33 @@ describe('FINAL FRONTEND ↔ BACKEND LIVE E2E VERIFICATION (36 FLOWS)', () => {
     expect(cancelRes.status).toBe('CANCELLED');
   });
 
-  // FLOW 25: Futures Liquidation Evaluation
+  // FLOW 25: Futures Liquidation Evaluation (P0 remediation: client-supplied
+  // markPrice is IGNORED — the route evaluates against the authoritative
+  // mark price only, so an attacker cannot force-liquidation with a fake price)
   it('Flow 25: Futures Liquidation Evaluation (POST /api/v1/futures/positions/:id/liquidate)', async () => {
-    // 1. Non-eligible price returns 400 not eligible
+    // 1. Solvent position at authoritative price returns 400 not eligible,
+    //    regardless of any markPrice supplied by the caller.
     await expect(
       client.post(`/futures/positions/${futuresPositionId}/liquidate`, {
         markPrice: '50000.000000000000000000',
       })
     ).rejects.toThrow();
 
-    // 2. Insolvency-inducing mark price successfully triggers liquidation
-    const liqRes = await client.post<any>(`/futures/positions/${futuresPositionId}/liquidate`, {
-      markPrice: '10000.000000000000000000',
-    });
+    // 2. An insolvency-inducing client markPrice must NOT liquidate the
+    //    position: the controller ignores the body price and uses the
+    //    authoritative mark (dev provider 50000), so the position stays OPEN.
+    await expect(
+      client.post(`/futures/positions/${futuresPositionId}/liquidate`, {
+        markPrice: '10000.000000000000000000',
+      })
+    ).rejects.toThrow();
 
-    expect(liqRes).toBeDefined();
-    expect(liqRes.id || liqRes.liquidationId || liqRes.finalStatus === 'LIQUIDATED' || liqRes.positionId).toBeDefined();
+    // 3. Verify the position was NOT liquidated by the fake-price attempt.
+    const posRes = await client.get<any>(`/futures/positions/${futuresPositionId}`);
+    const pos = posRes.data ?? posRes.position ?? posRes;
+    expect(pos).toBeDefined();
+    expect(pos.status).toBe('OPEN');
+    expect(pos.status).not.toBe('LIQUIDATED');
   });
 
 

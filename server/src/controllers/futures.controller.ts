@@ -288,7 +288,7 @@ export async function getTpSl(req: Request, res: Response, next: NextFunction): 
 
     const positionId = req.params.positionId;
       // @ts-ignore
-    const config = await futuresTpSlService.getConfigForPosition(positionId);
+    const config = await futuresTpSlService.getConfigForPosition(positionId, req.user.id);
 
     res.json({
       success: true,
@@ -302,19 +302,28 @@ export async function getTpSl(req: Request, res: Response, next: NextFunction): 
 /**
  * POST /api/v1/futures/positions/:positionId/liquidate
  * Trigger server-side liquidation check and settlement.
+ *
+ * SECURITY (P0 fix):
+ *  - Only the position owner may liquidate it: the caller's FUTURES account id
+ *    is passed as `authorizedAccountId` and enforced inside the transaction.
+ *  - A customer-provided `markPrice` is NEVER honored here. Liquidation always
+ *    uses the authoritative mark price source for the position's symbol.
  */
 export async function liquidatePosition(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     if (!req.user) {
       throw new AppError('Authentication required', 401, 'UNAUTHORIZED');
-      // @ts-ignore
     }
 
     const positionId = req.params.positionId;
-    const { markPrice } = req.body || {};
 
-      // @ts-ignore
-    const liquidation = await futuresLiquidationService.evaluateAndLiquidate(positionId, markPrice);
+    const futuresAcc = req.user.accounts.find(a => a.type === 'FUTURES');
+    if (!futuresAcc) {
+      throw new AppError('User does not possess an active FUTURES account', 400, 'FUTURES_ACCOUNT_NOT_FOUND');
+    }
+
+    // NOTE: `markPrice` from the request body is deliberately ignored.
+    const liquidation = await futuresLiquidationService.evaluateAndLiquidate(String(positionId), undefined, String(futuresAcc.id));
 
     res.json({
       success: true,

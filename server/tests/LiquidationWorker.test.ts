@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { liquidationWorker } from '../src/workers/LiquidationWorker';
 import { db } from '../src/config/database';
 import { futuresLiquidationService } from '../src/services/futures/liquidation.service';
+import { circuitBreakerService } from '../src/services/system/circuit-breaker.service';
 import { logger } from '../src/config/logger';
 
 describe('LiquidationWorker', () => {
@@ -9,6 +10,12 @@ describe('LiquidationWorker', () => {
     vi.useFakeTimers();
     vi.spyOn(logger, 'error').mockImplementation(() => { return undefined as any });
     vi.spyOn(logger, 'info').mockImplementation(() => { return undefined as any });
+    // Default: futures trading operational so the worker proceeds.
+    vi.spyOn(circuitBreakerService, 'isSubsystemOperational').mockResolvedValue({
+      operational: true,
+      reason: null,
+      mode: 'SYSTEM_ACTIVE',
+    } as any);
   });
 
   afterEach(() => {
@@ -26,6 +33,19 @@ describe('LiquidationWorker', () => {
     liquidationWorker.stop();
     expect((liquidationWorker as any).isRunning).toBe(false);
     expect((liquidationWorker as any).intervalId).toBeNull();
+  });
+
+  it('1b. Worker pauses the cycle when futures trading is halted (fail-closed)', async () => {
+    vi.spyOn(circuitBreakerService, 'isSubsystemOperational').mockResolvedValue({
+      operational: false,
+      reason: 'Emergency halt',
+      mode: 'HALT_ALL',
+    } as any);
+    const dbSpy = vi.spyOn(db, 'query');
+    (liquidationWorker as any).isRunning = true;
+    await (liquidationWorker as any).pollAndLiquidate();
+    // No symbol query should run while halted.
+    expect(dbSpy).not.toHaveBeenCalled();
   });
 
   it('11. LiquidationNotEligibleError is handled safely', async () => {

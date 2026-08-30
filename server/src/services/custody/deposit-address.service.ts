@@ -189,7 +189,7 @@ export class DepositAddressService {
           providerAddress.address,
           providerAddress.memo ?? null,
           'ACTIVE',
-          {},
+          providerAddress.metadata ?? {},
         ],
       );
       const row = res.rows[0];
@@ -333,7 +333,7 @@ export class DepositAddressService {
         providerAddress.address,
         providerAddress.memo ?? null,
         'ACTIVE',
-        {},
+        providerAddress.metadata ?? {},
       ],
     );
     const row = res.rows[0];

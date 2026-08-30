@@ -61,7 +61,12 @@ export class SchemaMigrator {
 
     return files.map(filename => {
       const filePath = path.join(this.migrationsDir, filename);
-      const sql = fs.readFileSync(filePath, 'utf-8');
+      // Strip a leading UTF-8 BOM (U+FEFF). Editors on Windows may save
+      // migration files BOM-prefixed; PostgreSQL rejects the BOM with
+      // `syntax error at or near ""` because it is not valid SQL leading
+      // whitespace. Stripping it here protects every migration at the single
+      // point where SQL is loaded, without altering any migration's content.
+      const sql = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
       const version = filename.split('_')[0] || filename;
       const name = filename.replace(/\.sql$/, '');
       const checksum = crypto.createHash('sha256').update(sql).digest('hex');
