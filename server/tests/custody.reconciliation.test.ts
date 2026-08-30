@@ -486,12 +486,11 @@ describe('Phase 9.8 - Custody Reconciliation Check-3', () => {
 
   it('23. Check-2 / 110 DOUBLE_ENTRY_VIOLATION remains unchanged', async () => {
     env.CUSTODY_ENABLED = false; // isolate Check-2
-    // Seed an INTERNAL_TRANSFER transaction with unbalanced entries (TRADING_FEE
-    // is an external-boundary type now excluded from Check-2 multi-leg scanning).
+    // Seed a TRADING_FEE transaction with unbalanced entries
     const txId = 'tx_unbalanced_' + crypto.randomUUID();
     await db.query(
       `INSERT INTO ledger_transactions (id, account_id, transaction_type, reference_id, description, metadata) VALUES ($1, $2, $3, $4, $5, $6)`,
-      [txId, accountId, 'INTERNAL_TRANSFER', 'ref_' + txId, 'unbalanced', '{}']
+      [txId, accountId, 'TRADING_FEE', 'ref_' + txId, 'unbalanced', '{}']
     );
     // One CREDIT with no matching DEBIT => net non-zero => DOUBLE_ENTRY_VIOLATION
     await db.query(

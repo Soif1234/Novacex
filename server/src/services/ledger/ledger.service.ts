@@ -137,9 +137,8 @@ export class LedgerService {
    * Get balance for a specific account + asset.
    * Returns zero balances if no wallet row exists.
    */
-  public async getBalance(accountId: string, asset: string, externalTxClient?: IDatabaseConnection): Promise<BalanceResult> {
-    const dbClient = externalTxClient || this.database;
-    const result = await dbClient.query<any>(
+  public async getBalance(accountId: string, asset: string): Promise<BalanceResult> {
+    const result = await this.database.query<any>(
       `SELECT available_balance, locked_balance
        FROM wallet_balances
        WHERE account_id = $1 AND asset = $2`,
@@ -255,8 +254,7 @@ export class LedgerService {
     transactionType: LedgerTxType,
     referenceId: string,
     description: string,
-    metadata?: Record<string, unknown>,
-    externalTxClient?: IDatabaseConnection
+    metadata?: Record<string, unknown>
   ): Promise<LedgerTransactionResult> {
     validateAmount(amount);
 
@@ -272,7 +270,7 @@ export class LedgerService {
         // Credit into locked
         { accountId, asset, direction: 'CREDIT', amount, balancePool: 'locked' },
       ],
-    }, externalTxClient);
+    });
   }
 
   // ── Release (locked → available) ─────────────────────────────────────────
@@ -287,8 +285,7 @@ export class LedgerService {
     transactionType: LedgerTxType,
     referenceId: string,
     description: string,
-    metadata?: Record<string, unknown>,
-    externalTxClient?: IDatabaseConnection
+    metadata?: Record<string, unknown>
   ): Promise<LedgerTransactionResult> {
     validateAmount(amount);
 
@@ -304,7 +301,7 @@ export class LedgerService {
         // Credit into available
         { accountId, asset, direction: 'CREDIT', amount, balancePool: 'available' },
       ],
-    }, externalTxClient);
+    });
   }
 
   // ── Internal Transfer (atomic cross-account) ────────────────────────────

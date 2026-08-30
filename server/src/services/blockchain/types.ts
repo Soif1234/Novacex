@@ -21,7 +21,7 @@ export interface GetLogsRequest {
   /** Contract addresses to filter logs by (ERC-20 Transfer events). */
   addresses?: string[];
   /** Topic signatures to filter by (e.g. Transfer event sig). */
-  topics?: (string[] | null)[];
+  topics?: string[][];
 }
 
 export interface BlockHeader {
@@ -122,13 +122,8 @@ export interface IBlockchainSource {
 export function computeBlockchainEventId(
   chainId: string,
   transactionHash: string,
-  logIndex: number,
-  eventType?: 'NATIVE' | 'ERC20'
+  logIndex: number
 ): string {
-  if (eventType) {
-    const payload = `${eventType}:${chainId}:${transactionHash}:${logIndex}`;
-    return crypto.createHash('sha256').update(payload).digest('hex');
-  }
   const payload = `${chainId}:${transactionHash}:${logIndex}`;
   return crypto.createHash('sha256').update(payload).digest('hex');
 }

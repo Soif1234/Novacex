@@ -775,7 +775,7 @@ describe('Server-Side Spot Order & Matching Engine (Phase 4 Step 7)', () => {
     const recoveredCount = await newSpot.recoverMatchingEngine();
     expect(recoveredCount).toBe(2);
 
-    const depth = await newSpot.getOrderBookDepth('BTCUSDT');
+    const depth = newSpot.getOrderBookDepth('BTCUSDT');
     expect(depth.asks).toHaveLength(2);
     expect(depth.asks[0].price).toBe(decimalNormalize('51000'));
   });
@@ -794,9 +794,9 @@ describe('Server-Side Spot Order & Matching Engine (Phase 4 Step 7)', () => {
   });
 
   // ── 41. No synthetic/external liquidity is created ─────────────────────────
-  it('41. no synthetic/external liquidity is created (empty book returns empty)', async () => {
+  it('41. no synthetic/external liquidity is created (empty book returns empty)', () => {
     const emptyEngine = new MatchingEngine();
-    const depth = await emptyEngine.getDepth(database, 'BTCUSDT');
+    const depth = emptyEngine.getDepth('BTCUSDT');
     expect(depth.bids).toHaveLength(0);
     expect(depth.asks).toHaveLength(0);
   });

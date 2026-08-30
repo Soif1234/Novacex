@@ -80,555 +80,596 @@ export class SpotService {
   /**
    * Validate trading pair and order parameters.
    */
-  public async validateTradingPair(symbol: string, txClient?: IDatabaseConnection): Promise<TradingPairEntity> {
+  public async validateTradingPair(symbol: string): Promise<TradingPairEntity> {
+    if (!symbol || typeof symbol !== 'string') {
+      throw new InvalidTradingPairError(String(symbol), 'Symbol is required');
+    }
 
-          if (!symbol || typeof symbol !== 'string') {
-            throw new InvalidTradingPairError(String(symbol), 'Symbol is required');
-          }
+    const cleanSymbol = symbol.trim().toUpperCase();
+    const res = await this.database.query<any>(
+      'SELECT symbol, base_asset AS "baseAsset", quote_asset AS "quoteAsset", market_type AS "marketType", tick_size AS "tickSize", lot_size AS "lotSize", min_notional AS "minNotional", maker_fee_rate AS "makerFeeRate", taker_fee_rate AS "takerFeeRate", is_active AS "isActive", created_at AS "createdAt" FROM trading_pairs WHERE symbol = $1',
+      [cleanSymbol]
+    );
 
-          const cleanSymbol = symbol.trim().toUpperCase();
-          const client = txClient || this.database;
-          const res = await client.query<any>(
-            'SELECT symbol, base_asset AS "baseAsset", quote_asset AS "quoteAsset", market_type AS "marketType", tick_size AS "tickSize", lot_size AS "lotSize", min_notional AS "minNotional", maker_fee_rate AS "makerFeeRate", taker_fee_rate AS "takerFeeRate", is_active AS "isActive", created_at AS "createdAt" FROM trading_pairs WHERE symbol = $1',
-            [cleanSymbol]
-          );
+    const row = res.rows[0];
+    if (!row) {
+      throw new InvalidTradingPairError(cleanSymbol);
+    }
 
-          const row = res.rows[0];
-          if (!row) {
-            throw new InvalidTradingPairError(cleanSymbol);
-          }
+    const pair: TradingPairEntity = {
+      symbol: row.symbol,
+      baseAsset: row.baseAsset || row.base_asset,
+      quoteAsset: row.quoteAsset || row.quote_asset,
+      marketType: (row.marketType || row.market_type) as any,
+      tickSize: row.tickSize || row.tick_size || '0.01',
+      lotSize: row.lotSize || row.lot_size || '0.0001',
+      minNotional: row.minNotional || row.min_notional || '5.0',
+      makerFeeRate: row.makerFeeRate || row.maker_fee_rate || '0.001',
+      takerFeeRate: row.takerFeeRate || row.taker_fee_rate || '0.001',
+      isActive: Boolean(row.isActive ?? row.is_active),
+      createdAt: row.createdAt ? new Date(row.createdAt) : new Date(),
+    };
 
-          const pair: TradingPairEntity = {
-            symbol: row.symbol,
-            baseAsset: row.baseAsset || row.base_asset,
-            quoteAsset: row.quoteAsset || row.quote_asset,
-            marketType: (row.marketType || row.market_type) as any,
-            tickSize: row.tickSize || row.tick_size || '0.01',
-            lotSize: row.lotSize || row.lot_size || '0.0001',
-            minNotional: row.minNotional || row.min_notional || '5.0',
-            makerFeeRate: row.makerFeeRate || row.maker_fee_rate || '0.001',
-            takerFeeRate: row.takerFeeRate || row.taker_fee_rate || '0.001',
-            isActive: Boolean(row.isActive ?? row.is_active),
-            createdAt: row.createdAt ? new Date(row.createdAt) : new Date(),
-          };
+    if (!pair.isActive) {
+      throw new PairDisabledError(cleanSymbol);
+    }
 
-          if (!pair.isActive) {
-            throw new PairDisabledError(cleanSymbol);
-          }
-
-          return pair;
+    return pair;
   }
 
   /**
    * Place and match a new Spot order.
    */
   public async placeOrder(dto: CreateOrderDto): Promise<OrderExecutionResult> {
+    // 1. Verify authenticated ownership of Spot account
+    const accRes = await this.database.query<any>(
+      'SELECT id, user_id AS "userId", type FROM accounts WHERE id = $1',
+      [dto.accountId]
+    );
 
-        return this.database.transaction(async (txClient) => {
-          const accRes = await txClient.query<any>(
-            'SELECT id, user_id AS "userId", type FROM accounts WHERE id = $1',
-            [dto.accountId]
+    const acc = accRes.rows[0];
+    if (!acc) {
+      throw new AccountNotFoundError(dto.accountId);
+    }
+    if ((acc.userId || acc.user_id) !== dto.userId) {
+      throw new AccountOwnershipDeniedError(dto.accountId);
+    }
+
+    // 2. Validate parameters
+    const pair = await this.validateTradingPair(dto.symbol);
+
+    if (dto.side !== 'BUY' && dto.side !== 'SELL') {
+      throw new InvalidOrderSideError(dto.side);
+    }
+
+    if (
+      dto.type !== 'LIMIT' &&
+      dto.type !== 'MARKET' &&
+      dto.type !== 'STOP_LIMIT' &&
+      dto.type !== 'TAKE_PROFIT_LIMIT'
+    ) {
+      throw new InvalidOrderTypeError(dto.type);
+    }
+
+    validateAmount(dto.quantity);
+
+    if (dto.type === 'LIMIT' || dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') {
+      if (!dto.price) {
+        throw new SpotError(`Limit price is required for ${dto.type} orders`, 400, SpotErrorCode.INVALID_PRICE);
+      }
+      validateAmount(dto.price);
+    }
+
+    if (dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') {
+      if (!dto.stopPrice) {
+        throw new SpotError(`Stop price is required for ${dto.type} orders`, 400, SpotErrorCode.INVALID_PRICE);
+      }
+      validateAmount(dto.stopPrice);
+    }
+
+    const cleanSymbol = pair.symbol;
+    const cleanQty = decimalNormalize(dto.quantity);
+    const cleanPrice = dto.price ? decimalNormalize(dto.price) : undefined;
+    const cleanStopPrice = dto.stopPrice ? decimalNormalize(dto.stopPrice) : undefined;
+    const cleanClientOrderId = dto.clientOrderId?.trim();
+
+    // 3. Check idempotency if clientOrderId is provided
+    if (cleanClientOrderId) {
+      const existingRes = await this.database.query<any>(
+        'SELECT * FROM orders WHERE account_id = $1 AND client_order_id = $2',
+        [dto.accountId, cleanClientOrderId]
+      );
+      const existing = existingRes.rows[0];
+      if (existing) {
+        // Check if parameters match
+        const match =
+          existing.symbol === cleanSymbol &&
+          existing.side === dto.side &&
+          existing.type === dto.type &&
+          decimalCompare(existing.quantity, cleanQty) === 0 &&
+          (!cleanPrice || (existing.price && decimalCompare(existing.price, cleanPrice) === 0));
+
+        if (match) {
+          const tradesRes = await this.database.query<any>(
+            'SELECT * FROM trades WHERE order_id = $1',
+            [existing.id]
           );
-
-          const acc = accRes.rows[0];
-          if (!acc) {
-            throw new AccountNotFoundError(dto.accountId);
-          }
-          if ((acc.userId || acc.user_id) !== dto.userId) {
-            throw new AccountOwnershipDeniedError(dto.accountId);
-          }
-
-          const pair = await this.validateTradingPair(dto.symbol, txClient);
-
-          if (dto.side !== 'BUY' && dto.side !== 'SELL') {
-            throw new InvalidOrderSideError(dto.side);
-          }
-
-          if (
-            dto.type !== 'LIMIT' &&
-            dto.type !== 'MARKET' &&
-            dto.type !== 'STOP_LIMIT' &&
-            dto.type !== 'TAKE_PROFIT_LIMIT'
-          ) {
-            throw new InvalidOrderTypeError(dto.type);
-          }
-
-          validateAmount(dto.quantity);
-
-          if (dto.type === 'LIMIT' || dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') {
-            if (!dto.price) {
-              throw new SpotError(`Limit price is required for ${dto.type} orders`, 400, SpotErrorCode.INVALID_PRICE);
-            }
-            validateAmount(dto.price);
-          }
-
-          if (dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') {
-            if (!dto.stopPrice) {
-              throw new SpotError(`Stop price is required for ${dto.type} orders`, 400, SpotErrorCode.INVALID_PRICE);
-            }
-            validateAmount(dto.stopPrice);
-          }
-
-          const cleanSymbol = pair.symbol;
-          const cleanQty = decimalNormalize(dto.quantity);
-          const cleanPrice = dto.price ? decimalNormalize(dto.price) : undefined;
-          const cleanStopPrice = dto.stopPrice ? decimalNormalize(dto.stopPrice) : undefined;
-          const cleanClientOrderId = dto.clientOrderId?.trim();
-
-          if (cleanClientOrderId) {
-            const existingRes = await txClient.query<any>(
-              'SELECT * FROM orders WHERE account_id = $1 AND client_order_id = $2',
-              [dto.accountId, cleanClientOrderId]
-            );
-            const existing = existingRes.rows[0];
-            if (existing) {
-              const match =
-                existing.symbol === cleanSymbol &&
-                existing.side === dto.side &&
-                existing.type === dto.type &&
-                decimalCompare(existing.quantity, cleanQty) === 0 &&
-                (!cleanPrice || (existing.price && decimalCompare(existing.price, cleanPrice) === 0));
-
-              if (match) {
-                const tradesRes = await txClient.query<any>(
-                  'SELECT * FROM trades WHERE order_id = $1',
-                  [existing.id]
-                );
-                return {
-                  order: {
-                    ...existing,
-                    accountId: existing.account_id || existing.accountId,
-                    clientOrderId: existing.client_order_id || existing.clientOrderId,
-                    filledQuantity: existing.filled_quantity || existing.filledQuantity,
-                    remainingQuantity: existing.remaining_quantity || existing.remainingQuantity,
-                    lockedAmount: existing.locked_amount || existing.lockedAmount,
-                    lockedAsset: existing.locked_asset || existing.lockedAsset,
-                    stopPrice: existing.stop_price || existing.stopPrice,
-                    timeInForce: existing.time_in_force || existing.timeInForce,
-                    createdAt: new Date(existing.created_at || existing.createdAt),
-                    updatedAt: new Date(existing.updated_at || existing.updatedAt),
-                  },
-                  trades: tradesRes.rows.map(r => ({
-                    ...r,
-                    accountId: r.account_id || r.accountId,
-                    orderId: r.order_id || r.orderId,
-                    quoteQuantity: r.quote_quantity || r.quoteQuantity,
-                    feeAsset: r.fee_asset || r.feeAsset,
-                    isMaker: r.is_maker || r.isMaker,
-                    counterpartyOrderId: r.counterparty_order_id || r.counterpartyOrderId,
-                    createdAt: new Date(r.created_at || r.createdAt)
-                  })),
-                };
-              } else {
-                throw new ReferenceConflictError(cleanClientOrderId);
-              }
-            }
-          }
-
-          let lockedAsset: string;
-          let lockedAmount: string;
-
-          if (dto.side === 'BUY') {
-            lockedAsset = pair.quoteAsset;
-            if (dto.type === 'LIMIT' || dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') {
-              lockedAmount = decimalMultiply(cleanQty, cleanPrice!);
-            } else {
-              const bookDepth = await this.engine.getDepth(txClient, cleanSymbol, 100);
-              if (bookDepth.asks.length === 0) {
-                throw new NoLiquidityError(cleanSymbol, 'BUY');
-              }
-
-              let needed = cleanQty;
-              let totalQuote = '0';
-              for (const ask of bookDepth.asks) {
-                const askQty = ask.quantity;
-                const take = decimalMin(needed, askQty);
-                totalQuote = decimalAdd(totalQuote, decimalMultiply(take, ask.price));
-                needed = decimalSubtract(needed, take);
-                if (decimalCompare(needed, '0') <= 0) break;
-              }
-
-              if (decimalCompare(totalQuote, '0') <= 0) {
-                throw new NoLiquidityError(cleanSymbol, 'BUY');
-              }
-              lockedAmount = totalQuote;
-            }
-          } else {
-            lockedAsset = pair.baseAsset;
-            lockedAmount = cleanQty;
-          }
-
-          const orderId = crypto.randomUUID();
-          const lockRef = `SPOT-LOCK-${orderId}`;
-
-          await this.ledger.reserve(
-            dto.accountId,
-            lockedAsset,
-            lockedAmount,
-            'SPOT_ORDER_LOCK',
-            lockRef,
-            `Spot ${dto.side} ${dto.type} order lock (${cleanSymbol})`,
-            {
-              orderId,
-              symbol: cleanSymbol,
-              side: dto.side,
-              type: dto.type,
-              quantity: cleanQty,
-              price: cleanPrice,
-            },
-            txClient
-          );
-
-          const initialStatus = (dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') ? 'UNTRIGGERED' : 'NEW';
-
-          const order: OrderEntity = {
-            id: orderId,
-            clientOrderId: cleanClientOrderId,
-            accountId: dto.accountId,
-            market: 'SPOT',
-            symbol: cleanSymbol,
-            side: dto.side,
-            type: dto.type,
-            price: cleanPrice,
-            stopPrice: cleanStopPrice,
-            quantity: cleanQty,
-            filledQuantity: '0',
-            remainingQuantity: cleanQty,
-            lockedAmount,
-            lockedAsset,
-            status: initialStatus,
-            timeInForce: dto.timeInForce || 'GTC',
-            createdAt: new Date(),
-            updatedAt: new Date(),
+          return {
+            order: existing,
+            trades: tradesRes.rows,
           };
+        } else {
+          throw new ReferenceConflictError(cleanClientOrderId);
+        }
+      }
+    }
 
-          await txClient.query<any>(
-            `INSERT INTO orders (
+    // 4. Determine required reservation amount & asset
+    let lockedAsset: string;
+    let lockedAmount: string;
+
+    if (dto.side === 'BUY') {
+      lockedAsset = pair.quoteAsset;
+      if (dto.type === 'LIMIT' || dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') {
+        lockedAmount = decimalMultiply(cleanQty, cleanPrice!);
+      } else {
+        // MARKET BUY: Calculate required quote amount from available asks in order book
+        const book = this.engine.getBook(cleanSymbol);
+        if (book.asks.length === 0) {
+          throw new NoLiquidityError(cleanSymbol, 'BUY');
+        }
+
+        let needed = cleanQty;
+        let totalQuote = '0';
+        for (const ask of book.asks) {
+          if (ask.accountId === dto.accountId) continue; // Skip self
+          const take = decimalMin(needed, ask.remainingQuantity);
+          totalQuote = decimalAdd(totalQuote, decimalMultiply(take, ask.price || '0'));
+          needed = decimalSubtract(needed, take);
+          if (decimalCompare(needed, '0') <= 0) break;
+        }
+
+        if (decimalCompare(totalQuote, '0') <= 0) {
+          throw new NoLiquidityError(cleanSymbol, 'BUY');
+        }
+        lockedAmount = totalQuote;
+      }
+    } else {
+      // SELL: Reserve base asset
+      lockedAsset = pair.baseAsset;
+      lockedAmount = cleanQty;
+    }
+
+    const orderId = crypto.randomUUID();
+    const lockRef = `SPOT-LOCK-${orderId}`;
+
+    // 5. Reserve funds via authoritative LedgerService
+    await this.ledger.reserve(
+      dto.accountId,
+      lockedAsset,
+      lockedAmount,
+      'SPOT_ORDER_LOCK',
+      lockRef,
+      `Spot ${dto.side} ${dto.type} order lock (${cleanSymbol})`,
+      {
+        orderId,
+        symbol: cleanSymbol,
+        side: dto.side,
+        type: dto.type,
+        quantity: cleanQty,
+        price: cleanPrice,
+      }
+    );
+
+    // 6. Create Order Entity
+    const initialStatus = (dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') ? 'UNTRIGGERED' : 'NEW';
+
+    const order: OrderEntity = {
+      id: orderId,
+      clientOrderId: cleanClientOrderId,
+      accountId: dto.accountId,
+      market: 'SPOT',
+      symbol: cleanSymbol,
+      side: dto.side,
+      type: dto.type,
+      price: cleanPrice,
+      stopPrice: cleanStopPrice,
+      quantity: cleanQty,
+      filledQuantity: '0',
+      remainingQuantity: cleanQty,
+      lockedAmount,
+      lockedAsset,
+      status: initialStatus,
+      timeInForce: dto.timeInForce || 'GTC',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    // 7. Persist order in PostgreSQL
+    await this.database.query(
+      `INSERT INTO orders (
         id, client_order_id, account_id, market, symbol, side, type, price, stop_price, quantity,
         filled_quantity, remaining_quantity, locked_amount, locked_asset, status,
         time_in_force, created_at, updated_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
-            [
-              order.id, order.clientOrderId, order.accountId, order.market, order.symbol, order.side,
-              order.type, order.price, order.stopPrice, order.quantity, order.filledQuantity,
-              order.remainingQuantity, order.lockedAmount, order.lockedAsset, order.status,
-              order.timeInForce, order.createdAt, order.updatedAt,
-            ]
+      [
+        order.id,
+        order.clientOrderId,
+        order.accountId,
+        order.market,
+        order.symbol,
+        order.side,
+        order.type,
+        order.price,
+        order.stopPrice,
+        order.quantity,
+        order.filledQuantity,
+        order.remainingQuantity,
+        order.lockedAmount,
+        order.lockedAsset,
+        order.status,
+        order.timeInForce,
+        order.createdAt,
+        order.updatedAt,
+      ]
+    );
+
+    if (order.status === 'UNTRIGGERED') {
+      return { order, trades: [] };
+    }
+
+    // 8. Match order in Matching Engine
+    const book = this.engine.getBook(cleanSymbol);
+    const matches = book.match(order);
+    const executedTrades: TradeEntity[] = [];
+
+    // 9. Atomically settle each trade fill
+    for (const match of matches) {
+      const tradeResults = await this.settleMatch(match, pair);
+      executedTrades.push(...tradeResults);
+    }
+
+    // 10. Update order status and handle remaining quantity
+    if (decimalCompare(order.remainingQuantity, '0') <= 0) {
+      order.status = 'FILLED';
+      order.filledQuantity = order.quantity;
+      order.remainingQuantity = '0';
+    } else if (decimalCompare(order.filledQuantity, '0') > 0) {
+      order.status = 'PARTIALLY_FILLED';
+    }
+
+    if (order.type === 'LIMIT' && (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED')) {
+      // Add resting limit order to the book
+      book.addRestingOrder(order);
+    } else if (order.type === 'MARKET' && decimalCompare(order.remainingQuantity, '0') > 0) {
+      // Market order exhausted liquidity -> release unused reservation and expire remaining
+      order.status = decimalCompare(order.filledQuantity, '0') > 0 ? 'PARTIALLY_FILLED' : 'EXPIRED';
+      if (order.side === 'BUY') {
+        // Calculate remaining locked quote amount to release
+        let usedQuote = '0';
+        for (const t of executedTrades.filter(t => t.orderId === order.id)) {
+          usedQuote = decimalAdd(usedQuote, t.quoteQuantity);
+        }
+        const unusedQuote = decimalSubtract(order.lockedAmount, usedQuote);
+        if (decimalCompare(unusedQuote, '0') > 0) {
+          await this.ledger.release(
+            order.accountId,
+            pair.quoteAsset,
+            unusedQuote,
+            'SPOT_ORDER_UNLOCK',
+            `SPOT-UNLOCK-${order.id}`,
+            'Release unused market buy quote reserve'
           );
+        }
+      } else {
+        // Market sell: release remaining base asset
+        await this.ledger.release(
+          order.accountId,
+          pair.baseAsset,
+          order.remainingQuantity,
+          'SPOT_ORDER_UNLOCK',
+          `SPOT-UNLOCK-${order.id}`,
+          'Release unused market sell base reserve'
+        );
+      }
+    }
 
-          if (order.status === 'UNTRIGGERED') {
-            return { order, trades: [] };
-          }
+    // Persist final order state
+    await this.database.query(
+      'UPDATE orders SET status = $1, filled_quantity = $2, remaining_quantity = $3, updated_at = NOW() WHERE id = $4',
+      [order.status, order.filledQuantity, order.remainingQuantity, order.id]
+    );
 
-          const matches = await this.engine.match(txClient, order);
-          const executedTrades: TradeEntity[] = [];
+    // ── Emit Market & Domain Events strictly after successful commit ──────
+    try {
+      marketDataService.emitOrderBookUpdate(cleanSymbol);
 
-          for (const match of matches) {
-            const tradeResults = await this.settleMatch(txClient, match, pair);
-            executedTrades.push(...tradeResults);
-          }
+      eventBus.publish({
+        id: crypto.randomUUID(),
+        type: order.status === 'NEW' ? 'spot.order.created' : 'spot.order.updated',
+        channel: 'user:orders',
+        userId: dto.userId,
+        symbol: cleanSymbol,
+        timestamp: Date.now(),
+        version: '1.0.0',
+        payload: {
+          orderId: order.id,
+          clientOrderId: order.clientOrderId,
+          market: 'SPOT',
+          symbol: order.symbol,
+          side: order.side,
+          type: order.type,
+          price: order.price,
+          quantity: order.quantity,
+          filledQuantity: order.filledQuantity,
+          remainingQuantity: order.remainingQuantity,
+          status: order.status,
+          timeInForce: order.timeInForce,
+          createdAt: order.createdAt.getTime(),
+          updatedAt: order.updatedAt.getTime(),
+        },
+      });
 
-          if (decimalCompare(order.remainingQuantity, '0') <= 0) {
-            order.status = 'FILLED';
-            order.filledQuantity = order.quantity;
-            order.remainingQuantity = '0';
-          } else if (decimalCompare(order.filledQuantity, '0') > 0) {
-            order.status = 'PARTIALLY_FILLED';
-          }
-
-          if (order.type === 'MARKET' && decimalCompare(order.remainingQuantity, '0') > 0) {
-            order.status = decimalCompare(order.filledQuantity, '0') > 0 ? 'PARTIALLY_FILLED' : 'EXPIRED';
-            if (order.side === 'BUY') {
-              let usedQuote = '0';
-              for (const t of executedTrades.filter(t => t.orderId === order.id)) {
-                usedQuote = decimalAdd(usedQuote, t.quoteQuantity);
-              }
-              const unusedQuote = decimalSubtract(order.lockedAmount, usedQuote);
-              if (decimalCompare(unusedQuote, '0') > 0) {
-                await this.ledger.release(
-                  order.accountId,
-                  pair.quoteAsset,
-                  unusedQuote,
-                  'SPOT_ORDER_UNLOCK',
-                  `SPOT-UNLOCK-${order.id}`,
-                  'Release unused market buy quote reserve',
-                  undefined,
-                  txClient
-                );
-              }
-            } else {
-              await this.ledger.release(
-                order.accountId,
-                pair.baseAsset,
-                order.remainingQuantity,
-                'SPOT_ORDER_UNLOCK',
-                `SPOT-UNLOCK-${order.id}`,
-                'Release unused market sell base reserve',
-                undefined,
-                txClient
-              );
-            }
-          }
-
-          await txClient.query<any>(
-            'UPDATE orders SET status = $1, filled_quantity = $2, remaining_quantity = $3, updated_at = NOW() WHERE id = $4',
-            [order.status, order.filledQuantity, order.remainingQuantity, order.id]
-          );
-
-          if (true) {
-              marketDataService.emitOrderBookUpdate(cleanSymbol).catch(e => logger.warn('emitOrderBookUpdate error', {error: e.message}));
-
-              eventBus.publish({
-                id: crypto.randomUUID(),
-                type: order.status === 'NEW' ? 'spot.order.created' : 'spot.order.updated',
-                channel: 'user:orders',
-                userId: dto.userId,
-                symbol: cleanSymbol,
-                timestamp: Date.now(),
-                version: '1.0.0',
-                payload: {
-                  orderId: order.id,
-                  clientOrderId: order.clientOrderId,
-                  market: 'SPOT',
-                  symbol: order.symbol,
-                  side: order.side,
-                  type: order.type,
-                  price: order.price,
-                  quantity: order.quantity,
-                  filledQuantity: order.filledQuantity,
-                  remainingQuantity: order.remainingQuantity,
-                  status: order.status,
-                  timeInForce: order.timeInForce,
-                  createdAt: order.createdAt.getTime(),
-                  updatedAt: order.updatedAt.getTime(),
-                },
-              });
-
-              for (const trade of executedTrades) {
-                marketDataService.recordTrade({
-                  tradeId: trade.id,
-                  symbol: trade.symbol,
-                  price: trade.price,
-                  quantity: trade.quantity,
-                  quoteQuantity: trade.quoteQuantity,
-                  side: trade.side,
-                  isMaker: trade.isMaker,
-                  timestamp: trade.createdAt.getTime(),
-                });
-
-                eventBus.publish({
-                  id: crypto.randomUUID(),
-                  type: 'spot.trade.executed',
-                  channel: 'user:trades',
-                  userId: dto.userId,
-                  symbol: trade.symbol,
-                  timestamp: trade.createdAt.getTime(),
-                  version: '1.0.0',
-                  payload: trade,
-                });
-              }
-            }
-
-          return {
-            order,
-            trades: executedTrades,
-          };
+      for (const trade of executedTrades) {
+        marketDataService.recordTrade({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          price: trade.price,
+          quantity: trade.quantity,
+          quoteQuantity: trade.quoteQuantity,
+          side: trade.side,
+          isMaker: trade.isMaker,
+          timestamp: trade.createdAt.getTime(),
         });
+
+        eventBus.publish({
+          id: crypto.randomUUID(),
+          type: 'spot.trade.executed',
+          channel: 'user:trades',
+          userId: dto.userId,
+          symbol: trade.symbol,
+          timestamp: trade.createdAt.getTime(),
+          version: '1.0.0',
+          payload: {
+            tradeId: trade.id,
+            orderId: trade.orderId,
+            market: 'SPOT',
+            symbol: trade.symbol,
+            side: trade.side,
+            price: trade.price,
+            quantity: trade.quantity,
+            quoteQuantity: trade.quoteQuantity,
+            fee: trade.fee,
+            feeAsset: trade.feeAsset,
+            isMaker: trade.isMaker,
+            timestamp: trade.createdAt.getTime(),
+          },
+        });
+      }
+    } catch (evtErr: any) {
+      logger.warn('Failed to emit spot events', { error: evtErr.message });
+    }
+
+    logger.info('Spot order processed', {
+      orderId: order.id,
+      symbol: cleanSymbol,
+      side: order.side,
+      type: order.type,
+      status: order.status,
+      filledQuantity: order.filledQuantity,
+      tradesCount: executedTrades.length,
+    });
+
+    return {
+      order,
+      trades: executedTrades,
+    };
   }
 
 
   /**
    * Atomically settle a matched trade between Maker and Taker via LedgerService.
    */
-  private async settleMatch(txClient: IDatabaseConnection, match: MatchResult, pair: TradingPairEntity): Promise<TradeEntity[]> {
+  private async settleMatch(match: MatchResult, pair: TradingPairEntity): Promise<TradeEntity[]> {
+    const { makerOrder, takerOrder, execPrice, execQty } = match;
+    const quoteQty = decimalMultiply(execQty, execPrice);
 
-          const { makerOrder, takerOrder, execPrice, execQty } = match;
-          const quoteQty = decimalMultiply(execQty, execPrice);
+    const buyerOrder = takerOrder.side === 'BUY' ? takerOrder : makerOrder;
+    const sellerOrder = takerOrder.side === 'SELL' ? takerOrder : makerOrder;
 
-          const buyerOrder = takerOrder.side === 'BUY' ? takerOrder : makerOrder;
-          const sellerOrder = takerOrder.side === 'SELL' ? takerOrder : makerOrder;
+    const buyerIsMaker = buyerOrder.id === makerOrder.id;
+    const sellerIsMaker = sellerOrder.id === makerOrder.id;
 
-          const buyerIsMaker = buyerOrder.id === makerOrder.id;
-          const sellerIsMaker = sellerOrder.id === makerOrder.id;
+    const tradeIdBuyer = crypto.randomUUID();
+    const tradeIdSeller = crypto.randomUUID();
+    const matchRef = `SPOT-TRADE-${tradeIdBuyer}`;
 
-          const buyerFeeRate = buyerIsMaker ? pair.makerFeeRate : pair.takerFeeRate;
-          const buyerFee = decimalMultiply(execQty, buyerFeeRate);
-          const buyerReceivedBase = decimalSubtract(execQty, buyerFee);
+    // Prepare ledger entries for double-entry atomic trade settlement
+    // 1. Buyer: debit quote from locked, credit base to available
+    // 2. Seller: debit base from locked, credit quote to available
+    // 3. Price improvement for buyer if limit price > execPrice
+    const entries: Array<{
+      accountId: string;
+      asset: string;
+      amount: string;
+      direction: 'CREDIT' | 'DEBIT';
+      balancePool?: 'available' | 'locked';
+    }> = [
+      // Buyer settlements
+      {
+        accountId: buyerOrder.accountId,
+        asset: pair.quoteAsset,
+        amount: quoteQty,
+        direction: 'DEBIT',
+        balancePool: 'locked',
+      },
+      {
+        accountId: buyerOrder.accountId,
+        asset: pair.baseAsset,
+        amount: execQty,
+        direction: 'CREDIT',
+        balancePool: 'available',
+      },
+      // Seller settlements
+      {
+        accountId: sellerOrder.accountId,
+        asset: pair.baseAsset,
+        amount: execQty,
+        direction: 'DEBIT',
+        balancePool: 'locked',
+      },
+      {
+        accountId: sellerOrder.accountId,
+        asset: pair.quoteAsset,
+        amount: quoteQty,
+        direction: 'CREDIT',
+        balancePool: 'available',
+      },
+    ];
 
-          const sellerFeeRate = sellerIsMaker ? pair.makerFeeRate : pair.takerFeeRate;
-          const sellerFee = decimalMultiply(quoteQty, sellerFeeRate);
-          const sellerReceivedQuote = decimalSubtract(quoteQty, sellerFee);
-
-          const tradeIdBuyer = crypto.randomUUID();
-          const tradeIdSeller = crypto.randomUUID();
-          const matchRef = `SPOT-TRADE-${tradeIdBuyer}`;
-
-          const entries: Array<any> = [
-            {
-              accountId: buyerOrder.accountId,
-              asset: pair.quoteAsset,
-              amount: quoteQty,
-              direction: 'DEBIT',
-              balancePool: 'locked',
-            },
-            {
-              accountId: buyerOrder.accountId,
-              asset: pair.baseAsset,
-              amount: buyerReceivedBase,
-              direction: 'CREDIT',
-              balancePool: 'available',
-            },
-            {
-              accountId: sellerOrder.accountId,
-              asset: pair.baseAsset,
-              amount: execQty,
-              direction: 'DEBIT',
-              balancePool: 'locked',
-            },
-            {
-              accountId: sellerOrder.accountId,
-              asset: pair.quoteAsset,
-              amount: sellerReceivedQuote,
-              direction: 'CREDIT',
-              balancePool: 'available',
-            },
-          ];
-
-          if (decimalCompare(buyerFee, '0') > 0) {
-            entries.push({
-              accountId: '11111111-1111-1111-1111-111111111111',
-              asset: pair.baseAsset,
-              amount: buyerFee,
-              direction: 'CREDIT',
-              balancePool: 'available',
-            });
-          }
-
-          if (decimalCompare(sellerFee, '0') > 0) {
-            entries.push({
-              accountId: '11111111-1111-1111-1111-111111111111',
-              asset: pair.quoteAsset,
-              amount: sellerFee,
-              direction: 'CREDIT',
-              balancePool: 'available',
-            });
-          }
-
-          if (buyerOrder.type === 'LIMIT' && buyerOrder.price && decimalCompare(buyerOrder.price, execPrice) > 0) {
-            const priceDiff = decimalSubtract(buyerOrder.price, execPrice);
-            const refundAmount = decimalMultiply(execQty, priceDiff);
-            if (decimalCompare(refundAmount, '0') > 0) {
-              entries.push(
-                {
-                  accountId: buyerOrder.accountId,
-                  asset: pair.quoteAsset,
-                  amount: refundAmount,
-                  direction: 'DEBIT',
-                  balancePool: 'locked',
-                },
-                {
-                  accountId: buyerOrder.accountId,
-                  asset: pair.quoteAsset,
-                  amount: refundAmount,
-                  direction: 'CREDIT',
-                  balancePool: 'available',
-                }
-              );
-            }
-          }
-
-          await this.ledger.postTransaction({
+    // Check for price improvement refund for buyer (if buyer limit price was higher than executed maker price)
+    if (buyerOrder.type === 'LIMIT' && buyerOrder.price && decimalCompare(buyerOrder.price, execPrice) > 0) {
+      const priceDiff = decimalSubtract(buyerOrder.price, execPrice);
+      const refundAmount = decimalMultiply(execQty, priceDiff);
+      if (decimalCompare(refundAmount, '0') > 0) {
+        // Move refundAmount from locked -> available for buyer
+        entries.push(
+          {
             accountId: buyerOrder.accountId,
-            transactionType: 'SPOT_TRADE_SETTLE',
-            referenceId: matchRef,
-            description: `Spot Trade Settlement: ${pair.symbol} ${execQty} @ ${execPrice}`,
-            entries,
-            metadata: {
-              symbol: pair.symbol,
-              execPrice,
-              execQty,
-              quoteQty,
-              buyerOrderId: buyerOrder.id,
-              sellerOrderId: sellerOrder.id,
-            },
-          }, txClient);
-
-          const buyerTrade: TradeEntity = {
-            id: tradeIdBuyer,
-            orderId: buyerOrder.id,
+            asset: pair.quoteAsset,
+            amount: refundAmount,
+            direction: 'DEBIT',
+            balancePool: 'locked',
+          },
+          {
             accountId: buyerOrder.accountId,
-            market: 'SPOT',
-            symbol: pair.symbol,
-            side: 'BUY',
-            price: execPrice,
-            quantity: execQty,
-            quoteQuantity: quoteQty,
-            fee: buyerFee,
-            feeAsset: pair.baseAsset,
-            isMaker: buyerIsMaker,
-            counterpartyOrderId: sellerOrder.id,
-            createdAt: new Date(),
-          };
+            asset: pair.quoteAsset,
+            amount: refundAmount,
+            direction: 'CREDIT',
+            balancePool: 'available',
+          }
+        );
+      }
+    }
 
-          const sellerTrade: TradeEntity = {
-            id: tradeIdSeller,
-            orderId: sellerOrder.id,
-            accountId: sellerOrder.accountId,
-            market: 'SPOT',
-            symbol: pair.symbol,
-            side: 'SELL',
-            price: execPrice,
-            quantity: execQty,
-            quoteQuantity: quoteQty,
-            fee: sellerFee,
-            feeAsset: pair.quoteAsset,
-            isMaker: sellerIsMaker,
-            counterpartyOrderId: buyerOrder.id,
-            createdAt: new Date(),
-          };
+    // Execute atomic settlement via LedgerService
+    await this.ledger.postTransaction({
+      accountId: buyerOrder.accountId,
+      transactionType: 'SPOT_TRADE_SETTLE',
+      referenceId: matchRef,
+      description: `Spot Trade Settlement: ${pair.symbol} ${execQty} @ ${execPrice}`,
+      entries,
+      metadata: {
+        symbol: pair.symbol,
+        execPrice,
+        execQty,
+        quoteQty,
+        buyerOrderId: buyerOrder.id,
+        sellerOrderId: sellerOrder.id,
+      },
+    });
 
-          await Promise.all([
-            txClient.query<any>(
-              `INSERT INTO trades (
+
+    // Create trade entities
+    const buyerTrade: TradeEntity = {
+      id: tradeIdBuyer,
+      orderId: buyerOrder.id,
+      accountId: buyerOrder.accountId,
+      market: 'SPOT',
+      symbol: pair.symbol,
+      side: 'BUY',
+      price: execPrice,
+      quantity: execQty,
+      quoteQuantity: quoteQty,
+      fee: '0',
+      feeAsset: pair.baseAsset,
+      isMaker: buyerIsMaker,
+      counterpartyOrderId: sellerOrder.id,
+      createdAt: new Date(),
+    };
+
+    const sellerTrade: TradeEntity = {
+      id: tradeIdSeller,
+      orderId: sellerOrder.id,
+      accountId: sellerOrder.accountId,
+      market: 'SPOT',
+      symbol: pair.symbol,
+      side: 'SELL',
+      price: execPrice,
+      quantity: execQty,
+      quoteQuantity: quoteQty,
+      fee: '0',
+      feeAsset: pair.quoteAsset,
+      isMaker: sellerIsMaker,
+      counterpartyOrderId: buyerOrder.id,
+      createdAt: new Date(),
+    };
+
+    // Persist trades in PostgreSQL
+    await Promise.all([
+      this.database.query(
+        `INSERT INTO trades (
           id, order_id, account_id, market, symbol, side, price, quantity, quote_quantity,
           fee, fee_asset, is_maker, counterparty_order_id, created_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-              [
-                buyerTrade.id, buyerTrade.orderId, buyerTrade.accountId, buyerTrade.market, buyerTrade.symbol,
-                buyerTrade.side, buyerTrade.price, buyerTrade.quantity, buyerTrade.quoteQuantity,
-                buyerTrade.fee, buyerTrade.feeAsset, buyerTrade.isMaker, buyerTrade.counterpartyOrderId, buyerTrade.createdAt,
-              ]
-            ),
-            txClient.query<any>(
-              `INSERT INTO trades (
+        [
+          buyerTrade.id,
+          buyerTrade.orderId,
+          buyerTrade.accountId,
+          buyerTrade.market,
+          buyerTrade.symbol,
+          buyerTrade.side,
+          buyerTrade.price,
+          buyerTrade.quantity,
+          buyerTrade.quoteQuantity,
+          buyerTrade.fee,
+          buyerTrade.feeAsset,
+          buyerTrade.isMaker,
+          buyerTrade.counterpartyOrderId,
+          buyerTrade.createdAt,
+        ]
+      ),
+      this.database.query(
+        `INSERT INTO trades (
           id, order_id, account_id, market, symbol, side, price, quantity, quote_quantity,
           fee, fee_asset, is_maker, counterparty_order_id, created_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-              [
-                sellerTrade.id, sellerTrade.orderId, sellerTrade.accountId, sellerTrade.market, sellerTrade.symbol,
-                sellerTrade.side, sellerTrade.price, sellerTrade.quantity, sellerTrade.quoteQuantity,
-                sellerTrade.fee, sellerTrade.feeAsset, sellerTrade.isMaker, sellerTrade.counterpartyOrderId, sellerTrade.createdAt,
-              ]
-            ),
-          ]);
+        [
+          sellerTrade.id,
+          sellerTrade.orderId,
+          sellerTrade.accountId,
+          sellerTrade.market,
+          sellerTrade.symbol,
+          sellerTrade.side,
+          sellerTrade.price,
+          sellerTrade.quantity,
+          sellerTrade.quoteQuantity,
+          sellerTrade.fee,
+          sellerTrade.feeAsset,
+          sellerTrade.isMaker,
+          sellerTrade.counterpartyOrderId,
+          sellerTrade.createdAt,
+        ]
+      ),
+    ]);
 
-          makerOrder.filledQuantity = decimalAdd(makerOrder.filledQuantity, execQty);
-          makerOrder.remainingQuantity = decimalSubtract(makerOrder.remainingQuantity, execQty);
-          if (decimalCompare(makerOrder.remainingQuantity, '0') <= 0) {
-            makerOrder.status = 'FILLED';
-          } else {
-            makerOrder.status = 'PARTIALLY_FILLED';
-          }
+    // Update maker order state
+    makerOrder.filledQuantity = decimalAdd(makerOrder.filledQuantity, execQty);
+    if (decimalCompare(makerOrder.remainingQuantity, '0') <= 0) {
+      makerOrder.status = 'FILLED';
+    } else {
+      makerOrder.status = 'PARTIALLY_FILLED';
+    }
 
-          await txClient.query<any>(
-            'UPDATE orders SET filled_quantity = $1, remaining_quantity = $2, status = $3, updated_at = NOW() WHERE id = $4',
-            [makerOrder.filledQuantity, makerOrder.remainingQuantity, makerOrder.status, makerOrder.id]
-          );
+    await this.database.query(
+      'UPDATE orders SET filled_quantity = $1, remaining_quantity = $2, status = $3, updated_at = NOW() WHERE id = $4',
+      [makerOrder.filledQuantity, makerOrder.remainingQuantity, makerOrder.status, makerOrder.id]
+    );
 
-          takerOrder.filledQuantity = decimalAdd(takerOrder.filledQuantity, execQty);
-          takerOrder.remainingQuantity = decimalSubtract(takerOrder.remainingQuantity, execQty);
+    // Update taker order state
+    takerOrder.filledQuantity = decimalAdd(takerOrder.filledQuantity, execQty);
 
-          return [buyerTrade, sellerTrade];
+    return [buyerTrade, sellerTrade];
   }
 
   /**
@@ -638,203 +679,217 @@ export class SpotService {
    * Activate an UNTRIGGERED conditional order and push it to the matching engine.
    */
   public async triggerOrder(orderId: string): Promise<void> {
+    const orderRes = await this.database.query<any>(
+      "SELECT o.*, a.user_id FROM orders o JOIN accounts a ON o.account_id = a.id WHERE o.id = $1 AND o.status = 'UNTRIGGERED' FOR UPDATE",
+      [orderId]
+    );
+    const row = orderRes.rows[0];
+    if (!row) return;
 
-        return this.database.transaction(async (txClient) => {
-          const orderRes = await txClient.query<any>(
-            "SELECT o.*, a.user_id FROM orders o JOIN accounts a ON o.account_id = a.id WHERE o.id = $1 AND o.status = 'UNTRIGGERED' FOR UPDATE",
-            [orderId]
-          );
-          const row = orderRes.rows[0];
-          if (!row) return;
+    await this.database.query(
+      "UPDATE orders SET status = 'NEW', updated_at = NOW() WHERE id = $1",
+      [orderId]
+    );
 
-          await txClient.query<any>(
-            "UPDATE orders SET status = 'NEW', updated_at = NOW() WHERE id = $1",
-            [orderId]
-          );
+    const order: OrderEntity = {
+      id: row.id,
+      clientOrderId: row.client_order_id,
+      accountId: row.account_id,
+      market: row.market,
+      symbol: row.symbol,
+      side: row.side,
+      type: row.type,
+      price: row.price,
+      stopPrice: row.stop_price,
+      quantity: row.quantity,
+      filledQuantity: row.filled_quantity,
+      remainingQuantity: row.remaining_quantity,
+      lockedAmount: row.locked_amount,
+      lockedAsset: row.locked_asset,
+      status: 'NEW',
+      timeInForce: row.time_in_force,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(),
+    };
 
-          const order: OrderEntity = {
-            id: row.id,
-            clientOrderId: row.client_order_id,
-            accountId: row.account_id,
-            market: row.market,
-            symbol: row.symbol,
-            side: row.side,
-            type: row.type,
-            price: row.price,
-            stopPrice: row.stop_price,
-            quantity: row.quantity,
-            filledQuantity: row.filled_quantity,
-            remainingQuantity: row.remaining_quantity,
-            lockedAmount: row.locked_amount,
-            lockedAsset: row.locked_asset,
-            status: 'NEW',
-            timeInForce: row.time_in_force,
-            createdAt: new Date(row.created_at),
-            updatedAt: new Date(),
-          };
+    const pair = await this.validateTradingPair(order.symbol);
+    const book = this.engine.getBook(order.symbol);
+    const matches = book.match(order);
 
-          const pair = await this.validateTradingPair(order.symbol, txClient);
-          const matches = await this.engine.match(txClient, order);
+    const executedTrades: TradeEntity[] = [];
+    for (const match of matches) {
+      const tradeResults = await this.settleMatch(match, pair);
+      executedTrades.push(...tradeResults);
+    }
 
-          const executedTrades: TradeEntity[] = [];
-          for (const match of matches) {
-            const tradeResults = await this.settleMatch(txClient, match, pair);
-            executedTrades.push(...tradeResults);
-          }
+    if (decimalCompare(order.remainingQuantity, '0') <= 0) {
+      order.status = 'FILLED';
+      order.filledQuantity = order.quantity;
+      order.remainingQuantity = '0';
+    } else if (decimalCompare(order.filledQuantity, '0') > 0) {
+      order.status = 'PARTIALLY_FILLED';
+    }
 
-          if (decimalCompare(order.remainingQuantity, '0') <= 0) {
-            order.status = 'FILLED';
-            order.filledQuantity = order.quantity;
-            order.remainingQuantity = '0';
-          } else if (decimalCompare(order.filledQuantity, '0') > 0) {
-            order.status = 'PARTIALLY_FILLED';
-          }
+    if (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') {
+      book.addRestingOrder(order);
+    }
 
-          await txClient.query<any>(
-            'UPDATE orders SET status = $1, filled_quantity = $2, remaining_quantity = $3, updated_at = NOW() WHERE id = $4',
-            [order.status, order.filledQuantity, order.remainingQuantity, order.id]
-          );
+    await this.database.query(
+      'UPDATE orders SET status = $1, filled_quantity = $2, remaining_quantity = $3, updated_at = NOW() WHERE id = $4',
+      [order.status, order.filledQuantity, order.remainingQuantity, order.id]
+    );
 
-          if (true) {
-              marketDataService.emitOrderBookUpdate(order.symbol).catch(e => logger.warn('emitOrderBookUpdate error', {error: e.message}));
-              eventBus.publish({
-                id: crypto.randomUUID(),
-                type: 'spot.order.updated',
-                channel: 'user:orders',
-                userId: row.user_id,
-                symbol: order.symbol,
-                timestamp: Date.now(),
-                version: '1.0.0',
-                payload: order,
-              });
+    marketDataService.emitOrderBookUpdate(order.symbol);
 
-              for (const trade of executedTrades) {
-                eventBus.publish({
-                  id: crypto.randomUUID(),
-                  type: 'spot.trade.executed',
-                  channel: 'user:trades',
-                  userId: trade.accountId === order.accountId ? row.user_id : 'COUNTERPARTY',
-                  symbol: trade.symbol,
-                  timestamp: trade.createdAt.getTime(),
-                  version: '1.0.0',
-                  payload: trade,
-                });
-              }
-            }
-        });
+    eventBus.publish({
+      id: crypto.randomUUID(),
+      type: 'spot.order.updated',
+      channel: 'user:orders',
+      userId: row.user_id,
+      symbol: order.symbol,
+      timestamp: Date.now(),
+      version: '1.0.0',
+      payload: order,
+    });
+
+    for (const trade of executedTrades) {
+      eventBus.publish({
+        id: crypto.randomUUID(),
+        type: 'spot.trade.executed',
+        channel: 'user:trades',
+        userId: trade.accountId === order.accountId ? row.user_id : 'COUNTERPARTY', // simplified
+        symbol: trade.symbol,
+        timestamp: trade.createdAt.getTime(),
+        version: '1.0.0',
+        payload: trade,
+      });
+    }
   }
 
 
   public async cancelOrder(userId: string, orderId: string): Promise<OrderEntity> {
+    // 1. Fetch order
+    const orderRes = await this.database.query<any>('SELECT * FROM orders WHERE id = $1', [orderId]);
+    const orderRow = orderRes.rows[0];
+    if (!orderRow) {
+      throw new OrderNotFoundError(orderId);
+    }
 
-        return this.database.transaction(async (txClient) => {
-          const orderRes = await txClient.query<any>('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
-          const orderRow = orderRes.rows[0];
-          if (!orderRow) {
-            throw new OrderNotFoundError(orderId);
-          }
+    // 2. Verify account ownership
+    const accRes = await this.database.query<any>('SELECT id, user_id AS "userId" FROM accounts WHERE id = $1', [
+      orderRow.accountId || orderRow.account_id,
+    ]);
+    const acc = accRes.rows[0];
+    if (!acc || (acc.userId || acc.user_id) !== userId) {
+      throw new AccountOwnershipDeniedError(orderRow.accountId || orderRow.account_id);
+    }
 
-          const accRes = await txClient.query<any>('SELECT id, user_id AS "userId" FROM accounts WHERE id = $1', [
-            orderRow.accountId || orderRow.account_id,
-          ]);
-          const acc = accRes.rows[0];
-          if (!acc || (acc.userId || acc.user_id) !== userId) {
-            throw new AccountOwnershipDeniedError(orderRow.accountId || orderRow.account_id);
-          }
+    const order: OrderEntity = {
+      id: orderRow.id,
+      clientOrderId: orderRow.clientOrderId || orderRow.client_order_id,
+      accountId: orderRow.accountId || orderRow.account_id,
+      market: orderRow.market,
+      symbol: orderRow.symbol,
+      side: orderRow.side,
+      type: orderRow.type,
+      price: orderRow.price,
+      stopPrice: orderRow.stopPrice || orderRow.stop_price,
+      quantity: orderRow.quantity,
+      filledQuantity: orderRow.filledQuantity || orderRow.filled_quantity,
+      remainingQuantity: orderRow.remainingQuantity || orderRow.remaining_quantity,
+      lockedAmount: orderRow.lockedAmount || orderRow.locked_amount,
+      lockedAsset: orderRow.lockedAsset || orderRow.locked_asset,
+      status: orderRow.status,
+      timeInForce: orderRow.timeInForce || orderRow.time_in_force,
+      createdAt: new Date(orderRow.createdAt || orderRow.created_at),
+      updatedAt: new Date(orderRow.updatedAt || orderRow.updated_at),
+    };
 
-          const order: OrderEntity = {
-            id: orderRow.id,
-            clientOrderId: orderRow.clientOrderId || orderRow.client_order_id,
-            accountId: orderRow.accountId || orderRow.account_id,
-            market: orderRow.market,
-            symbol: orderRow.symbol,
-            side: orderRow.side,
-            type: orderRow.type,
-            price: orderRow.price,
-            stopPrice: orderRow.stopPrice || orderRow.stop_price,
-            quantity: orderRow.quantity,
-            filledQuantity: orderRow.filledQuantity || orderRow.filled_quantity,
-            remainingQuantity: orderRow.remainingQuantity || orderRow.remaining_quantity,
-            lockedAmount: orderRow.lockedAmount || orderRow.locked_amount,
-            lockedAsset: orderRow.lockedAsset || orderRow.locked_asset,
-            status: orderRow.status,
-            timeInForce: orderRow.timeInForce || orderRow.time_in_force,
-            createdAt: new Date(orderRow.createdAt || orderRow.created_at),
-            updatedAt: new Date(orderRow.updatedAt || orderRow.updated_at),
-          };
+    // 3. Idempotent return if already cancelled
+    if (order.status === 'CANCELLED') {
+      return order;
+    }
 
-          if (order.status === 'CANCELLED') {
-            return order;
-          }
+    if (order.status !== 'NEW' && order.status !== 'PARTIALLY_FILLED') {
+      throw new OrderNotCancellableError(orderId, order.status);
+    }
 
-          if (order.status !== 'NEW' && order.status !== 'PARTIALLY_FILLED' && order.status !== 'UNTRIGGERED') {
-            throw new OrderNotCancellableError(orderId, order.status);
-          }
+    // 4. Remove from matching book
+    this.engine.removeOrder(orderId, order.symbol);
 
-          let releaseAmount: string;
-          if (order.side === 'BUY') {
-            if (order.price) {
-              releaseAmount = decimalMultiply(order.remainingQuantity, order.price);
-            } else {
-              releaseAmount = order.lockedAmount;
-            }
-          } else {
-            releaseAmount = order.remainingQuantity;
-          }
+    // 5. Calculate remaining locked amount to release
+    let releaseAmount: string;
+    if (order.side === 'BUY') {
+      if (order.price) {
+        releaseAmount = decimalMultiply(order.remainingQuantity, order.price);
+      } else {
+        releaseAmount = order.lockedAmount;
+      }
+    } else {
+      releaseAmount = order.remainingQuantity;
+    }
 
-          if (decimalCompare(releaseAmount, '0') > 0) {
-            const unlockRef = `SPOT-UNLOCK-${order.id}`;
-            await this.ledger.release(
-              order.accountId,
-              order.lockedAsset,
-              releaseAmount,
-              'SPOT_ORDER_UNLOCK',
-              unlockRef,
-              `Cancel Spot ${order.side} Order (${order.symbol})`,
-              undefined,
-              txClient
-            );
-          }
+    if (decimalCompare(releaseAmount, '0') > 0) {
+      const unlockRef = `SPOT-UNLOCK-${order.id}`;
+      await this.ledger.release(
+        order.accountId,
+        order.lockedAsset,
+        releaseAmount,
+        'SPOT_ORDER_UNLOCK',
+        unlockRef,
+        `Cancel Spot ${order.side} Order (${order.symbol})`
+      );
+    }
 
-          order.status = 'CANCELLED';
-          order.updatedAt = new Date();
+    // 6. Update status to CANCELLED
+    order.status = 'CANCELLED';
+    order.updatedAt = new Date();
 
-          await txClient.query<any>('UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2', [
-            'CANCELLED',
-            order.id,
-          ]);
+    await this.database.query('UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2', [
+      'CANCELLED',
+      order.id,
+    ]);
 
-          if (true) {
-              marketDataService.emitOrderBookUpdate(order.symbol).catch(e => logger.warn('emitOrderBookUpdate error', {error: e.message}));
-              eventBus.publish({
-                id: crypto.randomUUID(),
-                type: 'spot.order.updated',
-                channel: 'user:orders',
-                userId,
-                symbol: order.symbol,
-                timestamp: Date.now(),
-                version: '1.0.0',
-                payload: {
-                  orderId: order.id,
-                  clientOrderId: order.clientOrderId,
-                  market: 'SPOT',
-                  symbol: order.symbol,
-                  side: order.side,
-                  type: order.type,
-                  price: order.price,
-                  quantity: order.quantity,
-                  filledQuantity: order.filledQuantity,
-                  remainingQuantity: order.remainingQuantity,
-                  status: 'CANCELLED',
-                  timeInForce: order.timeInForce,
-                  createdAt: order.createdAt.getTime(),
-                  updatedAt: order.updatedAt.getTime(),
-                },
-              });
-            }
+    // ── Emit Market & Domain Events strictly after successful commit ──────
+    try {
+      marketDataService.emitOrderBookUpdate(order.symbol);
 
-          return order;
-        });
+      eventBus.publish({
+        id: crypto.randomUUID(),
+        type: 'spot.order.updated',
+        channel: 'user:orders',
+        userId,
+        symbol: order.symbol,
+        timestamp: Date.now(),
+        version: '1.0.0',
+        payload: {
+          orderId: order.id,
+          clientOrderId: order.clientOrderId,
+          market: 'SPOT',
+          symbol: order.symbol,
+          side: order.side,
+          type: order.type,
+          price: order.price,
+          quantity: order.quantity,
+          filledQuantity: order.filledQuantity,
+          remainingQuantity: order.remainingQuantity,
+          status: 'CANCELLED',
+          timeInForce: order.timeInForce,
+          createdAt: order.createdAt.getTime(),
+          updatedAt: order.updatedAt.getTime(),
+        },
+      });
+    } catch (evtErr: any) {
+      logger.warn('Failed to emit spot cancel event', { error: evtErr.message });
+    }
+
+    logger.info('Spot order cancelled', {
+      orderId: order.id,
+      symbol: order.symbol,
+      releasedAmount: releaseAmount,
+    });
+
+    return order;
   }
 
 
@@ -1041,16 +1096,49 @@ export class SpotService {
    * Loads all active open/partially-filled orders from database into in-memory matching books.
    */
   public async recoverMatchingEngine(): Promise<number> {
+    this.engine.clear();
 
-        return 0;
+    const openOrdersRes = await this.database.query<any>(
+      "SELECT * FROM orders WHERE status IN ('NEW', 'PARTIALLY_FILLED')"
+    );
+
+    const openOrders: OrderEntity[] = openOrdersRes.rows.map(r => ({
+      id: r.id,
+      clientOrderId: r.clientOrderId || r.client_order_id,
+      accountId: r.accountId || r.account_id,
+      market: r.market,
+      symbol: r.symbol,
+      side: r.side,
+      type: r.type,
+        price: r.price,
+        stopPrice: r.stopPrice || r.stop_price,
+        quantity: r.quantity,
+      filledQuantity: r.filledQuantity || r.filled_quantity,
+      remainingQuantity: r.remainingQuantity || r.remaining_quantity,
+      lockedAmount: r.lockedAmount || r.locked_amount,
+      lockedAsset: r.lockedAsset || r.locked_asset,
+      status: r.status,
+      timeInForce: r.timeInForce || r.time_in_force,
+      createdAt: new Date(r.createdAt || r.created_at),
+      updatedAt: new Date(r.updatedAt || r.updated_at),
+    }));
+
+    for (const ord of openOrders) {
+      if (ord.type === 'LIMIT') {
+        const book = this.engine.getBook(ord.symbol);
+        book.addRestingOrder(ord);
+      }
+    }
+
+    logger.info('Matching engine recovered from database', { recoveredOrdersCount: openOrders.length });
+    return openOrders.length;
   }
 
   /**
    * Get public simulated order book depth.
    */
-  public async getOrderBookDepth(symbol: string, limit = 20): Promise<OrderBookDepth> {
-
-        return this.engine.getDepth(this.database, symbol, limit);
+  public getOrderBookDepth(symbol: string, limit = 20): OrderBookDepth {
+    return this.engine.getDepth(symbol, limit);
   }
 }
 

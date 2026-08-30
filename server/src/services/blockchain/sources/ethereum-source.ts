@@ -204,21 +204,7 @@ export class EthereumSource implements IBlockchainSource {
         // Zero-value transfers are not deposit observations.
         if (value === '' || value === '0') continue;
 
-          // MUST verify transaction success status (reverted native transfers are ignored)
-          let receipt: any = null;
-          try {
-            const txHash = typeof tx.hash === 'string' ? tx.hash : '';
-            const res = await this.rpc('eth_getTransactionReceipt', [txHash]);
-            receipt = res.result ?? null;
-          } catch (err: any) {
-            throw new Error(`EthereumSource: failed to fetch receipt for tx ${tx.hash}: ${err?.message || String(err)}`);
-          }
-
-          if (!receipt || (receipt.status !== '0x1' && receipt.status !== 1)) {
-            continue; // Reverted transaction
-          }
-
-          results.push({
+        results.push({
           txHash: typeof tx.hash === 'string' ? tx.hash : '',
           voutIndex: 0,
           blockNumber: n,

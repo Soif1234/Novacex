@@ -2,7 +2,7 @@ import { INSURANCE_FUND_ACCOUNT_ID } from './insurance-fund.service';
 import { ADL_SUSPENSE_ACCOUNT_ID } from './adl.service';
 import crypto from 'crypto';
 import { db, IDatabaseConnection } from '../../config/database';
-import { FuturesLiquidationEntity, FuturesPositionEntity, PositionSide, MarginMode } from '../../models/futures.model';
+import { FuturesLiquidationEntity, PositionSide } from '../../models/futures.model';
 import { futuresRiskService, FuturesRiskService } from './risk.service';
 import { futuresPositionService, FuturesPositionService } from './position.service';
 import { developmentMarkPriceProvider, IMarkPriceProvider } from './mark-price.provider';
@@ -11,9 +11,6 @@ import {
   PositionNotFoundError,
   PositionAlreadyLiquidatedError,
   LiquidationNotEligibleError,
-  LiquidationNotAuthorizedError,
-  InvalidMarkPriceError,
-  MarkPriceUnavailableError,
 } from './errors';
 import { decimalCompare, decimalNormalize, decimalZero, decimalSubtract, decimalAdd, decimalDivide, decimalMultiply } from '../ledger/decimal';
 import { eventBus } from '../market/event-bus';
@@ -40,7 +37,7 @@ export class FuturesLiquidationService {
     private markPrices: IMarkPriceProvider = developmentMarkPriceProvider
   ) {}
 
-  public async evaluateAndLiquidate(positionId: string, overrideMarkPrice?: string, authorizedAccountId?: string): Promise<any> {
+  public async evaluateAndLiquidate(positionId: string, overrideMarkPrice?: string): Promise<any> {
     
     // We wrap the entire liquidation in a single atomic transaction
     const { liquidation, position, markPrice, totalRealizedPnl, totalFee, totalReturn, deficit, finalStatus } = await this.database.transaction(async (txClient) => {
@@ -54,36 +51,45 @@ export class FuturesLiquidationService {
         throw new PositionAlreadyLiquidatedError(positionId);
       }
       
-            // 1b. Ownership enforcement (P0 fix): a customer route may only liquidate
-      //     its own position. The entity is mapped from the SAME locked row read
-      //     through the transaction client, eliminating the TOCTOU re-read via a
-      //     global connection inside the transaction.
-      const pos = this.mapPositionRow(row);
+      const pos = await this.positions.getPositionById(positionId); 
       if (!pos) throw new PositionNotFoundError(positionId);
-      if (authorizedAccountId && pos.accountId !== authorizedAccountId) {
-        throw new LiquidationNotAuthorizedError(positionId);
-      }
+      if (pos.status !== 'OPEN') throw new PositionAlreadyLiquidatedError(positionId);
 
-      // 2. Resolve an authoritative, validated mark price.
-      //    - The customer route passes NO override -> source from the
-      //      authoritative provider for the position's symbol.
-      //    - Overrides (worker/admin) are validated for positive, finite numeric
-      //      form and sanity bounds so a bad override cannot fabricate liquidation.
-      const mark = overrideMarkPrice !== undefined && overrideMarkPrice !== null && String(overrideMarkPrice).trim() !== ''
-        ? this.validateMarkPrice(String(overrideMarkPrice), positionId)
-        : await this.fetchAuthoritativeMarkPrice(pos.symbol, positionId);
+      const mark = overrideMarkPrice
+        ? decimalNormalize(overrideMarkPrice)
+        : await this.markPrices.getMarkPrice(pos.symbol);
 
       pos.markPrice = mark;
 
-      // 3. Use the PERSISTED collateral asset (migration 031) rather than
-      //    guessing from locked-balance heuristics across wallet assets.
-      const collateralAsset = pos.collateralAsset || 'FUTURES_USDT';
-      const balRes = await txClient.query<any>(
-        'SELECT available_balance FROM wallet_balances WHERE account_id = $1 AND asset = $2',
-        [pos.accountId, collateralAsset]
-      );
-      const balRow = balRes.rows[0];
-      let currentAvail = String(balRow?.available_balance ?? balRow?.availableBalance ?? '0');
+      const [usdtRowRes, futRowRes] = await Promise.all([
+        txClient.query<any>('SELECT available_balance, locked_balance FROM wallet_balances WHERE account_id = $1 AND asset = $2', [pos.accountId, 'USDT']),
+        txClient.query<any>('SELECT available_balance, locked_balance FROM wallet_balances WHERE account_id = $1 AND asset = $2', [pos.accountId, 'FUTURES_USDT']),
+      ]);
+
+      const usdtRow = usdtRowRes.rows[0];
+      const futRow = futRowRes.rows[0];
+      let collateralAsset = 'FUTURES_USDT';
+      let currentAvail = '0';
+
+      const usdtLocked = usdtRow ? String(usdtRow.locked_balance ?? usdtRow.lockedBalance ?? '0') : '0';
+      const futLocked = futRow ? String(futRow.locked_balance ?? futRow.lockedBalance ?? '0') : '0';
+
+      if (usdtRow && decimalCompare(usdtLocked, '0') > 0) {
+        collateralAsset = 'USDT';
+        currentAvail = String(usdtRow.available_balance ?? usdtRow.availableBalance ?? '0');
+      } else if (futRow && decimalCompare(futLocked, '0') > 0) {
+        collateralAsset = 'FUTURES_USDT';
+        currentAvail = String(futRow.available_balance ?? futRow.availableBalance ?? '0');
+      } else if (usdtRow && decimalCompare(String(usdtRow.available_balance ?? usdtRow.availableBalance ?? '0'), '0') > 0) {
+        collateralAsset = 'USDT';
+        currentAvail = String(usdtRow.available_balance ?? usdtRow.availableBalance ?? '0');
+      } else if (futRow) {
+        collateralAsset = 'FUTURES_USDT';
+        currentAvail = String(futRow.available_balance ?? futRow.availableBalance ?? '0');
+      }
+
+
+
 
       const isEligible = this.risk.checkLiquidation(pos, currentAvail);
       if (!isEligible) {
@@ -92,8 +98,6 @@ export class FuturesLiquidationService {
       }
 
       const cleanMarkPrice = decimalNormalize(mark);
-      // Contract-specific maintenance margin rate persisted on the position
-      const mmr = pos.maintenanceMarginRate || '0.005';
       
       let remainingQuantity = pos.quantity;
       let remainingIM = pos.initialMargin;
@@ -120,7 +124,7 @@ export class FuturesLiquidationService {
             markPrice: cleanMarkPrice,
         };
         const equity = this.risk.calculatePositionEquity(mockPos, currentAvail);
-        const mm = this.risk.calculateMaintenanceMargin(remainingQuantity, pos.entryPrice, mmr);
+        const mm = this.risk.calculateMaintenanceMargin(remainingQuantity, pos.entryPrice, '0.005');
         mockPos.maintenanceMargin = mm;
         
         if (decimalCompare(equity, mm) >= 0) {
@@ -225,7 +229,7 @@ export class FuturesLiquidationService {
           entries.push({ accountId: pos.accountId, asset: collateralAsset, direction: 'DEBIT', amount: totalUserDeduction, balancePool: 'available' });
           const userLoss = decimalSubtract(totalUserDeduction, totalFee);
           if (decimalCompare(userLoss, '0') > 0) {
-            entries.push({ accountId: INSURANCE_FUND_ACCOUNT_ID, asset: collateralAsset, direction: 'CREDIT', amount: userLoss, balancePool: 'available' });
+            entries.push({ accountId: '11111111-1111-1111-1111-111111111111', asset: collateralAsset, direction: 'CREDIT', amount: userLoss, balancePool: 'available' });
           }
       }
       if (decimalCompare(totalFee, '0') > 0) {
@@ -247,7 +251,7 @@ export class FuturesLiquidationService {
           if (decimalCompare(adlDraw, '0') > 0) {
               entries.push({ accountId: ADL_SUSPENSE_ACCOUNT_ID, asset: collateralAsset, direction: 'DEBIT', amount: adlDraw, balancePool: 'available' });
           }
-          entries.push({ accountId: INSURANCE_FUND_ACCOUNT_ID, asset: collateralAsset, direction: 'CREDIT', amount: totalDeficitToInsurance, balancePool: 'available' });
+          entries.push({ accountId: '11111111-1111-1111-1111-111111111111', asset: collateralAsset, direction: 'CREDIT', amount: totalDeficitToInsurance, balancePool: 'available' });
       }
 
 
@@ -265,24 +269,8 @@ export class FuturesLiquidationService {
 
       // Calculate final DB values
       const finalStatus = isFullyLiquidated ? 'LIQUIDATED' : 'OPEN';
-      const finalMM = this.risk.calculateMaintenanceMargin(remainingQuantity, pos.entryPrice, mmr);
+      const finalMM = this.risk.calculateMaintenanceMargin(remainingQuantity, pos.entryPrice, '0.005');
       const totalAccumulatedRealizedPnl = decimalAdd(pos.realizedPnl || '0', totalRealizedPnl);
-
-      // Recalculate the liquidation price after partial liquidation so the stored
-      // value stays consistent with the remaining quantity/margin (P1 fix: stale
-      // liquidation_price after partial liquidation).
-      let finalLiquidationPrice = pos.liquidationPrice;
-      if (finalStatus === 'OPEN' && decimalCompare(remainingQuantity, '0') > 0) {
-        const remainingMockPos: Pick<FuturesPositionEntity, 'marginMode' | 'side' | 'entryPrice' | 'quantity' | 'initialMargin' | 'maintenanceMargin'> = {
-          marginMode: pos.marginMode,
-          side: pos.side,
-          entryPrice: pos.entryPrice,
-          quantity: remainingQuantity,
-          initialMargin: remainingIM,
-          maintenanceMargin: finalMM,
-        };
-        finalLiquidationPrice = this.risk.calculateLiquidationPrice(remainingMockPos, mmr, currentAvail);
-      }
 
       await txClient.query(
         `UPDATE futures_positions SET
@@ -290,7 +278,7 @@ export class FuturesLiquidationService {
           maintenance_margin = $4, liquidation_price = $5, realized_pnl = $6,
           status = $7, updated_at = NOW()
         WHERE id = $8`,
-        [remainingQuantity, cleanMarkPrice, remainingIM, finalMM, finalLiquidationPrice, totalAccumulatedRealizedPnl, finalStatus, pos.id]
+        [remainingQuantity, cleanMarkPrice, remainingIM, finalMM, pos.liquidationPrice, totalAccumulatedRealizedPnl, finalStatus, pos.id]
       );
 
             const imPerUnit = decimalDivide(pos.initialMargin, pos.quantity);
@@ -407,82 +395,6 @@ export class FuturesLiquidationService {
     });
 
     return { ...liquidation, liquidation, position, markPrice, totalRealizedPnl, totalFee, totalReturn, deficit, finalStatus };
-  }
-
-  /**
-   * Map a raw futures_positions DB row to a FuturesPositionEntity.
-   * Used to build the entity from the SAME row already locked via the
-   * transaction client (fixes the TOCTOU re-read through a global connection).
-   */
-  private mapPositionRow(r: any): FuturesPositionEntity {
-    return {
-      id: r.id,
-      accountId: r.accountId || r.account_id,
-      symbol: r.symbol,
-      side: r.side as PositionSide,
-      quantity: String(r.quantity),
-      entryPrice: String(r.entryPrice || r.entry_price),
-      markPrice: String(r.markPrice || r.mark_price),
-      liquidationPrice: String(r.liquidationPrice || r.liquidation_price),
-      leverage: Number(r.leverage),
-      marginMode: (r.marginMode || r.margin_mode) as MarginMode,
-      initialMargin: String(r.initialMargin || r.initial_margin),
-      maintenanceMargin: String(r.maintenanceMargin || r.maintenance_margin),
-      realizedPnl: String(r.realizedPnl || r.realized_pnl || decimalZero()),
-      status: r.status,
-      collateralAsset: r.collateralAsset || r.collateral_asset || 'FUTURES_USDT',
-      maintenanceMarginRate: r.maintenanceMarginRate || r.maintenance_margin_rate || '0.005',
-      createdAt: new Date(r.createdAt || r.created_at),
-      updatedAt: new Date(r.updatedAt || r.updated_at),
-    };
-  }
-
-  /**
-   * Validate a supplied mark price: must be a well-formed decimal that is
-   * positive and within plausible absolute bounds. Rejects NaN/Infinity/garbage,
-   * zero, negative, and absurd magnitudes so an override cannot fabricate
-   * liquidation of a healthy position.
-   */
-  private validateMarkPrice(raw: string, positionId: string): string {
-    const str = String(raw).trim();
-    if (str === '' || str === 'NaN' || str === 'Infinity' || str === '-Infinity') {
-      throw new InvalidMarkPriceError(positionId, `non-numeric price "${str}"`);
-    }
-    let normalized: string;
-    try {
-      normalized = decimalNormalize(str);
-    } catch {
-      throw new InvalidMarkPriceError(positionId, `malformed decimal "${str}"`);
-    }
-    if (decimalCompare(normalized, '0') <= 0) {
-      throw new InvalidMarkPriceError(positionId, `price must be strictly positive (got "${str}")`);
-    }
-    // Sanity bounds: reject prices that are implausibly large/small in absolute terms.
-    if (decimalCompare(normalized, '100000000000000000') > 0) {
-      throw new InvalidMarkPriceError(positionId, `price "${str}" exceeds maximum sanity bound`);
-    }
-    if (decimalCompare(normalized, '0.000000000000000001') < 0) {
-      throw new InvalidMarkPriceError(positionId, `price "${str}" is below minimum sanity bound`);
-    }
-    return normalized;
-  }
-
-  /**
-   * Fetch the authoritative mark price for a symbol and validate it.
-   * Fail-closed: if the provider returns an unusable/zero/negative price we
-   * throw MarkPriceUnavailableError instead of liquidating at a bad price.
-   */
-  private async fetchAuthoritativeMarkPrice(symbol: string, positionId: string): Promise<string> {
-    let raw: string;
-    try {
-      raw = await this.markPrices.getMarkPrice(symbol);
-    } catch (err: any) {
-      throw new MarkPriceUnavailableError(symbol, `provider error: ${err?.message || 'unknown'}`);
-    }
-    if (raw === undefined || raw === null || String(raw).trim() === '') {
-      throw new MarkPriceUnavailableError(symbol, 'provider returned no price');
-    }
-    return this.validateMarkPrice(String(raw), positionId);
   }
 
   public async getLiquidations(accountId: string): Promise<FuturesLiquidationEntity[]> {

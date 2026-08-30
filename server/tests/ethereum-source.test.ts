@@ -96,8 +96,7 @@ describe('Phase 9.4 — EthereumSource native ETH detection (real source, mocked
 
   it('1. Native ETH transfer to monitored deposit address is detected', async () => {
     mockRpc((method, params) => {
-      if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getBlockByNumber' && params[1] === true) {
+      if (method === 'eth_getBlockByNumber' && params[1] === true) {
         return block(100, [
           tx('0xaa11', OTHER_ADDR, '0x1bc16d674ec80000'), // 2 ETH to other addr
           tx('0xaa22', DEPOSIT_ADDR, '0xde0b6b3a7640000'), // 1 ETH to deposit addr
@@ -117,9 +116,7 @@ describe('Phase 9.4 — EthereumSource native ETH detection (real source, mocked
 
   it('2. Native ETH transfer to unrelated address is ignored', async () => {
     mockRpc((method) => {
-      if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getBlockByNumber') {
+      if (method === 'eth_getBlockByNumber') {
         return block(100, [tx('0xbb11', OTHER_ADDR, '0xde0b6b3a7640000')]);
       }
       return null;
@@ -131,9 +128,7 @@ describe('Phase 9.4 — EthereumSource native ETH detection (real source, mocked
 
   it('3. Zero-value ETH transfer is ignored', async () => {
     mockRpc((method) => {
-      if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getBlockByNumber') {
+      if (method === 'eth_getBlockByNumber') {
         return block(100, [tx('0xcc11', DEPOSIT_ADDR, '0x0')]);
       }
       return null;
@@ -145,9 +140,7 @@ describe('Phase 9.4 — EthereumSource native ETH detection (real source, mocked
 
   it('4. Contract creation transaction (to = null) is ignored safely', async () => {
     mockRpc((method) => {
-      if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getBlockByNumber') {
+      if (method === 'eth_getBlockByNumber') {
         return block(100, [
           tx('0xdd11', null, '0xde0b6b3a7640000'), // contract creation
           tx('0xdd22', DEPOSIT_ADDR, '0xde0b6b3a7640000'),
@@ -163,9 +156,7 @@ describe('Phase 9.4 — EthereumSource native ETH detection (real source, mocked
 
   it('5. Multiple ETH transfers in one block to monitored address are all detected', async () => {
     mockRpc((method) => {
-      if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getBlockByNumber') {
+      if (method === 'eth_getBlockByNumber') {
         return block(100, [
           tx('0xee11', DEPOSIT_ADDR, '0xde0b6b3a7640000'),
           tx('0xee22', DEPOSIT_ADDR, '0x1bc16d674ec80000'),
@@ -185,9 +176,7 @@ describe('Phase 9.4 — EthereumSource native ETH detection (real source, mocked
 
   it('6. Duplicate scan of the same block is idempotent (same events, no dupes)', async () => {
     mockRpc((method) => {
-      if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getBlockByNumber') {
+      if (method === 'eth_getBlockByNumber') {
         return block(100, [tx('0xff11', DEPOSIT_ADDR, '0xde0b6b3a7640000')]);
       }
       return null;
@@ -203,9 +192,7 @@ describe('Phase 9.4 — EthereumSource native ETH detection (real source, mocked
 
   it('7. Malformed RPC block (missing transactions) is a safe empty result', async () => {
     mockRpc((method) => {
-      if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getBlockByNumber') {
+      if (method === 'eth_getBlockByNumber') {
         return { number: '0x64', hash: '0x' + 'ab'.repeat(32), timestamp: '0x1' }; // no transactions
       }
       return null;
@@ -225,9 +212,7 @@ describe('Phase 9.4 — EthereumSource native ETH detection (real source, mocked
 
   it('9. Native ETH event fields are exact: wei value, no token contract', async () => {
     mockRpc((method) => {
-      if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getTransactionReceipt') { return { status: '0x1' }; }
-        if (method === 'eth_getBlockByNumber') {
+      if (method === 'eth_getBlockByNumber') {
         return block(101, [tx('0x1111', DEPOSIT_ADDR, '0x16345785d8a0000')]); // 0.1 ETH
       }
       return null;
@@ -242,51 +227,6 @@ describe('Phase 9.4 — EthereumSource native ETH detection (real source, mocked
     expect(e.voutIndex).toBe(0); // used as logIndex for idempotency
     expect(e.blockNumber).toBe(101);
     expect(e.rawPayload).toBeTruthy();
-  });
-
-
-  it('11. Reverted native transaction (receipt.status = 0x0) is safely ignored', async () => {
-    mockRpc((method, params) => {
-      if (method === 'eth_getTransactionReceipt') {
-        return { status: '0x0' };
-      }
-      if (method === 'eth_getBlockByNumber') {
-        return block(102, [tx('0xaa55', DEPOSIT_ADDR, '0xde0b6b3a7640000')]);
-      }
-      return null;
-    });
-
-    const result = await source.getAddressTransactions(DEPOSIT_ADDR, 102, 102);
-    expect(result).toHaveLength(0); // Ignored because receipt.status == 0x0
-  });
-
-  it('12. Missing receipt (receipt = null) safely ignores the transaction (or throws)', async () => {
-    mockRpc((method, params) => {
-      if (method === 'eth_getTransactionReceipt') {
-        return null;
-      }
-      if (method === 'eth_getBlockByNumber') {
-        return block(103, [tx('0xaa66', DEPOSIT_ADDR, '0xde0b6b3a7640000')]);
-      }
-      return null;
-    });
-
-    const result = await source.getAddressTransactions(DEPOSIT_ADDR, 103, 103);
-    expect(result).toHaveLength(0); // Ignored because receipt is null
-  });
-
-  it('13. Failed receipt fetch throws and preserves checkpoint', async () => {
-    mockRpc((method, params) => {
-      if (method === 'eth_getTransactionReceipt') {
-        throw new Error('RPC offline');
-      }
-      if (method === 'eth_getBlockByNumber') {
-        return block(104, [tx('0xaa77', DEPOSIT_ADDR, '0xde0b6b3a7640000')]);
-      }
-      return null;
-    });
-
-    await expect(source.getAddressTransactions(DEPOSIT_ADDR, 104, 104)).rejects.toThrow(/failed to fetch receipt/);
   });
 
   it('10. ERC-20 USDT/USDC detection path (eth_getLogs) still works', async () => {

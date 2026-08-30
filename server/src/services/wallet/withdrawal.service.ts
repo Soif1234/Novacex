@@ -293,89 +293,12 @@ export class WithdrawalService {
     return res.rows.map(this.mapEntity);
   }
 
-
-  public async replaceWithdrawal(id: string, adminUserId: string, gasPolicy: any): Promise<any> {
-    const { custodyService } = await import('../custody/custody.service');
-    return await this.database.transaction(async (txClient) => {
-      const res = await txClient.query(
-        'SELECT id, status, crypto_status FROM withdrawals WHERE id = $1 FOR UPDATE',
-        [id]
-      );
-      if (res.rows.length === 0) throw new AppError('Withdrawal not found', 404, 'NOT_FOUND');
-
-      const w = res.rows[0] as any;
-      if (w.status !== 'PENDING' || (w.crypto_status !== 'BROADCAST' && w.crypto_status !== 'SUBMITTED' && w.crypto_status !== 'SIGNING')) {
-         throw new AppError('Cannot speed up withdrawal in state ' + w.crypto_status, 400, 'INVALID_STATE');
-      }
-
-      const result = await custodyService.replaceWithdrawal(id, gasPolicy);
-
-      await txClient.query(
-        'INSERT INTO audit_logs (id, admin_user_id, action, target_resource_type, target_resource_id, previous_state, new_state, reason, created_at) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, NOW())',
-        [adminUserId, 'SPEED_UP_WITHDRAWAL', 'WITHDRAWAL', id, JSON.stringify({ crypto_status: w.crypto_status }), JSON.stringify({ providerReference: result.providerReference }), 'Admin speed up']
-      );
-
-      return result;
-    });
-  }
-
-  public async cancelWithdrawalOnChain(id: string, adminUserId: string, gasPolicy: any): Promise<any> {
-    const { custodyService } = await import('../custody/custody.service');
-    return await this.database.transaction(async (txClient) => {
-      const res = await txClient.query(
-        'SELECT id, status, crypto_status FROM withdrawals WHERE id = $1 FOR UPDATE',
-        [id]
-      );
-      if (res.rows.length === 0) throw new AppError('Withdrawal not found', 404, 'NOT_FOUND');
-
-      const w = res.rows[0] as any;
-      if (w.status !== 'PENDING' || (w.crypto_status !== 'BROADCAST' && w.crypto_status !== 'SUBMITTED' && w.crypto_status !== 'SIGNING')) {
-         throw new AppError('Cannot cancel on-chain withdrawal in state ' + w.crypto_status, 400, 'INVALID_STATE');
-      }
-
-      const result = await custodyService.cancelWithdrawal(id, gasPolicy);
-
-      await txClient.query(
-        'INSERT INTO audit_logs (id, admin_user_id, action, target_resource_type, target_resource_id, previous_state, new_state, reason, created_at) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, NOW())',
-        [adminUserId, 'CANCEL_ON_CHAIN_WITHDRAWAL', 'WITHDRAWAL', id, JSON.stringify({ crypto_status: w.crypto_status }), JSON.stringify({ providerReference: result.providerReference }), 'Admin cancel on-chain']
-      );
-
-      return result;
-    });
-  }
-
-
   public async claimApprovedWithdrawals(limit: number): Promise<WithdrawalEntity[]> {
     return this.database.transaction(async (txClient) => {
       const res = await txClient.query<any>(
         `SELECT * FROM withdrawals
          WHERE status = 'PENDING' AND crypto_status = 'APPROVED'
          ORDER BY created_at ASC
-         LIMIT $1
-         FOR UPDATE SKIP LOCKED`,
-        [limit]
-      );
-
-      if (res.rows.length === 0) return [];
-
-      const ids = res.rows.map((r: any) => r.id);
-
-      await txClient.query(
-        `UPDATE withdrawals SET crypto_status = 'SUBMITTING', updated_at = NOW() WHERE id = ANY($1)`,
-        [ids]
-      );
-
-      return res.rows.map((row: any) => this.mapEntity({ ...row, crypto_status: 'SUBMITTING' }));
-    });
-  }
-
-  public async claimStuckWithdrawals(limit: number, olderThanMinutes: number = 5): Promise<WithdrawalEntity[]> {
-    return this.database.transaction(async (txClient) => {
-      const res = await txClient.query<any>(
-        `SELECT * FROM withdrawals
-         WHERE status = 'PENDING' AND crypto_status IN ('SIGNING', 'UNKNOWN')
-         AND updated_at < NOW() - INTERVAL '${olderThanMinutes} minutes'
-         ORDER BY updated_at ASC
          LIMIT $1
          FOR UPDATE SKIP LOCKED`,
         [limit]
@@ -419,27 +342,6 @@ export class WithdrawalService {
       `UPDATE withdrawals SET crypto_status = $1, updated_at = NOW() WHERE id = $2`,
       [cryptoStatus, id]
     );
-  }
-
-  /**
-   * Phase 10.4 Step 6E-4C-2 (P1): read the live custody state for failure
-   * handling. Claim-time entity snapshots are stale — requestWithdrawal may
-   * have reserved a nonce (persisting network_nonce + crypto_status='SIGNING')
-   * AFTER the claim row was read, so failure handling MUST re-read the row to
-   * know whether a nonce is durably reserved.
-   */
-  public async getCryptoState(id: string): Promise<{ crypto_status: string | null; network_nonce: number | null }> {
-    const res = await this.database.query<{ crypto_status: string; network_nonce: string | number | null }>(
-      `SELECT crypto_status, network_nonce FROM withdrawals WHERE id = $1`,
-      [id]
-    );
-    if (res.rows.length === 0) return { crypto_status: null, network_nonce: null };
-    const r = res.rows[0];
-    const nonce = r.network_nonce == null ? null : Number(r.network_nonce);
-    return {
-      crypto_status: r.crypto_status ?? null,
-      network_nonce: nonce !== null && Number.isNaN(nonce) ? null : nonce,
-    };
   }
 
   public async failWithdrawal(id: string, reason: string): Promise<void> {

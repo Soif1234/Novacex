@@ -6,14 +6,6 @@ dotenv.config();
 
 export interface EnvironmentConfig {
   CRYPTO_WITHDRAWALS_ENABLED: boolean;
-  /** 6E-4C-2: networks eligible for deposit sweeping (CSV, uppercase). */
-  CUSTODY_SWEEPABLE_NETWORKS: string;
-  /** 6E-4C-2: per-asset ERC20 sweep minimum in token base units (CSV "ASSET=UNITS"). */
-  CUSTODY_SWEEP_MIN_TOKEN_UNITS: string;
-  /** 6E-4C-2: broadcast artifacts older than this are probed and escalated. */
-  CUSTODY_SWEEP_STALE_BROADCAST_MINUTES: number;
-  /** 6E-4C-2: stuck sweep recovery threshold in minutes (queue mechanics). */
-  CUSTODY_SWEEP_RECOVERY_TIMEOUT_MINUTES: number;
   NODE_ENV: 'development' | 'production' | 'test';
   PORT: number;
   HOST: string;
@@ -45,12 +37,6 @@ export interface EnvironmentConfig {
   REDIS_RECONNECT_MAX_DELAY_MS: number;
   REDIS_SSL_REJECT_UNAUTHORIZED: boolean;
   REDIS_CA_CERT?: string;
-
-  HYPERLIQUID_ENV: 'testnet' | 'mainnet';
-  HYPERLIQUID_REST_URL: string;
-  HYPERLIQUID_WS_URL: string;
-  HYPERLIQUID_AGENT_PRIVATE_KEY: string;
-  HYPERLIQUID_ACCOUNT_ADDRESS: string;
   RATE_LIMIT_ENABLED: boolean;
   RATE_LIMIT_GLOBAL_MAX: number;
   RATE_LIMIT_AUTH_MAX: number;
@@ -79,13 +65,6 @@ export interface EnvironmentConfig {
    * mock provider is never wired to any financial state.
    */
   CUSTODY_ENABLED: boolean;
-  CUSTODY_PROVIDER?: 'mock' | 'kms';
-  CUSTODY_KMS_KEY_ID?: string;
-  CUSTODY_EVM_RPC_URL?: string;
-  CUSTODY_KMS_REGION?: string;
-  CUSTODY_FACTORY_ADDRESS?: string;
-  CUSTODY_IMPLEMENTATION_ADDRESS?: string;
-  CUSTODY_INIT_CODE_HASH?: string;
   /**
    * Phase 9.4: blockchain monitoring master switch.
    * MUST remain false by default. Blockchain monitoring workers stay inert
@@ -137,7 +116,7 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
   const redisMaxRetries = parseNumber(process.env.REDIS_RECONNECT_MAX_RETRIES, 10, 'REDIS_RECONNECT_MAX_RETRIES');
   const redisBaseDelay = parseNumber(process.env.REDIS_RECONNECT_BASE_DELAY_MS, 500, 'REDIS_RECONNECT_BASE_DELAY_MS');
   const redisMaxDelay = parseNumber(process.env.REDIS_RECONNECT_MAX_DELAY_MS, 10000, 'REDIS_RECONNECT_MAX_DELAY_MS');
-
+  
   const rateLimitEnabled = parseBoolean(process.env.RATE_LIMIT_ENABLED, nodeEnv !== 'test');
   const rateLimitGlobalMax = parseNumber(process.env.RATE_LIMIT_GLOBAL_MAX, 300, 'RATE_LIMIT_GLOBAL_MAX');
   const rateLimitAuthMax = parseNumber(process.env.RATE_LIMIT_AUTH_MAX, 20, 'RATE_LIMIT_AUTH_MAX');
@@ -187,60 +166,15 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
   const externalMarketDataFuturesUrl = process.env.EXTERNAL_MARKET_DATA_FUTURES_URL || 'https://fapi.binance.com/fapi/v1';
   const externalMarketDataPollIntervalMs = parseNumber(process.env.EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS, 3000, 'EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS');
 
-
-  const hyperliquidEnvRaw = (process.env.HYPERLIQUID_ENV || '').toLowerCase();
-
-  if (hyperliquidEnvRaw !== 'mainnet' && hyperliquidEnvRaw !== 'testnet') {
-    throw new Error(`Invalid HYPERLIQUID_ENV: "${hyperliquidEnvRaw}". Must be exactly "mainnet" or "testnet".`);
-  }
-
-  if (nodeEnv === 'production' && hyperliquidEnvRaw !== 'mainnet') {
-    // Policy: Testnet in production is FORBIDDEN unless explicitly bypassed. We enforce fail-closed here.
-    throw new Error('HYPERLIQUID_ENV must be "mainnet" in production.');
-  }
-
-  let hyperliquidRestUrl = '';
-  let hyperliquidWsUrl = '';
-  let hyperliquidAgentPrivateKey = '';
-  let hyperliquidAccountAddress = '';
-
-  if (hyperliquidEnvRaw === 'testnet') {
-    hyperliquidRestUrl = 'https://api.hyperliquid-testnet.xyz';
-    hyperliquidWsUrl = 'wss://api.hyperliquid-testnet.xyz/ws';
-    hyperliquidAgentPrivateKey = process.env.HYPERLIQUID_TESTNET_AGENT_PRIVATE_KEY || '';
-    hyperliquidAccountAddress = process.env.HYPERLIQUID_TESTNET_ACCOUNT_ADDRESS || '';
-    if (!hyperliquidAgentPrivateKey) {
-       throw new Error('HYPERLIQUID_TESTNET_AGENT_PRIVATE_KEY is missing but HYPERLIQUID_ENV=testnet');
-    }
-  } else if (hyperliquidEnvRaw === 'mainnet') {
-    hyperliquidRestUrl = 'https://api.hyperliquid.xyz';
-    hyperliquidWsUrl = 'wss://api.hyperliquid.xyz/ws';
-    hyperliquidAgentPrivateKey = process.env.HYPERLIQUID_MAINNET_AGENT_PRIVATE_KEY || '';
-    hyperliquidAccountAddress = process.env.HYPERLIQUID_MAINNET_ACCOUNT_ADDRESS || '';
-    if (!hyperliquidAgentPrivateKey) {
-       throw new Error('HYPERLIQUID_MAINNET_AGENT_PRIVATE_KEY is missing but HYPERLIQUID_ENV=mainnet');
-    }
-  }
-
-  if (process.env.HYPERLIQUID_REST_URL || process.env.HYPERLIQUID_WS_URL) {
-    throw new Error('Arbitrary HYPERLIQUID_REST_URL or HYPERLIQUID_WS_URL injection is forbidden. The endpoints are derived securely from HYPERLIQUID_ENV.');
-  }
-
   const config: EnvironmentConfig = {
     NODE_ENV: nodeEnv as 'development' | 'production' | 'test',
     PORT: port,
     HOST: process.env.HOST || '0.0.0.0',
     API_PREFIX: process.env.API_PREFIX || '/api/v1',
     APP_NAME: process.env.APP_NAME || 'mallick-exchange-backend',
-
-    HYPERLIQUID_ENV: hyperliquidEnvRaw as 'testnet' | 'mainnet',
-    HYPERLIQUID_REST_URL: hyperliquidRestUrl,
-    HYPERLIQUID_WS_URL: hyperliquidWsUrl,
-    HYPERLIQUID_AGENT_PRIVATE_KEY: hyperliquidAgentPrivateKey,
-    HYPERLIQUID_ACCOUNT_ADDRESS: hyperliquidAccountAddress,
     APP_VERSION: process.env.APP_VERSION || '1.0.0',
-    CORS_ORIGIN: (nodeEnv === 'production' && (!process.env.CORS_ORIGIN || process.env.CORS_ORIGIN.includes('*')))
-    ? (() => { throw new Error('CORS_ORIGIN must be explicitly configured without wildcards in production'); })()
+    CORS_ORIGIN: (nodeEnv === 'production' && (!process.env.CORS_ORIGIN || process.env.CORS_ORIGIN.includes('*'))) 
+    ? (() => { throw new Error('CORS_ORIGIN must be explicitly configured without wildcards in production'); })() 
     : process.env.CORS_ORIGIN || 'http://localhost:3000,http://127.0.0.1:3000',
     DATABASE_URL: databaseUrl,
     DB_HOST: dbHost,
@@ -277,8 +211,8 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     LOAD_SHEDDING_DB_WAITING_THRESHOLD: loadSheddingDbWaitingThreshold,
     LOG_LEVEL: logLevel as 'debug' | 'info' | 'warn' | 'error',
     SHUTDOWN_TIMEOUT_MS: shutdownTimeout,
-    API_KEY_ENCRYPTION_SECRET: (nodeEnv === 'production' && !process.env.API_KEY_ENCRYPTION_SECRET)
-    ? (() => { throw new Error('API_KEY_ENCRYPTION_SECRET must be provided in production'); })()
+    API_KEY_ENCRYPTION_SECRET: (nodeEnv === 'production' && !process.env.API_KEY_ENCRYPTION_SECRET) 
+    ? (() => { throw new Error('API_KEY_ENCRYPTION_SECRET must be provided in production'); })() 
     : process.env.API_KEY_ENCRYPTION_SECRET || undefined,
     AUTO_MIGRATE: autoMigrate,
     EXTERNAL_MARKET_DATA_ENABLED: externalMarketDataEnabled,
@@ -286,35 +220,7 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     EXTERNAL_MARKET_DATA_FUTURES_URL: externalMarketDataFuturesUrl,
     EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS: externalMarketDataPollIntervalMs,
     CUSTODY_ENABLED: parseBoolean(process.env.CUSTODY_ENABLED, false),
-    CUSTODY_PROVIDER: process.env.CUSTODY_PROVIDER as 'mock' | 'kms' | undefined,
-    CUSTODY_KMS_KEY_ID: process.env.CUSTODY_KMS_KEY_ID,
-    CUSTODY_EVM_RPC_URL: process.env.CUSTODY_EVM_RPC_URL,
-    CUSTODY_KMS_REGION: process.env.CUSTODY_KMS_REGION,
-    CUSTODY_FACTORY_ADDRESS: process.env.CUSTODY_FACTORY_ADDRESS,
-    CUSTODY_IMPLEMENTATION_ADDRESS: process.env.CUSTODY_IMPLEMENTATION_ADDRESS,
-    CUSTODY_INIT_CODE_HASH: process.env.CUSTODY_INIT_CODE_HASH,
     CRYPTO_WITHDRAWALS_ENABLED: parseBoolean(process.env.CRYPTO_WITHDRAWALS_ENABLED, false),
-    // Phase 10.4 Step 6E-4C-2 sweep corrections:
-    // Networks eligible for deposit sweeping (producer filter; CSV, uppercase).
-    CUSTODY_SWEEPABLE_NETWORKS: process.env.CUSTODY_SWEEPABLE_NETWORKS || 'ETHEREUM',
-    // Per-asset ERC20 dust policy in TOKEN BASE UNITS (CSV "ASSET=UNITS"),
-    // e.g. "USDT=1000000,USDC=1000000". Empty = sweep everything. Documented
-    // limitation: base units carry no market value — no oracle introduced.
-    CUSTODY_SWEEP_MIN_TOKEN_UNITS: process.env.CUSTODY_SWEEP_MIN_TOKEN_UNITS || '',
-    // Broadcast sweep artifacts unconfirmed longer than this are probed for
-    // mempool/chain presence and escalated to STALE_BROADCAST when dropped.
-    CUSTODY_SWEEP_STALE_BROADCAST_MINUTES: parseNumber(
-      process.env.CUSTODY_SWEEP_STALE_BROADCAST_MINUTES,
-      120,
-      'CUSTODY_SWEEP_STALE_BROADCAST_MINUTES',
-    ),
-    // Stuck PROCESSING/SIGNING sweep recovery threshold (queue mechanics only —
-    // durable sweep_intents preserve reserved nonces across recovery).
-    CUSTODY_SWEEP_RECOVERY_TIMEOUT_MINUTES: parseNumber(
-      process.env.CUSTODY_SWEEP_RECOVERY_TIMEOUT_MINUTES,
-      5,
-      'CUSTODY_SWEEP_RECOVERY_TIMEOUT_MINUTES',
-    ),
     BLOCKCHAIN_MONITORING_ENABLED: parseBoolean(process.env.BLOCKCHAIN_MONITORING_ENABLED, false),
     DEPOSIT_CREDITING_ENABLED: parseBoolean(process.env.DEPOSIT_CREDITING_ENABLED, false),
     ETHEREUM_RPC_URL: process.env.ETHEREUM_RPC_URL || '',

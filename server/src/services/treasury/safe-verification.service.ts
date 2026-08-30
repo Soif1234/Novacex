@@ -16,18 +16,10 @@ export class SafeVerificationService {
     safeAddress: string,
     expectedOwner: string,
     expectedThreshold: number,
-    expectedChainId: number,
     rpcUrl: string
   ): Promise<boolean> {
     try {
       const provider = new ethers.JsonRpcProvider(rpcUrl);
-
-      // 0. Verify chainId
-      const network = await provider.getNetwork();
-      if (Number(network.chainId) !== expectedChainId) {
-        logger.error(`SafeVerification: Chain ID mismatch. Expected ${expectedChainId}, found ${network.chainId}`);
-        return false;
-      }
       
       // 1. Check if contract exists
       const code = await provider.getCode(safeAddress);
@@ -68,5 +60,3 @@ export class SafeVerificationService {
     }
   }
 }
-
-export const safeVerificationService = new SafeVerificationService();

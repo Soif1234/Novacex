@@ -7,9 +7,6 @@ import { depositCreditingWorker } from './DepositCreditingWorker';
 import { confirmationWorker } from './ConfirmationWorker';
 import { withdrawalProcessingWorker } from './WithdrawalProcessingWorker';
 import { withdrawalStatusWorker } from './WithdrawalStatusWorker';
-import { sweepWorker } from './SweepWorker';
-import { sweepStatusWorker } from './SweepStatusWorker';
-import { treasuryMonitorWorker } from './TreasuryMonitorWorker';
 import { klineService } from '../services/market/kline.service';
 import { conditionalTriggerService } from '../services/market/conditional.service';
 import { NotificationWorker } from './NotificationWorker';
@@ -105,28 +102,6 @@ export class WorkerSupervisor {
     });
 
     this.register({
-      name: 'SweepWorker',
-      start: () => sweepWorker.start(),
-      stop: () => sweepWorker.stop(),
-      getStatus: () => ({ isRunning: (sweepWorker as any).isRunning ?? false }),
-    });
-
-    this.register({
-      name: 'SweepStatusWorker',
-      start: () => sweepStatusWorker.start(),
-      stop: () => sweepStatusWorker.stop(),
-      getStatus: () => ({ isRunning: (sweepStatusWorker as any).isRunning ?? false }),
-    });
-
-    // Phase 10.6 — Safe Treasury monitoring (recovery + on-chain scan).
-    this.register({
-      name: 'TreasuryMonitorWorker',
-      start: () => treasuryMonitorWorker.start(),
-      stop: () => treasuryMonitorWorker.stop(),
-      getStatus: () => ({ isRunning: (treasuryMonitorWorker as any).isRunning ?? false }),
-    });
-
-    this.register({
       name: 'NotificationWorker',
       start: () => notificationWorker.start(),
       stop: () => notificationWorker.stop(),
@@ -204,3 +179,4 @@ export class WorkerSupervisor {
 }
 
 export const workerSupervisor = new WorkerSupervisor();
+

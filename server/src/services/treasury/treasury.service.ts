@@ -24,12 +24,11 @@ export interface TreasuryTransaction {
   sourceAddress: string;
   destinationAddress: string;
   amount: string; // Exact base unit string
-  txHash: string | null;
+  txHash: string;
   logIndex: number;
   blockNumber: number;
   blockHash: string;
   status: 'PENDING' | 'CONFIRMED' | 'FAILED' | 'REORGED' | 'RECONCILIATION_REQUIRED';
-  clientWithdrawalId?: string;
 }
 
 export class TreasuryService {
@@ -58,12 +57,12 @@ export class TreasuryService {
    * Idempotently insert a treasury transaction.
    * Concurrent processing of the exact same event will safely conflict on the unique constraint.
    */
-  public async insertTreasuryTransaction(tx: TreasuryTransaction, dbClient: any = this.pool): Promise<boolean> {
+  public async insertTreasuryTransaction(tx: TreasuryTransaction): Promise<boolean> {
     try {
-      await dbClient.query(
+      await this.pool.query(
         `INSERT INTO treasury_transactions
-         (network, chain_id, asset, token_contract, source_address, destination_address, amount, tx_hash, log_index, block_number, block_hash, status, client_withdrawal_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         (network, chain_id, asset, token_contract, source_address, destination_address, amount, tx_hash, log_index, block_number, block_hash, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (network, tx_hash, log_index) DO NOTHING`,
         [
           tx.network,
@@ -77,8 +76,7 @@ export class TreasuryService {
           tx.logIndex,
           tx.blockNumber,
           tx.blockHash,
-          tx.status,
-          tx.clientWithdrawalId || null
+          tx.status
         ]
       );
       // We don't necessarily know if it was inserted or skipped from DO NOTHING result in pg simply,
@@ -112,46 +110,6 @@ export class TreasuryService {
        VALUES ($1, $2, $3, $4, $5, $6, 'OPEN')`,
       [eventId, network, JSON.stringify(expectedState), JSON.stringify(actualState), reason, txHash || null]
     );
-  }
-
-  public async getSyncStatus(network: string): Promise<{ lastBlockNumber: number; lastBlockHash: string } | null> {
-    const res = await this.pool.query<any>(
-      `SELECT last_block_number, last_block_hash FROM treasury_sync_status WHERE network = $1`,
-      [network]
-    );
-    if (res.rows.length === 0) return null;
-    const row = res.rows[0];
-    return {
-      lastBlockNumber: Number(row.last_block_number),
-      lastBlockHash: row.last_block_hash
-    };
-  }
-
-  public async updateSyncStatus(network: string, blockNumber: number, blockHash: string, dbClient: any = this.pool): Promise<void> {
-    await dbClient.query(
-      `INSERT INTO treasury_sync_status (network, last_block_number, last_block_hash)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (network) DO UPDATE SET
-       last_block_number = EXCLUDED.last_block_number,
-       last_block_hash = EXCLUDED.last_block_hash,
-       updated_at = NOW()`,
-      [network, blockNumber, blockHash]
-    );
-  }
-
-  public async getAllowedAssets(network: string): Promise<{ asset: string; contractAddress: string | null }[]> {
-    const res = await this.pool.query<any>(
-      `SELECT asset, contract_address FROM asset_networks WHERE network = $1 AND is_active = TRUE`,
-      [network]
-    );
-    return res.rows.map(r => ({
-      asset: r.asset,
-      contractAddress: r.contract_address
-    }));
-  }
-
-  public getDatabase(): IDatabaseConnection {
-    return this.pool;
   }
 }
 

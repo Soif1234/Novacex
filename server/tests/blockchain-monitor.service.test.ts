@@ -93,7 +93,6 @@ describe('Phase 9.4: Blockchain Monitor Service — Ethereum (ERC-20)', () => {
   let db: any;
   let userId: string;
   let ethereumAddress: string;
-  let ethAddress: string;
   let mockSource: MockBlockchainSource;
   let monitor: BlockchainMonitorService;
   let confWorker: ConfirmationWorkerService;
@@ -110,9 +109,6 @@ describe('Phase 9.4: Blockchain Monitor Service — Ethereum (ERC-20)', () => {
     const { service } = makeEnabledStack();
     const addr = await service.getOrCreateDepositAddress({ userId, asset: 'USDT', network: 'ETHEREUM' });
     ethereumAddress = addr.blockchainAddress.toLowerCase();
-
-    const addrEth = await service.getOrCreateDepositAddress({ userId, asset: 'ETH', network: 'ETHEREUM' });
-    ethAddress = addrEth.blockchainAddress.toLowerCase();
 
     mockSource = new MockBlockchainSource('ethereum');
 
@@ -292,8 +288,8 @@ describe('Phase 9.4: Blockchain Monitor Service — Ethereum (ERC-20)', () => {
 
     const result = await monitor.runOnce();
 
-    expect(result.detected).toBe(0);
-    expect(result.rejected).toBe(0);
+    expect(result.detected).toBe(1);
+    expect(result.rejected).toBe(1);
     expect(result.inserted).toBe(0);
 
     // Unknown token has no resolvable asset — no row is persisted (FK safety)
@@ -728,7 +724,7 @@ describe('Phase 9.4: Blockchain Monitor Service — Ethereum (ERC-20)', () => {
     mockSource.setNextBlock(1);
 
     const result = await monitor.runOnce();
-    expect(result.rejected).toBe(0);
+    expect(result.rejected).toBe(1);
 
     // Unknown token has no resolvable asset — no row persisted
     const allRows = await db.query(
@@ -790,59 +786,6 @@ describe('Phase 9.4: Blockchain Monitor Service — Ethereum (ERC-20)', () => {
   });
 
   // 18. Multiple addresses in same block detected
-
-  it('A. native + ERC20 in SAME transaction -> two distinct blockchain deposit IDs', async () => {
-    const txHash = '0x' + 'd'.repeat(64);
-    mockSource.injectBlock({
-      number: 1,
-      transactions: [{
-        hash: txHash,
-        voutIndex: 0,
-        from: '0xsender',
-        to: ethAddress,
-        value: '1000000000',
-        blockNumber: 1,
-        rawPayload: {}
-      }],
-      logs: [{
-        address: USDT_CONTRACT,
-        topics: [ERC20_TRANSFER_TOPIC, padToTopic('0xsender'), padToTopic(ethereumAddress)],
-        data: encodeUint256('2000000'),
-        transactionHash: txHash,
-        logIndex: 0,
-        removed: false
-      }]
-    });
-
-    const result = await monitor.runOnce();
-    expect(result.inserted).toBe(2);
-  });
-
-  it('B. two ERC20 Transfer events in same tx -> two distinct IDs', async () => {
-    const txHash = '0x' + 'e'.repeat(64);
-    mockSource.injectBlock({
-      number: 2,
-      logs: [{
-        address: USDT_CONTRACT,
-        topics: [ERC20_TRANSFER_TOPIC, padToTopic('0xsender'), padToTopic(ethereumAddress)],
-        data: encodeUint256('1000000'),
-        transactionHash: txHash,
-        logIndex: 1,
-        removed: false
-      }, {
-        address: USDT_CONTRACT,
-        topics: [ERC20_TRANSFER_TOPIC, padToTopic('0xsender'), padToTopic(ethereumAddress)],
-        data: encodeUint256('2000000'),
-        transactionHash: txHash,
-        logIndex: 2,
-        removed: false
-      }]
-    });
-
-    const result = await monitor.runOnce();
-    expect(result.inserted).toBe(2);
-  });
-
   it('18. Multiple users receiving deposits in same block are all detected', async () => {
     // Create second user
     const user2 = await createTestUser();
@@ -953,8 +896,6 @@ describe('Phase 9.4: Blockchain Monitor — Real EthereumSource (mocked RPC)', (
         } else {
           result = rpcBlock(1, []);
         }
-      } else if (body.method === 'eth_getTransactionReceipt') {
-        result = { status: '0x1' };
       }
       return {
         ok: true,
@@ -995,8 +936,6 @@ describe('Phase 9.4: Blockchain Monitor — Real EthereumSource (mocked RPC)', (
           rpcTx('0x' + 'b'.repeat(64), ethAddress, '0x0'), // zero value
           rpcTx('0x' + 'c'.repeat(64), null, '0xde0b6b3a7640000'), // contract creation
         ]);
-      } else if (body.method === 'eth_getTransactionReceipt') {
-        result = { status: '0x1' };
       }
       return {
         ok: true,
@@ -1013,41 +952,6 @@ describe('Phase 9.4: Blockchain Monitor — Real EthereumSource (mocked RPC)', (
 
     const rows = await db.query('SELECT COUNT(*) as cnt FROM blockchain_deposits');
     expect(rows.rows[0].cnt).toBe(0);
-  });
-
-  it('22. Real EthereumSource correctly ignores REVERTED native ETH transfers', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init?: any) => {
-      const body = JSON.parse(init?.body ?? '{}');
-      let result: unknown = null;
-      if (body.method === 'eth_blockNumber') {
-        result = '0x1';
-      } else if (body.method === 'eth_getLogs') {
-        result = [];
-      } else if (body.method === 'eth_getBlockByNumber') {
-        result = rpcBlock(1, [
-          rpcTx('0x' + 'e'.repeat(64), ethAddress, '0xde0b6b3a7640000'), // Valid addr, valid amount
-        ]);
-      } else if (body.method === 'eth_getTransactionReceipt') {
-        // Mock a reverted receipt!
-        result = { status: '0x0' };
-      }
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ jsonrpc: '2.0', id: body.id ?? 1, result }),
-      };
-    }));
-
-    const res = await monitor.runOnce();
-    expect(res.errors).toBe(0);
-    expect(res.detected).toBe(0); // Ignored at source level
-
-    const rows = await db.query('SELECT COUNT(*) AS cnt FROM blockchain_deposits');
-    expect(rows.rows[0].cnt).toBe(0);
-
-    // Checkpoint must advance successfully since the revert is safely ignored, not an error
-    const cp = await db.query('SELECT last_block_number FROM monitor_checkpoints WHERE network = $1', ['ETHEREUM']);
-    expect(cp.rows[0].last_block_number).toBe(1);
   });
 
   it('21. Real EthereumSource RPC failure preserves checkpoint (no advance on error)', async () => {

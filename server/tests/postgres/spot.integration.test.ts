@@ -26,9 +26,7 @@ describe('Real PostgreSQL Financial Integration — Spot Engine (server/tests/po
     walletService = new WalletService(db, ledgerService);
   });
 
-  beforeEach(async () => {
-    await db.query('TRUNCATE TABLE orders CASCADE');
-    await db.query('TRUNCATE TABLE wallet_balances CASCADE');
+  beforeEach(() => {
     // Isolate in-memory order books per test so resting orders do not cross tests
     spotService = new SpotService(db, ledgerService, new MatchingEngine());
   });
@@ -178,13 +176,13 @@ describe('Real PostgreSQL Financial Integration — Spot Engine (server/tests/po
     // Check Buyer balances: received 1 BTC, spent 50,000 USDT
     const buyerBtc = await ledgerService.getBalance(buyer.spotAccountId, 'BTC');
     const buyerUsdt = await ledgerService.getBalance(buyer.spotAccountId, 'USDT');
-    expect(buyerBtc.availableBalance).toBe('0.999000000000000000');
+    expect(buyerBtc.availableBalance).toBe('1.000000000000000000');
     expect(buyerUsdt.availableBalance).toBe('10000.000000000000000000');
 
     // Check Seller balances: received 50,000 USDT, spent 1 BTC
     const sellerUsdt = await ledgerService.getBalance(seller.spotAccountId, 'USDT');
     const sellerBtc = await ledgerService.getBalance(seller.spotAccountId, 'BTC');
-    expect(sellerUsdt.availableBalance).toBe('49950.000000000000000000');
+    expect(sellerUsdt.availableBalance).toBe('50000.000000000000000000');
     expect(sellerBtc.availableBalance).toBe('0.000000000000000000');
     expect(sellerBtc.lockedBalance).toBe('0.000000000000000000');
   });

@@ -20,13 +20,8 @@
 
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
-import { db } from '../../config/database';
 import { isSupportedNetwork } from '../../models/asset-network.model';
 import { ICustodyAdapter, ICustodyReadAdapter } from './custody-adapter';
-import { LocalKmsMock } from './local-kms-mock';
-import { KmsCustodyProvider } from './kms-custody-provider';
-import { MockCustodyProvider } from './mock-custody-provider';
-import { KMSClient } from '@aws-sdk/client-kms';
 import {
   CustodyError,
   CustodyDisabledError,
@@ -46,15 +41,8 @@ import {
   CustodyTransactionStatus,
   DepositAddress,
   GetOrCreateDepositAddressRequest,
-  HOUSE_TREASURY_ACCOUNT_ID,
-  TreasuryTransferRequest,
   WithdrawalRequest,
-  ReplacementGasPolicy,
-  SweepStatusResult,
 } from './custody.types';
-
-/** Physical Ethereum address shape — enforced on treasury destinations. */
-const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 /** Internal wiring — which capabilities are available when enabled. */
 export interface CustodyServiceOptions {
@@ -260,16 +248,6 @@ export class CustodyService {
     if (!request.destinationAddress || request.destinationAddress.trim().length === 0) {
       throw new InvalidCustodyRequestError('destinationAddress is required for a withdrawal request');
     }
-    // Phase 10.4 (unfreeze): the CUSTOMER withdrawal operation must never carry
-    // the HOUSE TREASURY principal. Treasury movements have a dedicated
-    // operation (submitTreasuryTransfer) with separate artifacts and no
-    // customer-table reach. This makes CUSTOMER ≠ TREASURY structurally
-    // enforceable instead of a string convention.
-    if (request.accountId === HOUSE_TREASURY_ACCOUNT_ID) {
-      throw new InvalidCustodyRequestError(
-        'Customer withdrawal operation rejects the HOUSE_TREASURY principal; use submitTreasuryTransfer',
-      );
-    }
     try {
       const result = await adapter.requestWithdrawal(request);
       logger.info('Mock custody withdrawal requested (simulated, no funds moved)', {
@@ -279,161 +257,6 @@ export class CustodyService {
         network: result.network,
       });
       return result;
-    } catch (err) {
-      this.normalizeError(err);
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Phase 10.4 (unfreeze) — HOUSE TREASURY custody boundary
-  // -------------------------------------------------------------------------
-
-  /**
-   * Dedicated treasury consolidation custody operation.
-   *
-   * - Requires the provider to advertise TREASURY_TRANSFER (fail closed).
-   * - Rejects customer account principals outright (defense in depth: even a
-   *   buggy caller cannot route a customer account through the treasury op).
-   * - Destination MUST be an EVM address; the treasury layer owns the trust
-   *   decision (trusted Safe anchor + on-chain verification) — the custody
-   *   layer enforces execution safety (nonce, artifact, signature validation).
-   * - providerReference in the result is the PHYSICAL blockchain tx hash.
-   */
-  public async submitTreasuryTransfer(request: TreasuryTransferRequest): Promise<WithdrawalRequest> {
-    const adapter = this.assertWrite();
-    if (!adapter.hasCapability(CustodyProviderCapability.TREASURY_TRANSFER)) {
-      throw new CustodyCapabilityUnavailableError(
-        CustodyProviderCapability.TREASURY_TRANSFER,
-        adapter.providerId,
-      );
-    }
-    if (!request.treasuryIntentId || request.treasuryIntentId.trim().length === 0) {
-      throw new InvalidCustodyRequestError('treasuryIntentId is required for a treasury transfer');
-    }
-    this.validateAssetNetwork(request.asset, request.network);
-    if (!request.amount || isNaN(Number(request.amount)) || Number(request.amount) <= 0) {
-      throw new InvalidCustodyRequestError('treasury transfer amount must be a positive number');
-    }
-    if (!request.destinationAddress || !EVM_ADDRESS_RE.test(request.destinationAddress)) {
-      throw new InvalidCustodyRequestError('treasury transfer destination must be a valid EVM address');
-    }
-    try {
-      const result = await adapter.submitTreasuryTransfer!(request);
-      logger.info('Treasury custody transfer submitted', {
-        providerId: adapter.providerId,
-        treasuryIntentId: request.treasuryIntentId,
-        status: result.status,
-      });
-      return result;
-    } catch (err) {
-      this.normalizeError(err);
-    }
-  }
-
-  /**
-   * Status lookup for a treasury transfer by its immutable treasuryIntentId.
-   * Mirrors getWithdrawalStatus but for the treasury artifact domain.
-   */
-  public async getTreasuryTransferStatus(treasuryIntentId: string): Promise<WithdrawalRequest> {
-    const adapter = this.assertRead();
-    if (
-      !adapter.hasCapability(CustodyProviderCapability.TREASURY_TRANSFER) ||
-      !adapter.getTreasuryTransferStatus
-    ) {
-      throw new CustodyCapabilityUnavailableError(
-        CustodyProviderCapability.TREASURY_TRANSFER,
-        adapter.providerId,
-      );
-    }
-    try {
-      return await adapter.getTreasuryTransferStatus(treasuryIntentId);
-    } catch (err) {
-      this.normalizeError(err);
-    }
-  }
-
-
-  public async checkSweepStatus(txHash: string, network: string): Promise<SweepStatusResult> {
-    const adapter = this.assertRead();
-    if (!adapter.checkSweepStatus) {
-      throw new Error("Provider does not support checkSweepStatus");
-    }
-    return adapter.checkSweepStatus(txHash, network);
-  }
-
-  public async sweepDepositAddress(network: string, depositAddress: string, asset: string, pendingSweepIds: string[]): Promise<string> {
-    const adapter = this.assertWrite();
-    if (!adapter.sweepDepositAddress) {
-      throw new Error(`Provider ${adapter.providerId} does not support sweeping deposits`);
-    }
-    try {
-      return await adapter.sweepDepositAddress(network, depositAddress, asset, pendingSweepIds);
-    } catch (err) {
-      this.normalizeError(err);
-    }
-  }
-
-  /**
-   * P2 (6E-4C-2): presence probe for a broadcast sweep transaction.
-   * Preserves the typed provider result; normalizeError keeps CustodyError
-   * semantics for callers.
-   */
-  public async getSweepTxPresence(
-    txHash: string,
-    network: string,
-    expectedNonce?: number
-  ): Promise<{ present: boolean; mined: boolean; nonceConsumed: boolean | null }> {
-    const adapter = this.assertRead();
-    if (!adapter.getSweepTxPresence) {
-      throw new Error(`Provider ${adapter.providerId} does not support getSweepTxPresence`);
-    }
-    try {
-      return await adapter.getSweepTxPresence(txHash, network, expectedNonce);
-    } catch (err) {
-      this.normalizeError(err);
-    }
-  }
-
-  /**
-   * P2 (6E-4C-2): physical-vs-database custody reconciliation for one
-   * forwarder group. Operational only — records custody_reconciliation_events
-   * through the provider; never mutates user-facing balances.
-   */
-  public async reconcileDepositAddress(
-    network: string,
-    address: string,
-    asset: string
-  ): Promise<{ expectedRemaining: string; physical: string; status: 'BALANCED' | 'EXTRA_FUNDS' | 'SHORTFALL' }> {
-    const adapter = this.assertRead();
-    if (!adapter.reconcileDepositAddress) {
-      throw new Error(`Provider ${adapter.providerId} does not support reconcileDepositAddress`);
-    }
-    try {
-      return await adapter.reconcileDepositAddress(network, address, asset);
-    } catch (err) {
-      this.normalizeError(err);
-    }
-  }
-
-  public async replaceWithdrawal(clientWithdrawalId: string, gasPolicy: ReplacementGasPolicy): Promise<WithdrawalRequest> {
-    const adapter = this.assertWrite();
-    if (!adapter.replaceWithdrawal) {
-      throw new Error(`Provider ${adapter.providerId} does not support speed-up replacements`);
-    }
-    try {
-      return await adapter.replaceWithdrawal(clientWithdrawalId, gasPolicy);
-    } catch (err) {
-      this.normalizeError(err);
-    }
-  }
-
-  public async cancelWithdrawal(clientWithdrawalId: string, gasPolicy: ReplacementGasPolicy): Promise<WithdrawalRequest> {
-    const adapter = this.assertWrite();
-    if (!adapter.cancelWithdrawal) {
-      throw new Error(`Provider ${adapter.providerId} does not support cancellation`);
-    }
-    try {
-      return await adapter.cancelWithdrawal(clientWithdrawalId, gasPolicy);
     } catch (err) {
       this.normalizeError(err);
     }
@@ -469,74 +292,9 @@ export function createCustodyService(options?: Partial<CustodyServiceOptions>): 
       adapter: options.adapter ?? null,
     });
   }
-
-  let adapter: ICustodyAdapter | null = null;
-
-  if (env.CUSTODY_ENABLED) {
-    const providerStr = env.CUSTODY_PROVIDER || (env.NODE_ENV !== 'production' ? 'mock' : undefined);
-
-    if (!providerStr) {
-      throw new Error("CUSTODY_PROVIDER must be explicitly configured in production (e.g., 'kms')");
-    }
-
-    if (providerStr === 'mock') {
-      if (env.NODE_ENV === 'production') {
-        throw new Error("CUSTODY_PROVIDER='mock' is forbidden in production environment");
-      }
-      adapter = new MockCustodyProvider();
-    } else if (providerStr === 'kms') {
-      const isLocal = env.NODE_ENV !== 'production';
-
-      const rpcUrl = env.CUSTODY_EVM_RPC_URL;
-      if (!rpcUrl) {
-        throw new Error("CUSTODY_EVM_RPC_URL is required when using kms provider");
-      }
-
-      // Prohibit localhost RPC in production
-      if (env.NODE_ENV === 'production') {
-        try {
-            const parsedUrl = new URL(rpcUrl);
-            const host = parsedUrl.hostname.toLowerCase();
-            if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '[::1]') {
-              throw new Error("Localhost RPC is forbidden in production environment");
-            }
-        } catch (e: any) {
-            if (e.message.includes('forbidden in production environment')) throw e;
-            throw new Error(`Invalid CUSTODY_EVM_RPC_URL: ${e.message}`);
-        }
-      }
-
-      const keyId = env.CUSTODY_KMS_KEY_ID;
-      if (!keyId) {
-        throw new Error("CUSTODY_KMS_KEY_ID is required when using kms provider");
-      }
-
-      // Chain ID is hardcoded here per network. In real life we'd load this from network registry.
-      const config = {
-          'ETHEREUM': {
-              rpcUrl,
-              keyId,
-              chainId: env.NODE_ENV === 'production' ? 1n : 31337n
-          }
-      };
-
-      if (isLocal) {
-        const mockKms = new LocalKmsMock();
-        adapter = new KmsCustodyProvider(mockKms as any, config, db);
-      } else {
-        const region = env.CUSTODY_KMS_REGION || 'us-east-1';
-        // AWS SDK will automatically resolve credentials from environment at runtime.
-        const kmsClient = new KMSClient({ region });
-        adapter = new KmsCustodyProvider(kmsClient, config, db);
-      }
-    } else {
-      throw new Error(`Unknown CUSTODY_PROVIDER: ${providerStr}`);
-    }
-  }
-
   return new CustodyService({
     enabled: env.CUSTODY_ENABLED,
-    adapter,
+    adapter: null, // Phase 9.2: never auto-construct a provider at boot
   });
 }
 

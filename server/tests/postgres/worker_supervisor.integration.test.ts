@@ -36,11 +36,11 @@ describe('Phase 8.1: PostgreSQL Worker Supervisor Integration Tests', () => {
     await db.close();
   });
 
-  it('1. Starts all 14 background workers against live PostgreSQL database with 0 errors', async () => {
+  it('1. Starts all 11 background workers against live PostgreSQL database with 0 errors', async () => {
     await expect(supervisor.startAll()).resolves.not.toThrow();
 
     const workerNames = supervisor.getWorkerNames();
-    expect(workerNames.length).toBe(14);
+    expect(workerNames.length).toBe(11);
     expect(workerNames).toEqual([
       'LiquidationWorker',
       'FundingWorker',
@@ -52,11 +52,6 @@ describe('Phase 8.1: PostgreSQL Worker Supervisor Integration Tests', () => {
       'DepositCreditingWorker',
       'WithdrawalProcessingWorker',
       'WithdrawalStatusWorker',
-      // Phase 10.4: custody sweep lifecycle workers
-      'SweepWorker',
-      'SweepStatusWorker',
-      // Phase 10.6: Safe Treasury monitor
-      'TreasuryMonitorWorker',
       'NotificationWorker',
     ]);
 

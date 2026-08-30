@@ -38,8 +38,6 @@ export enum CustodyProviderCapability {
   WITHDRAWAL_REQUEST = 'WITHDRAWAL_REQUEST',
   WITHDRAWAL_STATUS = 'WITHDRAWAL_STATUS',
   TRANSACTION_LOOKUP = 'TRANSACTION_LOOKUP',
-  /** Phase 10.4 (unfreeze): dedicated HOUSE TREASURY transfer boundary. */
-  TREASURY_TRANSFER = 'TREASURY_TRANSFER',
 }
 
 /**
@@ -121,7 +119,6 @@ export interface DepositAddress {
   providerAddressId?: string;
   status: DepositAddressStatus;
   createdAt: Date;
-  metadata?: Record<string, unknown>;
 }
 
 /** Provider-neutral withdrawal request. */
@@ -138,40 +135,6 @@ export interface WithdrawalRequest {
   createdAt: Date;
   updatedAt: Date;
   providerReference?: string;
-}
-
-/**
- * Phase 10.4 (unfreeze) — the HOUSE TREASURY principal.
- *
- * CUSTOMER ≠ HOUSE ≠ TREASURY at the custody boundary:
- *   - `requestWithdrawal` (customer op) REJECTS this principal.
- *   - `submitTreasuryTransfer` (treasury op) is the ONLY operation allowed to
- *     act for it, and it never touches customer tables or customer accounting.
- * Defined here (types) so both the CAL and providers can reference it without
- * import cycles.
- */
-export const HOUSE_TREASURY_ACCOUNT_ID = 'HOUSE_TREASURY';
-
-/**
- * Phase 10.4 (unfreeze) — dedicated HOUSE TREASURY custody operation.
- *
- * This type exists to keep the treasury custody boundary STRUCTURALLY
- * distinct from the customer withdrawal operation:
- *   - `requestWithdrawal` is the CUSTOMER path (real account UUID principal,
- *     withdrawals-table lifecycle, customer ledger semantics).
- *   - `submitTreasuryTransfer` is the TREASURY path (treasuryIntentId
- *     correlation, no customer account, no customer ledger effects).
- * The two operations reject each other's principals (enforced in CustodyService).
- */
-export interface TreasuryTransferRequest {
-  /** Immutable correlation ID — the treasury_transactions client_withdrawal_id. */
-  treasuryIntentId: string;
-  asset: string;
-  network: string;
-  /** Exact base-unit string. */
-  amount: string;
-  /** MUST be the trusted Safe address resolved by the treasury layer. */
-  destinationAddress: string;
 }
 
 /** Provider-neutral custody transaction (deposit or withdrawal on-chain). */
@@ -196,17 +159,4 @@ export interface CustodyProviderHealth {
   latencyMs: number;
   detail?: string;
   checkedAt: Date;
-}
-
-export interface ReplacementGasPolicy {
-  minimumMultiplier: number;
-  maxFeePerGasCeiling?: bigint;
-  maxPriorityFeePerGasCeiling?: bigint;
-}
-
-export interface SweepStatusResult {
-  status: 'BROADCAST' | 'CONFIRMED' | 'FAILED';
-  blockNumber?: number;
-  blockHash?: string;
-  confirmations?: number;
 }

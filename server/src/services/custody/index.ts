@@ -17,8 +17,7 @@ export type {
   CustodyTransaction,
   CustodyProviderHealth,
 } from './custody.types';
-export { CustodyProviderCapability, HOUSE_TREASURY_ACCOUNT_ID } from './custody.types';
-export type { TreasuryTransferRequest } from './custody.types';
+export { CustodyProviderCapability } from './custody.types';
 export type { ICustodyAdapter, ICustodyReadAdapter, ICustodyWriteAdapter } from './custody-adapter';
 export { MockCustodyProvider } from './mock-custody-provider';
 export type { MockCustodyProviderOptions } from './mock-custody-provider';

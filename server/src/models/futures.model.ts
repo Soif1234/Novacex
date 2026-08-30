@@ -17,10 +17,6 @@ export interface FuturesPositionEntity {
   maintenanceMargin: string;
   realizedPnl: string;
   status: PositionStatus;
-  /** Asset in which initial margin was actually locked (e.g. 'FUTURES_USDT' | 'USDT'). */
-  collateralAsset?: string;
-  /** Contract maintenance margin rate used at open/increase (persisted for liquidation). */
-  maintenanceMarginRate?: string;
   createdAt: Date;
   updatedAt: Date;
 }

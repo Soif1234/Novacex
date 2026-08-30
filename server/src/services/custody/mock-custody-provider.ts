@@ -29,8 +29,6 @@ import {
   CustodyTransactionStatus,
   DepositAddress,
   GetOrCreateDepositAddressRequest,
-  TreasuryTransferRequest,
-  HOUSE_TREASURY_ACCOUNT_ID,
   WithdrawalRequest,
 } from './custody.types';
 import {
@@ -113,7 +111,6 @@ export class MockCustodyProvider implements ICustodyAdapter {
       CustodyProviderCapability.WITHDRAWAL_REQUEST,
       CustodyProviderCapability.WITHDRAWAL_STATUS,
       CustodyProviderCapability.TRANSACTION_LOOKUP,
-      CustodyProviderCapability.TREASURY_TRANSFER,
     ];
   }
 
@@ -307,49 +304,6 @@ export class MockCustodyProvider implements ICustodyAdapter {
     }
 
     return { ...updated };
-  }
-
-  // -------------------------------------------------------------------------
-  // Phase 10.4 (unfreeze) — HOUSE TREASURY custody boundary (mock)
-  //
-  // In-memory only, isolated from the customer withdrawal map. providerReference
-  // is a MOCK reference (not a blockchain hash) — the treasury layer's
-  // tx-hash identity guard keeps treasury_transactions.tx_hash NULL for mock
-  // providers, preserving physical-hash semantics.
-  // -------------------------------------------------------------------------
-
-  private readonly treasuryTransfers = new Map<string, WithdrawalRequest>();
-
-  public async submitTreasuryTransfer(request: TreasuryTransferRequest): Promise<WithdrawalRequest> {
-    const existing = this.treasuryTransfers.get(request.treasuryIntentId);
-    if (existing) {
-      // Idempotent: one intent = one mock transfer.
-      return { ...existing };
-    }
-    const now = new Date();
-    const transfer: WithdrawalRequest = {
-      clientWithdrawalId: request.treasuryIntentId,
-      accountId: HOUSE_TREASURY_ACCOUNT_ID,
-      asset: request.asset,
-      network: request.network,
-      amount: request.amount,
-      destinationAddress: request.destinationAddress,
-      status: 'BROADCAST',
-      providerWithdrawalId: `mock-treasury-${crypto.randomUUID()}`,
-      providerReference: `mock-treasury-${crypto.randomUUID()}`,
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.treasuryTransfers.set(request.treasuryIntentId, transfer);
-    return { ...transfer };
-  }
-
-  public async getTreasuryTransferStatus(treasuryIntentId: string): Promise<WithdrawalRequest> {
-    const t = this.treasuryTransfers.get(treasuryIntentId);
-    if (!t) {
-      throw new CustodyTransactionNotFoundError(treasuryIntentId);
-    }
-    return { ...t };
   }
 
   // -------------------------------------------------------------------------

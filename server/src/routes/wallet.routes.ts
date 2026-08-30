@@ -9,8 +9,7 @@ import {
   paperWithdraw,
   cryptoWithdraw,
   internalTransfer,
-  getTransactions,
-  getDepositAddress
+  getTransactions
 } from '../controllers/wallet.controller';
 
 const router = Router();
@@ -30,7 +29,6 @@ const router = Router();
  */
 
 router.get('/balances', requireAuthOrApiKey('READ'), getBalances);
-router.get('/deposit-address', requireAuthOrApiKey('READ'), getDepositAddress);
 router.post('/withdraw', requireCircuitBreaker('WITHDRAWALS'), requireAuthOrApiKey('WITHDRAW'), require2FA, mutationRateLimiter(), idempotencyMiddleware(), paperWithdraw);
 router.post('/withdraw/crypto', requireCircuitBreaker('WITHDRAWALS'), requireAuthOrApiKey('WITHDRAW'), require2FA, mutationRateLimiter(), idempotencyMiddleware(), cryptoWithdraw);
 router.post('/transfer', requireAuthOrApiKey('TRADE'), mutationRateLimiter(), idempotencyMiddleware(), internalTransfer);

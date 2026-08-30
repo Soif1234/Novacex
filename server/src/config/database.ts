@@ -425,7 +425,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
   private futuresTpSlConfigs = new Map<string, FuturesTpSlConfigEntity>(); // id -> config
   private futuresFundingHistory: FuturesFundingHistoryEntity[] = [];
   private futuresLiquidations: FuturesLiquidationEntity[] = [];
-  private futuresAdlEvents = new Map<string, any>(); // id -> adl event row
   private kLines: any[] = [];
 
   // Phase 9.1/9.3 tables
@@ -436,14 +435,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
   // Phase 9.4 tables
   private blockchainDeposits = new Map<string, any>(); // id -> deposit row
   private monitorCheckpoints = new Map<string, any>(); // network -> checkpoint row
-
-  // Transaction serialization: the in-memory pool uses snapshot+restore for
-  // rollback, which is NOT isolation-safe under concurrent transactions.
-  // Real PG uses MVCC + row locks (FOR UPDATE) to serialize writers on the
-  // same rows.  We approximate this by running top-level transactions one at
-  // a time.  Nested calls (re-entrant) bypass the queue and run directly.
-  private _transactionDepth = 0;
-  private _transactionChain: Promise<unknown> = Promise.resolve();
 
   constructor(private config = env) {
     this.totalPoolSize = config.DB_POOL_MIN;
@@ -575,7 +566,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     this.futuresTpSlConfigs.clear();
     this.futuresFundingHistory = [];
     this.futuresLiquidations = [];
-    this.futuresAdlEvents.clear();
     this.withdrawals.clear();
     this.apiKeys.clear();
     this.userKycProfiles.clear();
@@ -600,24 +590,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
   public async transaction<T = unknown>(callback: (client: IDatabaseConnection) => Promise<T>): Promise<T> {
     if (!this.isConnected) throw new Error('Database is not connected');
 
-    // Re-entrant (nested) transaction: run directly with its own snapshot.
-    if (this._transactionDepth > 0) {
-      return this._runTransaction(callback);
-    }
-
-    // Serialize top-level transactions so concurrent callers behave like real
-    // PG row-locking (the loser sees the winner's committed state and fails
-    // cleanly instead of rolling back the winner's changes via stale snapshot).
-    const run = () => this._runTransaction(callback);
-    const result: Promise<unknown> = this._transactionChain.then(run);
-    // Keep the chain alive even if this transaction rejects.
-    this._transactionChain = result.catch(() => undefined);
-    return result as Promise<T>;
-  }
-
-  private async _runTransaction<T = unknown>(callback: (client: IDatabaseConnection) => Promise<T>): Promise<T> {
-    this._transactionDepth++;
-
     // Create snapshots for rollback safety
     const snapUsers = new Map(this.users);
     const snapUsersByEmail = new Map(this.usersByEmail);
@@ -630,16 +602,12 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     const snapOrders = new Map(this.orders);
     const snapOrdersByClientOrderId = new Map(this.ordersByClientOrderId);
     const snapTrades = [...this.trades];
-    const snapFuturesPositions = new Map([...this.futuresPositions].map(([k, v]) => [k, { ...v }]));
+    const snapFuturesPositions = new Map(this.futuresPositions);
     const snapFuturesOrders = new Map(this.futuresOrders);
     const snapFuturesTpSlConfigs = new Map(this.futuresTpSlConfigs);
     const snapFuturesFundingHistory = [...this.futuresFundingHistory];
     const snapFuturesLiquidations = [...this.futuresLiquidations];
-    const snapFuturesAdlEvents = new Map(this.futuresAdlEvents);
-    // Deep-clone wallet balances: the UPDATE handler mutates wallet objects in
-    // place, so a shallow Map copy would share references and rollback could
-    // not restore pre-transaction balances (P1 rollback fidelity).
-    const snapWalletBalances = new Map([...this.walletBalances].map(([k, v]) => [k, { ...v }]));
+    const snapWalletBalances = new Map(this.walletBalances);
     const snapLedgerTransactions = new Map(this.ledgerTransactions);
     const snapLedgerTxByRef = new Map(this.ledgerTxByRef);
     const snapLedgerEntries = [...this.ledgerEntries];
@@ -671,7 +639,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       this.futuresTpSlConfigs = snapFuturesTpSlConfigs;
       this.futuresFundingHistory = snapFuturesFundingHistory;
       this.futuresLiquidations = snapFuturesLiquidations;
-      this.futuresAdlEvents = snapFuturesAdlEvents;
       this.walletBalances = snapWalletBalances;
       this.ledgerTransactions = snapLedgerTransactions;
       this.ledgerTxByRef = snapLedgerTxByRef;
@@ -683,8 +650,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       this.withdrawals = snapWithdrawals;
       this.adminAuditLogs = snapAdminAuditLogs;
       throw err;
-    } finally {
-      this._transactionDepth--;
     }
   }
 
@@ -948,8 +913,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       initial_margin: p.initialMargin,
       maintenance_margin: p.maintenanceMargin,
       realized_pnl: p.realizedPnl,
-      collateral_asset: p.collateralAsset || 'FUTURES_USDT',
-      maintenance_margin_rate: p.maintenanceMarginRate || '0.005',
       created_at: p.createdAt,
       updated_at: p.updatedAt,
       accountId: p.accountId,
@@ -960,8 +923,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       initialMargin: p.initialMargin,
       maintenanceMargin: p.maintenanceMargin,
       realizedPnl: p.realizedPnl,
-      collateralAsset: p.collateralAsset || 'FUTURES_USDT',
-      maintenanceMarginRate: p.maintenanceMarginRate || '0.005',
       createdAt: p.createdAt,
       updatedAt: p.updatedAt,
     };
@@ -1028,34 +989,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       lossAmount: l.lossAmount,
       insuranceFundDelta: l.insuranceFundDelta,
       createdAt: l.createdAt,
-    };
-  }
-
-  private mapAdlEventRow(e: any): any {
-    return {
-      id: e.id,
-      liquidation_id: e.liquidationId,
-      counterparty_account_id: e.counterpartyAccountId,
-      counterparty_position_id: e.counterpartyPositionId,
-      symbol: e.symbol,
-      side: e.side,
-      reduced_quantity: e.reducedQuantity,
-      execution_price: e.executionPrice,
-      status: e.status,
-      target_deficit: e.targetDeficit,
-      resolved_deficit: e.resolvedDeficit,
-      created_at: e.createdAt,
-      updated_at: e.updatedAt,
-      // camelCase aliases
-      liquidationId: e.liquidationId,
-      counterpartyAccountId: e.counterpartyAccountId,
-      counterpartyPositionId: e.counterpartyPositionId,
-      reducedQuantity: e.reducedQuantity,
-      executionPrice: e.executionPrice,
-      targetDeficit: e.targetDeficit,
-      resolvedDeficit: e.resolvedDeficit,
-      createdAt: e.createdAt,
-      updatedAt: e.updatedAt,
     };
   }
 
@@ -1973,23 +1906,23 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
     }
 
     if (/SELECT\s+lt\.id\s+AS\s+"transactionId"/i.test(trimmed)) {
-      // Parse the transaction_type IN (...) list directly from the SQL so the
-      // in-memory aggregation matches the real query's WHERE clause exactly
-      // (Phase 0F-B: keep this handler in lockstep with reconciliation Check 2).
-      const inMatch = trimmed.match(/lt\.transaction_type\s+IN\s*\(([^)]*)\)/i);
-      const txTypeFilter: Set<string> | null = inMatch
-        ? new Set(
-            inMatch[1]
-              .split(',')
-              .map(s => s.trim().replace(/^'|'$/g, '').trim())
-              .filter(s => s.length > 0)
-          )
-        : null;
       const txMap = new Map<string, { transactionId: string; asset: string; netDelta: string }>();
+      const multiLegTxTypes = new Set([
+        'INTERNAL_TRANSFER',
+        'SPOT_TRADE_SETTLE',
+        'SPOT_ORDER_LOCK',
+        'SPOT_ORDER_UNLOCK',
+        'FUTURES_MARGIN_LOCK',
+        'FUTURES_MARGIN_RELEASE',
+        'FUTURES_PNL_REALIZED',
+        'FUTURES_FUNDING_PAYMENT',
+        'FUTURES_LIQUIDATION',
+        'TRADING_FEE',
+      ]);
       for (const entry of this.ledgerEntries) {
         const txId = (entry as any).transactionId || (entry as any).transaction_id;
         const tx = this.ledgerTransactions.get(txId);
-        if (tx && txTypeFilter && txTypeFilter.has(tx.transactionType)) {
+        if (tx && multiLegTxTypes.has(tx.transactionType)) {
           const ast = (entry as any).asset;
           const dir = (entry as any).direction;
           const amt = (entry as any).amount;
@@ -2929,8 +2862,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
         maintenanceMargin,
         realizedPnl,
         status,
-        collateralAsset,
-        maintenanceMarginRate,
         createdAt,
         updatedAt,
       ] = params as [
@@ -2948,10 +2879,8 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
         string,
         string,
         any,
-        string | undefined,
-        string | undefined,
-        Date | undefined,
-        Date | undefined
+        Date,
+        Date
       ];
 
       const position: FuturesPositionEntity = {
@@ -2969,10 +2898,8 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
         maintenanceMargin,
         realizedPnl: realizedPnl || '0',
         status: status || 'OPEN',
-        collateralAsset: collateralAsset || 'FUTURES_USDT',
-        maintenanceMarginRate: maintenanceMarginRate || '0.005',
-        createdAt: createdAt instanceof Date ? createdAt : (createdAt ? new Date(createdAt) : new Date()),
-        updatedAt: updatedAt instanceof Date ? updatedAt : (updatedAt ? new Date(updatedAt) : new Date()),
+        createdAt: createdAt instanceof Date ? createdAt : new Date(createdAt),
+        updatedAt: updatedAt instanceof Date ? updatedAt : new Date(updatedAt),
       };
 
       this.futuresPositions.set(position.id, position);
@@ -2981,11 +2908,9 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
 
     // 40. UPDATE futures_positions
     if (/^UPDATE\s+futures_positions/i.test(trimmed)) {
-      if (/maintenance_margin_rate\s*=\s*\$7/i.test(trimmed)) {
-        // Increase position: quantity, entry_price, mark_price, liquidation_price,
-        // initial_margin, maintenance_margin, maintenance_margin_rate, id
-        const [quantity, entryPrice, markPrice, liquidationPrice, initialMargin, maintenanceMargin, maintenanceMarginRate, id] = params as [
-          string,
+      if (/WHERE\s+id\s*=\s*\$7/i.test(trimmed)) {
+        // Increase position: quantity, entry_price, mark_price, liquidation_price, initial_margin, maintenance_margin, id
+        const [quantity, entryPrice, markPrice, liquidationPrice, initialMargin, maintenanceMargin, id] = params as [
           string,
           string,
           string,
@@ -2995,18 +2920,17 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
           string
         ];
         const pos = this.futuresPositions.get(id);
-        if (pos && pos.status === 'OPEN') {
+        if (pos) {
           pos.quantity = quantity;
           pos.entryPrice = entryPrice;
           pos.markPrice = markPrice;
           pos.liquidationPrice = liquidationPrice;
           pos.initialMargin = initialMargin;
           pos.maintenanceMargin = maintenanceMargin;
-          pos.maintenanceMarginRate = maintenanceMarginRate;
           pos.updatedAt = new Date();
           return { rows: [this.mapFuturesPosition(pos) as T], rowCount: 1 };
         }
-      } else if (/realized_pnl\s*=\s*\$6/i.test(trimmed)) {
+      } else if (/WHERE\s+id\s*=\s*\$8/i.test(trimmed)) {
         // Reduce position: quantity, mark_price, initial_margin, maintenance_margin, liquidation_price, realized_pnl, status, id
         const [quantity, markPrice, initialMargin, maintenanceMargin, liquidationPrice, realizedPnl, status, id] = params as [
           string,
@@ -3019,7 +2943,7 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
           string
         ];
         const pos = this.futuresPositions.get(id);
-        if (pos && pos.status === 'OPEN') {
+        if (pos) {
           pos.quantity = quantity;
           pos.markPrice = markPrice;
           pos.initialMargin = initialMargin;
@@ -3030,25 +2954,7 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
           pos.updatedAt = new Date();
           return { rows: [this.mapFuturesPosition(pos) as T], rowCount: 1 };
         }
-      } else if (/realized_pnl\s*=\s*\$4\s*,\s*status\s*=\s*\$5/i.test(trimmed)) {
-        // ADL reduce position: quantity, initial_margin, maintenance_margin, realized_pnl, status, id
-        // Used by adl.service.ts processAdlEvent: UPDATE futures_positions SET
-        //   quantity = $1, initial_margin = $2, maintenance_margin = $3,
-        //   realized_pnl = $4, status = $5, updated_at = NOW() WHERE id = $6
-        const [quantity, initialMargin, maintenanceMargin, realizedPnl, status, id] = params as [
-          string, string, string, string, any, string
-        ];
-        const pos = this.futuresPositions.get(id);
-        if (pos && pos.status === 'OPEN') {
-          pos.quantity = quantity;
-          pos.initialMargin = initialMargin;
-          pos.maintenanceMargin = maintenanceMargin;
-          pos.realizedPnl = realizedPnl;
-          pos.status = status;
-          pos.updatedAt = new Date();
-          return { rows: [this.mapFuturesPosition(pos) as T], rowCount: 1 };
-        }
-      } else if (/initial_margin\s*=\s*'0'/i.test(trimmed)) {
+      } else if (/WHERE\s+id\s*=\s*\$3/i.test(trimmed)) {
         // Liquidate position: mark_price, realized_pnl, id
         const [markPrice, realizedPnl, id] = params as [string, string, string];
         const pos = this.futuresPositions.get(id);
@@ -3093,33 +2999,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       const pos = this.futuresPositions.get(id);
       if (!pos) return { rows: [] as T[], rowCount: 0 };
       return { rows: [this.mapFuturesPosition(pos) as T], rowCount: 1 };
-    }
-
-    // 43b. SELECT ... FROM futures_positions WHERE symbol = $1 AND status = 'OPEN'
-    //      (used by funding settlement)
-    if (/FROM\s+futures_positions.*WHERE\s+symbol\s*=\s*\$1\s+AND\s+status\s*=\s*'OPEN'/i.test(trimmed)) {
-      const symbol = (params[0] as string).toUpperCase();
-      const positions = Array.from(this.futuresPositions.values()).filter(
-        p => p.symbol === symbol && p.status === 'OPEN'
-      );
-      return { rows: positions.map(p => this.mapFuturesPosition(p)) as T[], rowCount: positions.length };
-    }
-
-    // 43b2. ADL candidate query:
-    //   SELECT * FROM futures_positions WHERE symbol = $1 AND side = $2 AND status = 'OPEN' FOR UPDATE
-    if (/FROM\s+futures_positions.*WHERE\s+symbol\s*=\s*\$1\s+AND\s+side\s*=\s*\$2\s+AND\s+status\s*=\s*'OPEN'/i.test(trimmed)) {
-      const symbol = (params[0] as string).toUpperCase();
-      const side = params[1] as string;
-      const positions = Array.from(this.futuresPositions.values()).filter(
-        p => p.symbol === symbol && p.side === side && p.status === 'OPEN'
-      );
-      return { rows: positions.map(p => this.mapFuturesPosition(p)) as T[], rowCount: positions.length };
-    }
-
-    // 43c. SELECT ... FROM futures_positions (full scan)
-    if (/FROM\s+futures_positions/i.test(trimmed) && !/WHERE/i.test(trimmed.split('WHERE')[1] || '')) {
-      const positions = Array.from(this.futuresPositions.values());
-      return { rows: positions.map(p => this.mapFuturesPosition(p)) as T[], rowCount: positions.length };
     }
 
     // 44. SELECT ... FROM futures_positions WHERE status = 'OPEN'
@@ -3271,110 +3150,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       const liqs = this.futuresLiquidations.filter(l => l.accountId === accountId);
       liqs.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
       return { rows: liqs.map(l => this.mapFuturesLiquidation(l)) as T[], rowCount: liqs.length };
-    }
-
-    // 51b. SELECT bankruptcy_price, liquidation_price FROM futures_liquidations WHERE id = $1
-    if (/FROM\s+futures_liquidations.*WHERE\s+id\s*=\s*\$1/i.test(trimmed)) {
-      const id = params[0] as string;
-      const liq = this.futuresLiquidations.find(l => l.id === id);
-      if (!liq) return { rows: [] as T[], rowCount: 0 };
-      return {
-        rows: [this.mapFuturesLiquidation(liq) as T],
-        rowCount: 1,
-      };
-    }
-
-    // 51c. INSERT INTO futures_adl_events
-    if (/^INSERT\s+INTO\s+futures_adl_events/i.test(trimmed)) {
-      // Parse the column list generically: values bind positionally to columns
-      const colMatch = trimmed.match(/INSERT\s+INTO\s+futures_adl_events\s*\(([^)]+)\)/i);
-      const id = params[0] as string;
-      const row: any = { id: id || crypto.randomUUID() };
-      if (colMatch) {
-        const cols = colMatch[1].split(',').map(c => c.trim().toLowerCase());
-        cols.forEach((col, idx) => {
-          const val = params[idx];
-          if (val === undefined) return;
-          switch (col) {
-            case 'liquidation_id': row.liquidationId = val; break;
-            case 'symbol': row.symbol = String(val).toUpperCase(); break;
-            case 'side': row.side = val; break;
-            case 'target_deficit': row.targetDeficit = String(val); break;
-            case 'resolved_deficit': row.resolvedDeficit = String(val || '0'); break;
-            case 'bankruptcy_price': row.bankruptcyPrice = String(val); break;
-            case 'status': row.status = val; break;
-            case 'created_at': row.createdAt = val instanceof Date ? val : new Date(String(val || Date.now())); break;
-            case 'counterparty_account_id': row.counterpartyAccountId = val; break;
-            case 'counterparty_position_id': row.counterpartyPositionId = val; break;
-            case 'reduced_quantity': row.reducedQuantity = String(val); break;
-            case 'execution_price': row.executionPrice = String(val); break;
-            case 'id': row.id = val; break;
-          }
-        });
-      } else {
-        // Fallback positional layout: liquidation_id, symbol, side, target_deficit, status
-        row.liquidationId = params[0] as string | undefined;
-        row.symbol = String(params[1] || '').toUpperCase();
-        row.side = params[2] as string;
-        row.targetDeficit = String(params[3]);
-        row.status = (params[4] as string) || 'PENDING';
-        row.createdAt = new Date();
-      }
-      if (!row.createdAt) row.createdAt = new Date();
-      if (!row.status) row.status = 'PENDING';
-      row.resolvedDeficit = row.resolvedDeficit || '0';
-      this.futuresAdlEvents.set(row.id, row);
-      return { rows: [this.mapAdlEventRow(row) as T], rowCount: 1 };
-    }
-
-    // 51d. SELECT * FROM futures_adl_events WHERE id = $1 [FOR UPDATE]
-    if (/FROM\s+futures_adl_events.*WHERE\s+id\s*=\s*\$1/i.test(trimmed)) {
-      const id = params[0] as string;
-      const ev = this.futuresAdlEvents.get(id);
-      if (!ev) return { rows: [] as T[], rowCount: 0 };
-      return { rows: [this.mapAdlEventRow(ev) as T], rowCount: 1 };
-    }
-
-    // 51e. UPDATE futures_adl_events SET ... WHERE id = $N
-    if (/^UPDATE\s+futures_adl_events\s+SET/i.test(trimmed)) {
-      // status-only updates: UPDATE futures_adl_events SET status = 'SETTLED' WHERE id = $1
-      const statusMatch = trimmed.match(/SET\s+status\s*=\s*'([A-Z_]+)'/i);
-      if (statusMatch && params.length >= 1) {
-        const id = params[0] as string;
-        const ev = this.futuresAdlEvents.get(id);
-        if (ev) {
-          ev.status = statusMatch[1];
-          ev.updatedAt = new Date();
-          return { rows: [this.mapAdlEventRow(ev) as T], rowCount: 1 };
-        }
-        return { rows: [] as T[], rowCount: 0 };
-      }
-      // full update (counterparty fields): 7 params
-      if (params.length >= 7) {
-        const [counterpartyAccountId, counterpartyPositionId, reducedQuantity, executionPrice, resolvedDeficit, status] = params;
-        const id = params[6] as string;
-        const ev = this.futuresAdlEvents.get(id);
-        if (ev) {
-          ev.counterpartyAccountId = counterpartyAccountId;
-          ev.counterpartyPositionId = counterpartyPositionId;
-          ev.reducedQuantity = reducedQuantity;
-          ev.executionPrice = executionPrice;
-          ev.resolvedDeficit = resolvedDeficit;
-          ev.status = status;
-          ev.updatedAt = new Date();
-          return { rows: [this.mapAdlEventRow(ev) as T], rowCount: 1 };
-        }
-        return { rows: [] as T[], rowCount: 0 };
-      }
-      return { rows: [] as T[], rowCount: 0 };
-    }
-
-    // 51f. SELECT * FROM futures_adl_events WHERE status IN (...) ORDER BY created_at
-    if (/FROM\s+futures_adl_events/i.test(trimmed)) {
-      const events = Array.from(this.futuresAdlEvents.values()).sort(
-        (a, b) => (a.createdAt ? new Date(a.createdAt).getTime() : 0) - (b.createdAt ? new Date(b.createdAt).getTime() : 0)
-      );
-      return { rows: events.map(e => this.mapAdlEventRow(e)) as T[], rowCount: events.length };
     }
 
     // 52. INSERT INTO futures_funding_history
@@ -3549,16 +3324,6 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       return { rows: [{ ...row } as unknown as T], rowCount: 1 };
     }
 
-    // 41d. SELECT DISTINCT contract_address FROM asset_networks WHERE network = $1 AND contract_address IS NOT NULL
-    if (/SELECT\s+DISTINCT\s+contract_address\s+FROM\s+asset_networks\s+WHERE\s+network\s*=\s*\$1\s+AND\s+contract_address\s+IS\s+NOT\s+NULL/i.test(trimmed)) {
-      const network = params[0] as string;
-      const contracts = Array.from(this.assetNetworks.values())
-        .filter(n => n.network === network && n.contractAddress)
-        .map(n => n.contractAddress);
-      const unique = Array.from(new Set(contracts));
-      return { rows: unique.map(c => ({ contract_address: c })) as unknown as T[], rowCount: unique.length };
-    }
-
     // 41b. SELECT ... FROM asset_networks WHERE LOWER(contract_address) = LOWER($1) AND network = $2
     //      (Phase 9.4 — resolve asset by ERC-20 token contract)
     if (/FROM\s+asset_networks\s+WHERE\s+LOWER\(\s*contract_address\s*\)\s*=\s*LOWER\(\s*\$1\s*\)/i.test(trimmed)) {
@@ -3639,17 +3404,14 @@ export class InMemoryDatabasePool implements IDatabaseConnection {
       return { rows: matches.map(d => this.mapDepositAddress(d)) as unknown as T[], rowCount: matches.length };
     }
 
-    // 44c. SELECT DISTINCT blockchain_address [AS "x"] FROM deposit_addresses WHERE network = $1 [AND asset = $2] [AND status IN (...)]
+    // 44c. SELECT DISTINCT blockchain_address [AS "x"] FROM deposit_addresses WHERE network = $1 [AND asset = $2] [AND status = 'ACTIVE'|$3]
     //      (Phase 9.4 — Bitcoin/Ethereum address scanning)
     if (/SELECT\s+DISTINCT\s+blockchain_address(?:\s+AS\s+"?[A-Za-z0-9_]+"?)?\s+FROM\s+deposit_addresses/i.test(trimmed)) {
       const network = params[0] as string;
       const asset = /AND\s+asset\s*=\s*\$2/i.test(trimmed) ? params[1] as string : null;
-      const includeAll = /status\s+IN\s+\('ACTIVE',\s*'ROTATED',\s*'REVOKED'\)/i.test(trimmed);
-
       const addresses = new Set<string>();
       for (const d of this.depositAddresses.values()) {
-        const statusMatch = includeAll ? ['ACTIVE', 'ROTATED', 'REVOKED'].includes(d.status) : d.status === 'ACTIVE';
-        if (d.network === network && statusMatch) {
+        if (d.network === network && d.status === 'ACTIVE') {
           if (asset && d.asset !== asset) continue;
           addresses.add(d.blockchainAddress);
         }

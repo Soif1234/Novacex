@@ -161,7 +161,10 @@ export class ReconciliationService {
              'SPOT_ORDER_UNLOCK',
              'FUTURES_MARGIN_LOCK',
              'FUTURES_MARGIN_RELEASE',
-             'FUTURES_LIQUIDATION'
+             'FUTURES_PNL_REALIZED',
+             'FUTURES_FUNDING_PAYMENT',
+             'FUTURES_LIQUIDATION',
+             'TRADING_FEE'
            ) AND lt.account_id = $1
            GROUP BY lt.id, lt.transaction_type, le.asset
            HAVING SUM(CASE WHEN le.direction = 'CREDIT' THEN le.amount ELSE -le.amount END) != 0`,
@@ -179,7 +182,10 @@ export class ReconciliationService {
              'SPOT_ORDER_UNLOCK',
              'FUTURES_MARGIN_LOCK',
              'FUTURES_MARGIN_RELEASE',
-             'FUTURES_LIQUIDATION'
+             'FUTURES_PNL_REALIZED',
+             'FUTURES_FUNDING_PAYMENT',
+             'FUTURES_LIQUIDATION',
+             'TRADING_FEE'
            )
            GROUP BY lt.id, lt.transaction_type, le.asset
            HAVING SUM(CASE WHEN le.direction = 'CREDIT' THEN le.amount ELSE -le.amount END) != 0`

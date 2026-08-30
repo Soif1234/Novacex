@@ -250,53 +250,36 @@ export class FuturesService {
       );
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // AUTHORITATIVE TRANSACTION (P1-1): every financially coupled write —
-    // client-order idempotency, margin reservation, order insert, matching
-    // and execution, position create/increase/reduce, PnL & fee ledger
-    // settlement, trade insert, and order status — runs inside ONE database
-    // transaction. Any failure ROLLS BACK all of it: no orphan margin, no
-    // order without funds state, no funds lock without a corresponding order.
-    // ─────────────────────────────────────────────────────────────────────
-    let order!: OrderEntity;
-    let futuresOrder!: FuturesOrderEntity;
-    let resultingPosition: FuturesPositionEntity | undefined;
-    let executedTrade: TradeEntity | undefined;
-    let replayResult: FuturesExecutionResult | undefined;
-    let shouldExecute = false;
+    // 3. Check idempotency if clientOrderId is provided
+    if (cleanClientOrderId) {
+      const existingRes = await this.database.query<any>(
+        'SELECT * FROM orders WHERE account_id = $1 AND client_order_id = $2',
+        [dto.accountId, cleanClientOrderId]
+      );
+      const existing = existingRes.rows[0];
+      if (existing) {
+        const match =
+          existing.symbol === cleanSymbol &&
+          existing.side === dto.side &&
+          existing.type === dto.type &&
+          decimalCompare(existing.quantity, cleanQty) === 0 &&
+          (!cleanPrice || (existing.price && decimalCompare(existing.price, cleanPrice) === 0));
 
-    await this.database.transaction(async (tx) => {
-      // 3. Check idempotency if clientOrderId is provided
-      if (cleanClientOrderId) {
-        const existingRes = await tx.query<any>(
-          'SELECT * FROM orders WHERE account_id = $1 AND client_order_id = $2',
-          [dto.accountId, cleanClientOrderId]
-        );
-        const existing = existingRes.rows[0];
-        if (existing) {
-          const match =
-            existing.symbol === cleanSymbol &&
-            existing.side === dto.side &&
-            existing.type === dto.type &&
-            decimalCompare(existing.quantity, cleanQty) === 0 &&
-            (!cleanPrice || (existing.price && decimalCompare(existing.price, cleanPrice) === 0));
-
-          if (match) {
-            const foRes = await tx.query<any>('SELECT * FROM futures_orders WHERE order_id = $1', [existing.id]);
-            const trRes = await tx.query<any>('SELECT * FROM trades WHERE order_id = $1', [existing.id]);
-            const pos = await this.positions.getOpenPosition(dto.accountId, cleanSymbol, dto.positionSide, tx);
-            replayResult = {
-              order: existing,
-              futuresOrder: foRes.rows[0],
-              position: pos || undefined,
-              trade: trRes.rows[0],
-            };
-            return; // idempotent replay: nothing new written; commit is a no-op
-          } else {
-            throw new ReferenceConflictError(cleanClientOrderId);
-          }
+        if (match) {
+          const foRes = await this.database.query<any>('SELECT * FROM futures_orders WHERE order_id = $1', [existing.id]);
+          const trRes = await this.database.query<any>('SELECT * FROM trades WHERE order_id = $1', [existing.id]);
+          const pos = await this.positions.getOpenPosition(dto.accountId, cleanSymbol, dto.positionSide);
+          return {
+            order: existing,
+            futuresOrder: foRes.rows[0],
+            position: pos || undefined,
+            trade: trRes.rows[0],
+          };
+        } else {
+          throw new ReferenceConflictError(cleanClientOrderId);
         }
       }
+    }
 
     const isOpening =
       (dto.side === 'BUY' && dto.positionSide === 'LONG') ||
@@ -305,7 +288,7 @@ export class FuturesService {
       (dto.side === 'SELL' && dto.positionSide === 'LONG') ||
       (dto.side === 'BUY' && dto.positionSide === 'SHORT');
 
-    const existingPosition = await this.positions.getOpenPosition(dto.accountId, cleanSymbol, dto.positionSide, tx, true);
+    const existingPosition = await this.positions.getOpenPosition(dto.accountId, cleanSymbol, dto.positionSide);
 
     if (isClosing && !existingPosition) {
       throw new NoPositionToCloseError(cleanSymbol, dto.positionSide);
@@ -337,9 +320,9 @@ export class FuturesService {
     // 4. Reserve initial margin for opening orders
     if (isOpening) {
       requiredMargin = this.risk.calculateInitialMargin(cleanQty, orderPrice, dto.leverage);
-      let balance = await this.ledger.getBalance(dto.accountId, 'FUTURES_USDT', tx);
+      let balance = await this.ledger.getBalance(dto.accountId, 'FUTURES_USDT');
       if (decimalCompare(balance.availableBalance, requiredMargin) < 0) {
-        const usdtBal = await this.ledger.getBalance(dto.accountId, 'USDT', tx);
+        const usdtBal = await this.ledger.getBalance(dto.accountId, 'USDT');
         if (decimalCompare(usdtBal.availableBalance, requiredMargin) >= 0) {
           balance = usdtBal;
           collateralAsset = 'USDT';
@@ -356,16 +339,14 @@ export class FuturesService {
         requiredMargin,
         'FUTURES_MARGIN_LOCK',
         `FUTURES-LOCK-${orderId}`,
-        `Futures margin lock: ${cleanSymbol} ${dto.positionSide} ${cleanQty} @ ${orderPrice} (${dto.leverage}x)`,
-        undefined,
-        tx
+        `Futures margin lock: ${cleanSymbol} ${dto.positionSide} ${cleanQty} @ ${orderPrice} (${dto.leverage}x)`
       );
     }
 
     // 5. Create Order & FuturesOrder entities
     const initialStatus = (dto.type === 'STOP_LIMIT' || dto.type === 'TAKE_PROFIT_LIMIT') ? 'UNTRIGGERED' : 'NEW';
 
-    order = {
+    const order: OrderEntity = {
       id: orderId,
       clientOrderId: cleanClientOrderId,
       accountId: dto.accountId,
@@ -387,7 +368,7 @@ export class FuturesService {
     };
 
 
-    futuresOrder = {
+    const futuresOrder: FuturesOrderEntity = {
       id: crypto.randomUUID(),
       orderId,
       accountId: dto.accountId,
@@ -400,7 +381,7 @@ export class FuturesService {
       createdAt: new Date(),
     };
 
-    await tx.query(
+    await this.database.query(
       `INSERT INTO orders (
         id, client_order_id, account_id, market, symbol, side, type, price, stop_price, quantity,
         filled_quantity, remaining_quantity, locked_amount, locked_asset, status,
@@ -428,7 +409,7 @@ export class FuturesService {
       ]
     );
 
-    await tx.query(
+    await this.database.query(
       `INSERT INTO futures_orders (
         id, order_id, account_id, symbol, position_side, leverage, margin_mode,
         reduce_only, close_position, created_at
@@ -447,7 +428,11 @@ export class FuturesService {
       ]
     );
 
+    let resultingPosition: FuturesPositionEntity | undefined;
+    let executedTrade: TradeEntity | undefined;
+
     // 6. Execute Order (Market executes immediately; Limit executes if price crosses)
+    let shouldExecute = false;
     let execPrice = markPrice;
 
     if (dto.type === 'MARKET') {
@@ -471,9 +456,7 @@ export class FuturesService {
             existingPosition,
             cleanQty,
             execPrice,
-            contract.maintenanceMarginRate,
-            undefined,
-            tx
+            contract.maintenanceMarginRate
           );
         } else {
           resultingPosition = await this.positions.createPosition({
@@ -485,17 +468,14 @@ export class FuturesService {
             leverage: dto.leverage,
             marginMode: dto.marginMode,
             maintenanceMarginRate: contract.maintenanceMarginRate,
-            collateralAsset,
-          }, tx);
+          });
         }
       } else if (isClosing && existingPosition) {
         const reduceRes = await this.positions.reducePosition(
           existingPosition,
           cleanQty,
           execPrice,
-          contract.maintenanceMarginRate,
-          undefined,
-          tx
+          contract.maintenanceMarginRate
         );
         resultingPosition = reduceRes.updatedPosition;
 
@@ -503,22 +483,21 @@ export class FuturesService {
           const entries: any[] = [];
           
           if (decimalCompare(reduceRes.freedMargin, '0') > 0) {
-            const collateralForReduce = existingPosition.collateralAsset || 'FUTURES_USDT';
             entries.push(
-              { accountId: dto.accountId, asset: collateralForReduce, direction: 'DEBIT', amount: reduceRes.freedMargin, balancePool: 'locked' },
-              { accountId: dto.accountId, asset: collateralForReduce, direction: 'CREDIT', amount: reduceRes.freedMargin, balancePool: 'available' }
+              { accountId: dto.accountId, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: reduceRes.freedMargin, balancePool: 'locked' },
+              { accountId: dto.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: reduceRes.freedMargin, balancePool: 'available' }
             );
           }
           
           if (decimalCompare(reduceRes.realizedPnl, '0') > 0) {
-            entries.push({ accountId: dto.accountId, asset: existingPosition.collateralAsset || 'FUTURES_USDT', direction: 'CREDIT', amount: reduceRes.realizedPnl, balancePool: 'available' });
+             entries.push({ accountId: dto.accountId, asset: 'FUTURES_USDT', direction: 'CREDIT', amount: reduceRes.realizedPnl, balancePool: 'available' });
           } else if (decimalCompare(reduceRes.realizedPnl, '0') < 0) {
              const loss = decimalSubtract('0', reduceRes.realizedPnl);
-             const bal = await this.ledger.getBalance(dto.accountId, existingPosition.collateralAsset || 'FUTURES_USDT', tx);
+             const bal = await this.ledger.getBalance(dto.accountId, 'FUTURES_USDT');
              const tempAvailable = decimalAdd(bal.availableBalance, reduceRes.freedMargin);
              const debitLoss = decimalCompare(tempAvailable, loss) >= 0 ? loss : tempAvailable;
              if (decimalCompare(debitLoss, '0') > 0) {
-               entries.push({ accountId: dto.accountId, asset: existingPosition.collateralAsset || 'FUTURES_USDT', direction: 'DEBIT', amount: debitLoss, balancePool: 'available' });
+               entries.push({ accountId: dto.accountId, asset: 'FUTURES_USDT', direction: 'DEBIT', amount: debitLoss, balancePool: 'available' });
              }
           }
           
@@ -529,7 +508,7 @@ export class FuturesService {
               referenceId: pnlRef,
               description: `Futures Position Reduction: ${cleanSymbol} ${dto.positionSide} ${cleanQty} @ ${execPrice}`,
               entries
-            }, tx);
+            });
           }
         }
       // Calculate and debit trading fee
@@ -538,19 +517,16 @@ export class FuturesService {
       const tradeId = crypto.randomUUID();
 
       if (decimalCompare(feeResult.feeAmount, '0') > 0) {
-        const feeAssetForDebit = existingPosition?.collateralAsset || collateralAsset || 'FUTURES_USDT';
-        const bal = await this.ledger.getBalance(dto.accountId, feeAssetForDebit, tx);
+        const bal = await this.ledger.getBalance(dto.accountId, 'FUTURES_USDT');
         const feeDebit = decimalCompare(bal.availableBalance, feeResult.feeAmount) >= 0 ? feeResult.feeAmount : bal.availableBalance;
         if (decimalCompare(feeDebit, '0') > 0) {
           await this.ledger.debit(
             dto.accountId,
-            feeAssetForDebit,
+            'FUTURES_USDT',
             feeDebit,
             'TRADING_FEE',
             `FUTURES-FEE-${tradeId}`,
-            `Futures Trading Fee (${feeResult.feeType}): ${cleanSymbol} order ${orderId}`,
-            undefined,
-            tx
+            `Futures Trading Fee (${feeResult.feeType}): ${cleanSymbol} order ${orderId}`
           );
         }
       }
@@ -567,12 +543,12 @@ export class FuturesService {
         quantity: cleanQty,
         quoteQuantity: decimalMultiply(cleanQty, execPrice),
         fee: feeResult.feeAmount,
-        feeAsset: existingPosition?.collateralAsset || collateralAsset || 'FUTURES_USDT',
+        feeAsset: 'FUTURES_USDT',
         isMaker,
         createdAt: new Date(),
       };
 
-      await tx.query(
+      await this.database.query(
         `INSERT INTO trades (
           id, order_id, account_id, market, symbol, side, price, quantity, quote_quantity,
           fee, fee_asset, is_maker, created_at
@@ -600,19 +576,10 @@ export class FuturesService {
       order.remainingQuantity = decimalZero();
       order.updatedAt = new Date();
 
-      await tx.query(
+      await this.database.query(
         'UPDATE orders SET status = $1, filled_quantity = $2, remaining_quantity = $3, updated_at = NOW() WHERE id = $4',
         ['FILLED', order.filledQuantity, order.remainingQuantity, order.id]
       );
-    }
-
-    // ── End authoritative transaction ────────────────────────────────────
-    });
-
-    // Idempotent replay: return the pre-existing order without re-running
-    // any financial writes or re-emitting domain events.
-    if (replayResult) {
-      return replayResult;
     }
 
     // ── Emit Domain Events strictly after successful commit ──────────────

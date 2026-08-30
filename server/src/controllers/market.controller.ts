@@ -51,7 +51,7 @@ export async function getOrderBook(req: Request, res: Response, next: NextFuncti
       // @ts-ignore
 
       // @ts-ignore
-    const book = await marketDataService.getOrderBook(symbol, depth);
+    const book = marketDataService.getOrderBook(symbol, depth);
     res.json({
       success: true,
       data: book,

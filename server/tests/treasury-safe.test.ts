@@ -25,34 +25,29 @@ describe('Phase 10.6 Treasury - Safe Configuration & Verification', () => {
   });
 
   it('A. correct owner & threshold -> should verify successfully', async () => {
-    const isValid = await verifier.verifySafeOnChain(safeAddress, ownerAddress, 1, 1337, RPC_URL);
+    const isValid = await verifier.verifySafeOnChain(safeAddress, ownerAddress, 1, RPC_URL);
     expect(isValid).toBe(true);
   });
 
   it('B. wrong owner -> should fail closed', async () => {
     const wrongOwner = '0x1234567890123456789012345678901234567890';
-    const isValid = await verifier.verifySafeOnChain(safeAddress, wrongOwner, 1, 1337, RPC_URL);
+    const isValid = await verifier.verifySafeOnChain(safeAddress, wrongOwner, 1, RPC_URL);
     expect(isValid).toBe(false);
   });
 
   it('C. threshold drift (checking against threshold 2 instead of 1) -> should fail closed', async () => {
-    const isValid = await verifier.verifySafeOnChain(safeAddress, ownerAddress, 2, 1337, RPC_URL);
+    const isValid = await verifier.verifySafeOnChain(safeAddress, ownerAddress, 2, RPC_URL);
     expect(isValid).toBe(false);
   });
 
   it('D. wrong Safe address (EOA/no code) -> should fail closed', async () => {
     // We use the owner address itself, which is an EOA without code
-    const isValid = await verifier.verifySafeOnChain(ownerAddress, ownerAddress, 1, 1337, RPC_URL);
+    const isValid = await verifier.verifySafeOnChain(ownerAddress, ownerAddress, 1, RPC_URL);
     expect(isValid).toBe(false);
   });
 
   it('E. chain isolation (RPC failure) -> should fail safe', async () => {
-    const isValid = await verifier.verifySafeOnChain(safeAddress, ownerAddress, 1, 1337, 'http://127.0.0.1:9999');
-    expect(isValid).toBe(false);
-  });
-
-  it('F. chainId mismatch (1 vs 1337) -> should fail closed', async () => {
-    const isValid = await verifier.verifySafeOnChain(safeAddress, ownerAddress, 1, 1, RPC_URL);
+    const isValid = await verifier.verifySafeOnChain(safeAddress, ownerAddress, 1, 'http://127.0.0.1:9999');
     expect(isValid).toBe(false);
   });
 });

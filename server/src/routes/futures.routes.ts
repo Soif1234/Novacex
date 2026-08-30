@@ -50,6 +50,6 @@ router.get('/trades', requireAuthOrApiKey('READ'), getTrades);
 
 router.post('/positions/:positionId/tpsl', requireAuthOrApiKey('TRADE'), setTpSl);
 router.get('/positions/:positionId/tpsl', requireAuthOrApiKey('READ'), getTpSl);
-router.post('/positions/:positionId/liquidate', requireCircuitBreaker('FUTURES_TRADING'), requireAuthOrApiKey('TRADE'), liquidatePosition);
+router.post('/positions/:positionId/liquidate', requireAuthOrApiKey('TRADE'), liquidatePosition);
 
 export const futuresRoutes = router;
