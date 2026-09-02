@@ -14,7 +14,21 @@ export interface EnvironmentConfig {
   CUSTODY_SWEEP_STALE_BROADCAST_MINUTES: number;
   /** 6E-4C-2: stuck sweep recovery threshold in minutes (queue mechanics). */
   CUSTODY_SWEEP_RECOVERY_TIMEOUT_MINUTES: number;
-  NODE_ENV: 'development' | 'production' | 'test';
+  /**
+   * Phase 11K — manual Safe mode. The authorized sender address for customer
+   * withdrawals and treasury transfers. This is a cold EOA / MetaMask address
+   * that the backend NEVER signs for. The backend only reads this address to
+   * verify on-chain transactions (from == CUSTODY_HOT_WALLET_ADDRESS).
+   * Set to empty string / undefined in non-manual environments.
+   */
+  CUSTODY_HOT_WALLET_ADDRESS: string;
+  /**
+   * Phase 11K — expected chain ID for the custody network. Used by manual
+   * on-chain verification to reject transactions on the wrong chain.
+   * Default: 1 (mainnet) in production, 11155111 (Sepolia) otherwise.
+   */
+  CUSTODY_CHAIN_ID: number;
+  NODE_ENV: 'development' | 'staging' | 'production' | 'test';
   PORT: number;
   HOST: string;
   API_PREFIX: string;
@@ -79,7 +93,7 @@ export interface EnvironmentConfig {
    * mock provider is never wired to any financial state.
    */
   CUSTODY_ENABLED: boolean;
-  CUSTODY_PROVIDER?: 'mock' | 'kms';
+  CUSTODY_PROVIDER?: 'mock' | 'local_kms' | 'kms' | 'manual_safe';
   CUSTODY_KMS_KEY_ID?: string;
   CUSTODY_EVM_RPC_URL?: string;
   CUSTODY_KMS_REGION?: string;
@@ -121,8 +135,8 @@ function parseBoolean(val: string | undefined, fallback: boolean): boolean {
 
 export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): EnvironmentConfig {
   const nodeEnv = (process.env.NODE_ENV || 'development').toLowerCase();
-  if (!['development', 'production', 'test'].includes(nodeEnv)) {
-    throw new Error(`Invalid NODE_ENV: "${nodeEnv}". Must be 'development', 'production', or 'test'.`);
+  if (!['development', 'staging', 'production', 'test'].includes(nodeEnv)) {
+    throw new Error(`Invalid NODE_ENV: "${nodeEnv}". Must be 'development', 'staging', 'production', or 'test'.`);
   }
 
   const port = parseNumber(process.env.PORT, 4000, 'PORT');
@@ -199,6 +213,10 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     throw new Error('HYPERLIQUID_ENV must be "mainnet" in production.');
   }
 
+  if (nodeEnv !== 'production' && hyperliquidEnvRaw === 'mainnet') {
+    throw new Error('HYPERLIQUID_ENV "mainnet" is strictly forbidden in non-production environments.');
+  }
+
   let hyperliquidRestUrl = '';
   let hyperliquidWsUrl = '';
   let hyperliquidAgentPrivateKey = '';
@@ -227,7 +245,7 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
   }
 
   const config: EnvironmentConfig = {
-    NODE_ENV: nodeEnv as 'development' | 'production' | 'test',
+    NODE_ENV: nodeEnv as 'development' | 'staging' | 'production' | 'test',
     PORT: port,
     HOST: process.env.HOST || '0.0.0.0',
     API_PREFIX: process.env.API_PREFIX || '/api/v1',
@@ -286,13 +304,18 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     EXTERNAL_MARKET_DATA_FUTURES_URL: externalMarketDataFuturesUrl,
     EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS: externalMarketDataPollIntervalMs,
     CUSTODY_ENABLED: parseBoolean(process.env.CUSTODY_ENABLED, false),
-    CUSTODY_PROVIDER: process.env.CUSTODY_PROVIDER as 'mock' | 'kms' | undefined,
+    CUSTODY_PROVIDER: process.env.CUSTODY_PROVIDER as 'mock' | 'local_kms' | 'kms' | 'manual_safe' | undefined,
     CUSTODY_KMS_KEY_ID: process.env.CUSTODY_KMS_KEY_ID,
     CUSTODY_EVM_RPC_URL: process.env.CUSTODY_EVM_RPC_URL,
     CUSTODY_KMS_REGION: process.env.CUSTODY_KMS_REGION,
     CUSTODY_FACTORY_ADDRESS: process.env.CUSTODY_FACTORY_ADDRESS,
     CUSTODY_IMPLEMENTATION_ADDRESS: process.env.CUSTODY_IMPLEMENTATION_ADDRESS,
     CUSTODY_INIT_CODE_HASH: process.env.CUSTODY_INIT_CODE_HASH,
+    // Phase 11K — manual safe mode
+    CUSTODY_HOT_WALLET_ADDRESS: process.env.CUSTODY_HOT_WALLET_ADDRESS || '',
+    CUSTODY_CHAIN_ID: process.env.CUSTODY_CHAIN_ID
+      ? parseNumber(process.env.CUSTODY_CHAIN_ID, 0, 'CUSTODY_CHAIN_ID')
+      : (nodeEnv === 'production' ? 1 : 11155111),
     CRYPTO_WITHDRAWALS_ENABLED: parseBoolean(process.env.CRYPTO_WITHDRAWALS_ENABLED, false),
     // Phase 10.4 Step 6E-4C-2 sweep corrections:
     // Networks eligible for deposit sweeping (producer filter; CSV, uppercase).

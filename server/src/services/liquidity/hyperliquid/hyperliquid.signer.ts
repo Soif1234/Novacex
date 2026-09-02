@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Hyperliquid EIP-712 Signer & Canonical Msgpack Encoding
  * Phase 10.5 â€” Step 10.5-2
  */
@@ -95,7 +95,7 @@ export class HyperliquidMsgpackEncoder {
     }
 
     if (typeof value === 'object') {
-      const keys = Object.keys(value);
+      const keys = Object.keys(value).filter(k => value[k] !== undefined);
       const totalKeys = keys.length;
       let header: Buffer;
       if (totalKeys <= 15) {

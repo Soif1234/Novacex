@@ -202,24 +202,72 @@ export class TreasuryMonitorService {
   private async processPhysicalTransaction(ev: any) {
     const db = this.treasuryService.getDatabase();
     await db.transaction(async (dbClient) => {
-      // P0-1: Try to correlate with an existing intent by txHash
+      // P0-1 / F3 (Phase 11K-B): Try to correlate with an existing row by txHash.
+      // The correlation now matches ANY status (PENDING/SIGNING/BROADCAST intent
+      // rows AND CONFIRMED rows) so that:
+      //   - confirm-first: the admin already wrote tx_hash + CONFIRMED on the
+      //     intent row; a later monitor scan of the same block must UPDATE that
+      //     row (filling block info), NOT insert a second representation.
+      //     (For ERC20 the physical log_index may differ from the intent's 0,
+      //     so ON CONFLICT alone would NOT have deduplicated it — this
+      //     by-txHash correlation is the authoritative dedupe.)
+      //   - repeated monitor scan: the same physical tx re-processed updates the
+      //     already-recorded row instead of inserting again.
+      // The monitor NEVER assigns client_withdrawal_id — linking an unlinked
+      // physical row to a manual intent is done exclusively by
+      // TreasuryManagerService.confirmManualTreasuryTransfer (adoption) which
+      // holds the advisory lock and performs full on-chain verification.
       if (ev.txHash) {
         const updateRes = await dbClient.query<{id: number}>(
           `UPDATE treasury_transactions
            SET status = 'CONFIRMED', log_index = $1, block_number = $2, block_hash = $3, updated_at = NOW()
-           WHERE network = $4 AND tx_hash = $5 AND status IN ('PENDING', 'SIGNING', 'BROADCAST')
+           WHERE network = $4 AND tx_hash = $5
            RETURNING id`,
           [ev.logIndex, ev.blockNumber, ev.blockHash, this.networkName, ev.txHash]
         );
 
         if (updateRes.rows.length > 0) {
-          logger.info(`TreasuryMonitor: Correlated physical transaction ${ev.txHash} with existing intent ${updateRes.rows[0].id}`);
+          logger.info(`TreasuryMonitor: Correlated physical transaction ${ev.txHash} with existing row ${updateRes.rows[0].id}`);
           return;
         }
       }
 
-      // If we fall through here, it's either an unknown transfer OR an intent that crashed before setting tx_hash.
-      // We insert a physical record. TreasuryManagerService.recoverPendingIntents() will deduplicate if it crashed.
+      // If we fall through here, it's an unknown transfer with no matching
+      // intent/physical row. Before inserting an unlinked row, attempt to
+      // correlate with a uniquely matching READY_FOR_MANUAL_EXECUTION intent
+      // by parameters (network, asset, source, destination, amount). This
+      // prevents the monitor from inserting a redundant second row when a
+      // manual intent that represents the same physical transaction exists
+      // but has not yet been confirmed (tx_hash = NULL).
+      const countRes = await dbClient.query<{cnt: string}>(
+        `SELECT COUNT(*) as cnt FROM treasury_transactions
+         WHERE network = $1 AND asset = $2
+           AND LOWER(source_address) = LOWER($3)
+           AND LOWER(destination_address) = LOWER($4)
+           AND amount = $5
+           AND status = 'READY_FOR_MANUAL_EXECUTION'
+           AND tx_hash IS NULL`,
+        [ev.network, ev.asset, ev.sourceAddress, ev.destinationAddress, ev.amount]
+      );
+      if (Number(countRes.rows[0].cnt) === 1) {
+        await dbClient.query(
+          `UPDATE treasury_transactions
+           SET status = 'CONFIRMED', tx_hash = $1, log_index = $2, block_number = $3, block_hash = $4, updated_at = NOW()
+           WHERE network = $5 AND asset = $6
+             AND LOWER(source_address) = LOWER($7)
+             AND LOWER(destination_address) = LOWER($8)
+             AND amount = $9
+             AND status = 'READY_FOR_MANUAL_EXECUTION'
+             AND tx_hash IS NULL`,
+          [ev.txHash, ev.logIndex, ev.blockNumber, ev.blockHash, ev.network, ev.asset, ev.sourceAddress, ev.destinationAddress, ev.amount]
+        );
+        logger.info(`TreasuryMonitor: Adopted READY intent by parameters for tx ${ev.txHash}`);
+        return;
+      }
+
+      // Otherwise, insert a physical record (idempotent via uq_treasury_tx / ON CONFLICT DO
+      // NOTHING). TreasuryManagerService.confirmManualTreasuryTransfer() will
+      // ADOPT this unlinked row when the admin confirms the matching intent.
       logger.info(`TreasuryMonitor: Recording unlinked physical transaction ${ev.txHash}`);
       await this.treasuryService.insertTreasuryTransaction({
         network: ev.network,

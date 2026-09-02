@@ -24,5 +24,8 @@ export { MockCustodyProvider } from './mock-custody-provider';
 export type { MockCustodyProviderOptions } from './mock-custody-provider';
 export { CustodyService, createCustodyService, custodyService } from './custody.service';
 export type { CustodyServiceOptions } from './custody.service';
+export { ManualSafeCustodyProvider } from './manual-safe-custody-provider';
+export { ManualTxVerificationService, manualTxVerificationService } from './manual-tx-verification.service';
+export type { OnChainVerificationResult } from './manual-tx-verification.service';
 export { DepositAddressService, createDepositAddressService, depositAddressService } from './deposit-address.service';
 export type { DepositAddressServiceOptions, GetOrCreateDepositAddressParams, RotateDepositAddressResult } from './deposit-address.service';

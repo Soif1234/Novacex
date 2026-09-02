@@ -1,6 +1,6 @@
-﻿/**
+/**
  * Hyperliquid Typed HTTP REST Client
- * Phase 10.5 â€” Step 10.5-2
+ * Phase 10.5 — Step 10.5-2
  */
 
 import * as crypto from 'crypto';
@@ -240,12 +240,7 @@ export class HyperliquidClient {
     const nonce = await this.nonceManager.getNextNonce();
     const { signature } = await this.signer.signL1Action(action, nonce, this.vaultAddress, expiresAfter);
 
-    const payload: HyperliquidExchangePayload = {
-      action,
-      nonce,
-      signature,
-      vaultAddress: this.vaultAddress
-    };
+    const payload: any = { action, nonce, signature }; if (this.vaultAddress) payload.vaultAddress = this.vaultAddress;
 
     const url = `${this.baseUrl}/exchange`;
     const response = await this.fetchWithTimeout(url, payload);

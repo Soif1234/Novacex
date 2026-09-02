@@ -1,80 +1,111 @@
 @import "tailwindcss";
 
 @theme {
-  --color-nova-bg: #080B11;
-  --color-nova-surface: #0E131F;
-  --color-nova-card: #141A29;
-  --color-nova-elevated: #1B2236;
-  --color-nova-border: #1E293B;
-  --color-nova-border-subtle: #162032;
-  
-  --color-nova-cyan: #00F0FF;
-  --color-nova-cyan-hover: #00D8E6;
-  
-  --color-nova-indigo: #6366F1;
-  --color-nova-indigo-hover: #4F46E5;
-  
-  --color-nova-green: #00E676;
-  --color-nova-green-hover: #00C853;
-  
-  --color-nova-red: #FF3366;
-  --color-nova-red-hover: #E6004C;
-  
+  --color-brand-bg: #0A0B08;
+  --color-brand-surface: #14160F;
+  --color-brand-border: #262A1D;
+  --color-brand-lime: #C6FF3D;
+  --color-brand-green: #17C787;
+  --color-brand-red: #FF4D5E;
+
+  --color-nova-bg: #0A0B08;
+  --color-nova-surface: #14160F;
+  --color-nova-card: #14160F;
+  --color-nova-elevated: #191B13;
+  --color-nova-border: #262A1D;
+  --color-nova-border-subtle: #1C1E15;
+
+  --color-nova-cyan: #C6FF3D;
+  --color-nova-cyan-hover: #b5e635;
+
+  --color-nova-indigo: #C6FF3D;
+  --color-nova-indigo-hover: #b5e635;
+
+  --color-nova-green: #17C787;
+  --color-nova-green-hover: #13A570;
+
+  --color-nova-red: #FF4D5E;
+  --color-nova-red-hover: #E63D4D;
+
   --color-nova-amber: #FFB300;
 
-  --color-gray-950: #080B11;
-  --color-gray-900: #0E131F;
-  --color-gray-850: #141A29;
-  --color-gray-800: #1B2236;
-  --color-gray-700: #2C374E;
-  --color-gray-600: #4B5563;
+  --color-gray-950: #0A0B08;
+  --color-gray-900: #14160F;
+  --color-gray-850: #191B13;
+  --color-gray-800: #262A1D;
+  --color-gray-700: #333927;
+  --color-gray-600: #555F41;
   --color-gray-500: #6B7280;
   --color-gray-400: #9CA3AF;
   --color-gray-300: #D1D5DB;
   --color-gray-200: #E5E7EB;
   --color-gray-100: #F3F4F6;
-  
-  --color-emerald-500: #00E676;
-  --color-emerald-600: #00C853;
-  --color-red-500: #FF3366;
-  --color-red-600: #E6004C;
-  --color-blue-500: #00F0FF;
-  --color-blue-600: #0284C7;
+
+  --color-emerald-400: #17C787;
+  --color-emerald-500: #17C787;
+  --color-emerald-600: #13A570;
+
+  --color-red-400: #FF4D5E;
+  --color-red-500: #FF4D5E;
+  --color-red-600: #E63D4D;
+
+  --color-rose-400: #FF4D5E;
+  --color-rose-500: #FF4D5E;
+  --color-rose-600: #E63D4D;
+
+  --color-cyan-400: #C6FF3D;
+  --color-cyan-500: #C6FF3D;
+  --color-cyan-600: #b5e635;
+
+  --color-blue-400: #C6FF3D;
+  --color-blue-500: #C6FF3D;
+  --color-blue-600: #b5e635;
+
+  --color-amber-400: #FFB300;
   --color-amber-500: #FFB300;
+
+  --font-sans: 'Space Grotesk', sans-serif;
+  --font-mono: 'Space Grotesk', monospace;
+}
+
+@layer base {
+  body {
+    font-family: 'Space Grotesk', sans-serif;
+    background-color: #0A0B08;
+    color: #F3F4F6;
+    font-variant-numeric: tabular-nums;
+  }
 }
 
 @layer utilities {
   .hide-scrollbar {
-    -ms-overflow-style: none;  /* IE and Edge */
-    scrollbar-width: none;  /* Firefox */
+    -ms-overflow-style: none;
+    scrollbar-width: none;
   }
   .hide-scrollbar::-webkit-scrollbar {
-    display: none; /* Chrome, Safari and Opera */
+    display: none;
   }
 
   .glass-panel {
-    background: rgba(14, 19, 31, 0.75);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.07);
+    background: #14160F;
+    border: 1px solid #262A1D;
   }
 
   .glass-card {
-    background: linear-gradient(135deg, rgba(20, 26, 41, 0.85) 0%, rgba(14, 19, 31, 0.95) 100%);
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #14160F;
+    border: 1px solid #262A1D;
   }
 
   .glow-cyan {
-    box-shadow: 0 0 20px rgba(0, 240, 255, 0.18);
+    box-shadow: none;
   }
-
   .glow-green {
-    box-shadow: 0 0 16px rgba(0, 230, 118, 0.18);
+    box-shadow: none;
   }
-
   .glow-red {
-    box-shadow: 0 0 16px rgba(255, 51, 102, 0.18);
+    box-shadow: none;
+  }
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
   }
 }
-

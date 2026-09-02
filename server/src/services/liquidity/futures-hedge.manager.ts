@@ -128,18 +128,43 @@ export class FuturesHedgeManager implements IFuturesHedgeManager {
 
     const client = await this.db.connect();
     try {
-      // Find all markets with non-zero exposure that do not have pending hedges
-      const expRes = await client.query("SELECT market, signed_exposure FROM house_exposure WHERE signed_exposure != '0'");
+      await client.query('BEGIN');
+      // Find all markets with non-zero exposure with FOR UPDATE locking
+      const expRes = await client.query("SELECT market, signed_exposure FROM house_exposure WHERE signed_exposure != '0' FOR UPDATE");
 
       for (const row of expRes.rows) {
         const market = row.market;
         const exposure = row.signed_exposure;
 
-        const side = decimalCompare(exposure, '0') > 0 ? 'SELL' : 'BUY';
-        const qty = exposure.startsWith('-') ? exposure.substring(1) : exposure;
+        // Fetch all pending hedge intents for this market
+        const pendingRes = await client.query(
+          "SELECT side, remaining_quantity FROM hedge_intents WHERE market = $1 AND status IN ('CREATED', 'SUBMITTING', 'UNKNOWN_PENDING_RECONCILIATION', 'OPEN', 'PARTIALLY_FILLED', 'RECONCILIATION_REQUIRED')",
+          [market]
+        );
+
+        let pendingNet = '0';
+        for (const p of pendingRes.rows) {
+           // A BUY hedge intent increases our net position
+           if (p.side === 'BUY') {
+               pendingNet = decimalAdd(pendingNet, p.remaining_quantity);
+           } else {
+               pendingNet = decimalSubtract(pendingNet, p.remaining_quantity);
+           }
+        }
+
+        // Effective exposure = Current House Exposure + Pending Hedges
+        const effectiveExposure = decimalAdd(exposure, pendingNet);
+        if (decimalCompare(effectiveExposure, '0') === 0) continue;
+
+        const side = decimalCompare(effectiveExposure, '0') > 0 ? 'SELL' : 'BUY';
+        const qty = effectiveExposure.startsWith('-') ? effectiveExposure.substring(1) : effectiveExposure;
 
         await this.createHedgeIntent(market, side, qty, 'INTERNAL_NET_EXPOSURE', '0');
       }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
     } finally {
       client.release();
     }
@@ -253,13 +278,17 @@ export class FuturesHedgeManager implements IFuturesHedgeManager {
       } else if (result.status === 'REJECTED') {
         await this.updateIntentStatus(intent.hedgeIntentId, 'REJECTED', result.venueOrderId);
       }
-    } catch (error: any) {
-      if (error.code === 'NETWORK_TIMEOUT' || error.message.includes('timeout')) {
-        await this.updateIntentStatus(intent.hedgeIntentId, 'UNKNOWN_PENDING_RECONCILIATION');
-      } else {
-        await this.updateIntentStatus(intent.hedgeIntentId, 'FAILED');
+      } catch (error: any) {
+        // Any network error, 5xx, timeout, or unexpected error could mean the order reached the venue
+        // and was executed, but we lost the response. We must conservatively mark it as UNKNOWN.
+        const msg = error.message?.toLowerCase() || '';
+        if (error.code === 'NETWORK_TIMEOUT' || msg.includes('timeout') || msg.includes('502') || msg.includes('504') || msg.includes('500') || msg.includes('503') || error.code === 'ECONNRESET') {
+          await this.updateIntentStatus(intent.hedgeIntentId, 'UNKNOWN_PENDING_RECONCILIATION');
+        } else {
+          // Only known client errors (400, 401) or explicit rejections can safely be FAILED
+            await this.updateIntentStatus(intent.hedgeIntentId, 'FAILED');
+        }
       }
-    }
   }
 
   private async updateIntentStatus(id: string, status: HedgeIntentStatus, venueOrderId?: string, remaining?: string): Promise<void> {

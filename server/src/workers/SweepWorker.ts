@@ -39,6 +39,15 @@ export class SweepWorker {
       return;
     }
 
+    // Phase 11K — manual Safe mode: automatic outbound sweeps are DISABLED.
+    // The manual provider never signs/broadcasts; forwarder deposits simply
+    // accumulate on-chain and an operator sweeps them manually. See the
+    // manual sweep procedure in the Phase 11K report.
+    if (custodyService.getProviderId() === 'manual_safe') {
+      logger.warn('[SweepWorker] manual_safe mode: automatic sweeps disabled; forwarder deposits accumulate for manual sweep');
+      return;
+    }
+
     const breaker = await circuitBreakerService.isSubsystemOperational('WITHDRAWALS');
     if (!breaker.operational) {
       logger.warn('[SweepWorker] Circuit breaker open, skipping processing');

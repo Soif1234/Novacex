@@ -137,6 +137,9 @@ export class SpotService {
           if ((acc.userId || acc.user_id) !== dto.userId) {
             throw new AccountOwnershipDeniedError(dto.accountId);
           }
+          if (acc.type !== 'SPOT') {
+            throw new SpotError(`Account ${dto.accountId} is not a SPOT account`, 400, SpotErrorCode.INVALID_ACCOUNT_TYPE);
+          }
 
           const pair = await this.validateTradingPair(dto.symbol, txClient);
 

@@ -21,7 +21,14 @@ export type CustodyTransactionStatus =
   | 'CONFIRMED'
   | 'FAILED'
   | 'REJECTED'
-  | 'REVERSED';
+  | 'REVERSED'
+  /**
+   * Phase 11K — manual Safe mode. The backend has authorized execution and is
+   * awaiting a HUMAN to sign/broadcast (Safe/MetaMask). No backend signing, no
+   * backend nonce allocation, no backend broadcast. This state NEVER implies a
+   * blockchain transaction exists.
+   */
+  | 'READY_FOR_MANUAL_EXECUTION';
 
 /** Direction of a custody transaction relative to the exchange. */
 export type CustodyTransactionDirection = 'DEPOSIT' | 'WITHDRAWAL';

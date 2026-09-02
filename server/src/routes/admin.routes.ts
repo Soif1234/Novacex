@@ -77,6 +77,17 @@ router.post(
   AdminController.cancelWithdrawal
 );
 
+// Phase 11K — manual Safe mode: confirm a real on-chain execution for a
+// READY_FOR_MANUAL_EXECUTION customer withdrawal. Only an admin with 2FA may
+// record/verify the physical tx hash; the backend never signs.
+router.post(
+  '/withdrawals/:id/confirm-tx',
+  requireCircuitBreaker('WITHDRAWALS'),
+  require2FA,
+  mutationRateLimiter(),
+  AdminController.confirmWithdrawalTx
+);
+
 // Treasury Operations (Phase 10.6) — Safe consolidation, ADMIN + 2FA only.
 // Destination is NEVER admin input: TreasuryManager resolves the trusted Safe
 // anchor from immutable env configuration and verifies it on-chain.
@@ -85,6 +96,16 @@ router.post(
   require2FA,
   mutationRateLimiter(),
   TreasuryController.consolidateToSafe
+);
+
+// Phase 11K — manual Safe mode: confirm a real on-chain treasury execution.
+// Body: { intentId, txHash }. Verified against immutable env anchors; the
+// request body NEVER supplies the destination.
+router.post(
+  '/treasury/confirm',
+  require2FA,
+  mutationRateLimiter(),
+  TreasuryController.confirmTreasury
 );
 
 export const adminRoutes = router;

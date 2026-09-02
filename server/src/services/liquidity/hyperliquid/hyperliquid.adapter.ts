@@ -45,7 +45,10 @@ export class HyperliquidAdapter {
   private readonly metaCacheTtlMs: number = 300000; // 5 minutes
 
   constructor(private readonly config: HyperliquidClientConfig) {
-    this.client = new HyperliquidClient(config);
+    this.client = new HyperliquidClient({
+      ...config,
+      requestTimeoutMs: config.requestTimeoutMs ?? 15000
+    });
   }
 
   public getClient(): HyperliquidClient {
@@ -195,8 +198,7 @@ export class HyperliquidAdapter {
     try {
       const response = await this.client.postExchangeAction({
         type: 'order',
-        orders: [orderWire],
-        grouping: 'na'
+        orders: [orderWire], grouping: 'na'
       });
 
       const statusData = response.response?.data?.statuses?.[0];

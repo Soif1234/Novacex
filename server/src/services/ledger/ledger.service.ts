@@ -43,10 +43,7 @@ import { eventBus } from '../market/event-bus';
 const EXTERNAL_BOUNDARY_TX_TYPES: ReadonlySet<string> = new Set<string>([
   'DEPOSIT',
   'WITHDRAWAL',
-  'WITHDRAWAL_SETTLE',
-  'TRADING_FEE',
-  'FUTURES_PNL_REALIZED',
-  'FUTURES_FUNDING_PAYMENT',
+  'WITHDRAWAL_SETTLE'
 ]);
 
 // ─── Result Types ────────────────────────────────────────────────────────────

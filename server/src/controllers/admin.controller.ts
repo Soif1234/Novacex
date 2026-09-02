@@ -315,5 +315,41 @@ export class AdminController {
       next(err);
     }
   }
+
+  /**
+   * POST /api/v1/admin/withdrawals/:id/confirm-tx
+   *
+   * Phase 11K — manual Safe mode confirmation of a customer withdrawal.
+   * Body: { txHash }
+   * The transaction is independently verified on-chain before the withdrawal
+   * is marked SUBMITTED. No private key enters this endpoint.
+   */
+  public static async confirmWithdrawalTx(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { withdrawalService } = await import('../services/wallet/withdrawal.service');
+      const withdrawalId = req.params.id as string;
+      const txHash = typeof req.body.txHash === 'string' ? req.body.txHash.trim() : '';
+
+      if (!txHash) {
+        throw new AppError('txHash is required', 400, 'MISSING_TX_HASH');
+      }
+
+      const adminId = req.user!.id;
+
+      await withdrawalService.confirmManualWithdrawal(withdrawalId, txHash, adminId, {
+        adminUserId: adminId,
+        action: 'CONFIRM_WITHDRAWAL_TX',
+        targetResourceType: 'WITHDRAWAL',
+        targetResourceId: withdrawalId,
+        previousState: { crypto_status: 'READY_FOR_MANUAL_EXECUTION' },
+        newState: { crypto_status: 'SUBMITTED' },
+        reason: 'Manual on-chain execution confirmed by administrator'
+      });
+
+      res.status(200).json({ success: true, message: 'Withdrawal confirmed on-chain and submitted' });
+    } catch (err) {
+      next(err);
+    }
+  }
 }
 

@@ -11,6 +11,7 @@ import { LedgerService, ledgerService } from '../ledger/ledger.service';
 import { futuresRiskService, FuturesRiskService } from './risk.service';
 import { futuresPositionService, FuturesPositionService } from './position.service';
 import { futuresFeeService, FuturesFeeService } from './fee.service';
+import { INSURANCE_FUND_ACCOUNT_ID } from './insurance-fund.service';
 import { developmentMarkPriceProvider, IMarkPriceProvider } from './mark-price.provider';
 import {
   decimalNormalize,
@@ -186,6 +187,9 @@ export class FuturesService {
     }
     if ((acc.userId || acc.user_id) !== dto.userId) {
       throw new AccountOwnershipDeniedError(dto.accountId);
+    }
+    if (acc.type !== 'FUTURES') {
+      throw new FuturesError(`Account ${dto.accountId} is not a FUTURES account`, 400, FuturesErrorCode.INVALID_ACCOUNT_TYPE);
     }
 
     // 2. Validate contract & parameters
@@ -512,6 +516,7 @@ export class FuturesService {
           
           if (decimalCompare(reduceRes.realizedPnl, '0') > 0) {
             entries.push({ accountId: dto.accountId, asset: existingPosition.collateralAsset || 'FUTURES_USDT', direction: 'CREDIT', amount: reduceRes.realizedPnl, balancePool: 'available' });
+            entries.push({ accountId: INSURANCE_FUND_ACCOUNT_ID, asset: existingPosition.collateralAsset || 'FUTURES_USDT', direction: 'DEBIT', amount: reduceRes.realizedPnl, balancePool: 'available' });
           } else if (decimalCompare(reduceRes.realizedPnl, '0') < 0) {
              const loss = decimalSubtract('0', reduceRes.realizedPnl);
              const bal = await this.ledger.getBalance(dto.accountId, existingPosition.collateralAsset || 'FUTURES_USDT', tx);
@@ -519,6 +524,7 @@ export class FuturesService {
              const debitLoss = decimalCompare(tempAvailable, loss) >= 0 ? loss : tempAvailable;
              if (decimalCompare(debitLoss, '0') > 0) {
                entries.push({ accountId: dto.accountId, asset: existingPosition.collateralAsset || 'FUTURES_USDT', direction: 'DEBIT', amount: debitLoss, balancePool: 'available' });
+               entries.push({ accountId: INSURANCE_FUND_ACCOUNT_ID, asset: existingPosition.collateralAsset || 'FUTURES_USDT', direction: 'CREDIT', amount: debitLoss, balancePool: 'available' });
              }
           }
           
@@ -542,16 +548,16 @@ export class FuturesService {
         const bal = await this.ledger.getBalance(dto.accountId, feeAssetForDebit, tx);
         const feeDebit = decimalCompare(bal.availableBalance, feeResult.feeAmount) >= 0 ? feeResult.feeAmount : bal.availableBalance;
         if (decimalCompare(feeDebit, '0') > 0) {
-          await this.ledger.debit(
-            dto.accountId,
-            feeAssetForDebit,
-            feeDebit,
-            'TRADING_FEE',
-            `FUTURES-FEE-${tradeId}`,
-            `Futures Trading Fee (${feeResult.feeType}): ${cleanSymbol} order ${orderId}`,
-            undefined,
-            tx
-          );
+          await this.ledger.postTransaction({
+            accountId: dto.accountId,
+            transactionType: 'TRADING_FEE' as any,
+            referenceId: `FUTURES-FEE-${tradeId}`,
+            description: `Futures Trading Fee (${feeResult.feeType}): ${cleanSymbol} order ${orderId}`,
+            entries: [
+              { accountId: dto.accountId, asset: feeAssetForDebit, direction: 'DEBIT', amount: feeDebit, balancePool: 'available' },
+              { accountId: '11111111-1111-1111-1111-111111111111', asset: feeAssetForDebit, direction: 'CREDIT', amount: feeDebit, balancePool: 'available' }
+            ]
+          }, tx);
         }
       }
 

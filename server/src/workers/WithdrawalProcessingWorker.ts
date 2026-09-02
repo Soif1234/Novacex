@@ -68,7 +68,16 @@ export class WithdrawalProcessingWorker {
 
         const result = await custodyService.requestWithdrawal(custodyRequest);
         const providerId = custodyService.getProviderId();
-        if (providerId && result.providerWithdrawalId) {
+        if (providerId === 'manual_safe') {
+          // Phase 11K — manual Safe mode: the backend does NOT sign or
+          // broadcast. The manual provider returns READY_FOR_MANUAL_EXECUTION;
+          // the withdrawal waits for a human to execute via Safe/MetaMask.
+          if (result.status === 'READY_FOR_MANUAL_EXECUTION') {
+            await withdrawalService.markReadyForManualExecution(w.id);
+          } else {
+            await this.handleProcessingFailure(w.id, null);
+          }
+        } else if (providerId && result.providerWithdrawalId) {
           await withdrawalService.markAsSubmitted(w.id, providerId, result.providerWithdrawalId);
         } else {
           // No provider reference returned. Reverting blindly to APPROVED is

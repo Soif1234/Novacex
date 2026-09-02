@@ -25,6 +25,7 @@ import { isSupportedNetwork } from '../../models/asset-network.model';
 import { ICustodyAdapter, ICustodyReadAdapter } from './custody-adapter';
 import { LocalKmsMock } from './local-kms-mock';
 import { KmsCustodyProvider } from './kms-custody-provider';
+import { ManualSafeCustodyProvider } from './manual-safe-custody-provider';
 import { MockCustodyProvider } from './mock-custody-provider';
 import { KMSClient } from '@aws-sdk/client-kms';
 import {
@@ -474,18 +475,35 @@ export function createCustodyService(options?: Partial<CustodyServiceOptions>): 
 
   if (env.CUSTODY_ENABLED) {
     const providerStr = env.CUSTODY_PROVIDER || (env.NODE_ENV !== 'production' ? 'mock' : undefined);
+    const isProduction = env.NODE_ENV === 'production';
 
     if (!providerStr) {
-      throw new Error("CUSTODY_PROVIDER must be explicitly configured in production (e.g., 'kms')");
+      throw new Error("CUSTODY_PROVIDER must be explicitly configured in production (e.g., 'manual_safe')");
     }
 
     if (providerStr === 'mock') {
-      if (env.NODE_ENV === 'production') {
+      if (isProduction) {
         throw new Error("CUSTODY_PROVIDER='mock' is forbidden in production environment");
       }
       adapter = new MockCustodyProvider();
+    } else if (providerStr === 'local_kms') {
+      if (isProduction) {
+        throw new Error("CUSTODY_PROVIDER='local_kms' is forbidden in production environment");
+      }
+      const rpcUrl = env.CUSTODY_EVM_RPC_URL || 'http://127.0.0.1:8545';
+      const keyId = env.CUSTODY_KMS_KEY_ID || 'mock-key-id';
+      const config = {
+          'ETHEREUM': { rpcUrl, keyId, chainId: 31337n }
+      };
+      const mockKms = new LocalKmsMock();
+      adapter = new KmsCustodyProvider(mockKms as any, config, db);
     } else if (providerStr === 'kms') {
-      const isLocal = env.NODE_ENV !== 'production';
+      // Phase 11K — KMS is explicitly FORBIDDEN in production. The manual
+      // deployment MUST NOT silently fall back to automatic server-side
+      // signing. KMS remains available only for explicit development/test use.
+      if (isProduction) {
+        throw new Error("CUSTODY_PROVIDER='kms' is forbidden in production environment (use 'manual_safe')");
+      }
 
       const rpcUrl = env.CUSTODY_EVM_RPC_URL;
       if (!rpcUrl) {
@@ -493,7 +511,7 @@ export function createCustodyService(options?: Partial<CustodyServiceOptions>): 
       }
 
       // Prohibit localhost RPC in production
-      if (env.NODE_ENV === 'production') {
+      if (isProduction) {
         try {
             const parsedUrl = new URL(rpcUrl);
             const host = parsedUrl.hostname.toLowerCase();
@@ -516,19 +534,19 @@ export function createCustodyService(options?: Partial<CustodyServiceOptions>): 
           'ETHEREUM': {
               rpcUrl,
               keyId,
-              chainId: env.NODE_ENV === 'production' ? 1n : 31337n
+              chainId: isProduction ? 1n : 11155111n
           }
       };
 
-      if (isLocal) {
-        const mockKms = new LocalKmsMock();
-        adapter = new KmsCustodyProvider(mockKms as any, config, db);
-      } else {
-        const region = env.CUSTODY_KMS_REGION || 'us-east-1';
-        // AWS SDK will automatically resolve credentials from environment at runtime.
-        const kmsClient = new KMSClient({ region });
-        adapter = new KmsCustodyProvider(kmsClient, config, db);
-      }
+      const region = env.CUSTODY_KMS_REGION || 'us-east-1';
+      // AWS SDK will automatically resolve credentials from environment at runtime.
+      const kmsClient = new KMSClient({ region });
+      adapter = new KmsCustodyProvider(kmsClient, config, db);
+    } else if (providerStr === 'manual_safe') {
+      // Phase 11K — the production manual Safe mode. No KMS, no signing, no
+      // broadcast, no outbound nonce allocation. Execution is performed by a
+      // human (Safe 1-of-1 / MetaMask / cold EOA) and verified read-only.
+      adapter = new ManualSafeCustodyProvider(db);
     } else {
       throw new Error(`Unknown CUSTODY_PROVIDER: ${providerStr}`);
     }

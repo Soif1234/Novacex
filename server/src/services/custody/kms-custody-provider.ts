@@ -6,6 +6,15 @@ import { CustodyTransactionNotFoundError, SweepDustError, SweepZeroBalanceError,
 import { env } from '../../config/env.js';
 import { ethers, Transaction } from 'ethers';
 
+// P0-2 Fix: Authoritative gas ceiling constants for the spendable-balance formula.
+// These MUST match the hardcoded gasLimit * maxFeePerGas used in each signing flow.
+// Customer withdrawals: gasLimit=21000, maxFeePerGas=20 gwei → 0.00042 ETH
+const WITHDRAWAL_MAX_GAS = 21000n * ethers.parseUnits('20', 'gwei');
+// Treasury transfers: gasLimit=60000, maxFeePerGas=20 gwei → 0.0012 ETH
+const TREASURY_MAX_GAS = 60000n * ethers.parseUnits('20', 'gwei');
+// Safety buffer to avoid edge-case rounding/timing issues
+const RESERVATION_SAFETY_BUFFER = ethers.parseEther('0.001');
+
 export interface KmsNetworkConfig {
     rpcUrl: string;
     keyId: string;
@@ -263,6 +272,11 @@ export class KmsCustodyProvider implements ICustodyAdapter {
 
         // --- NEW SIGNING INTENT FLOW ---
 
+        // Block-aware physical balance evaluation outside DB lock
+        const blockNumber = await provider.getBlockNumber();
+        const currentBalance = await provider.getBalance(senderAddress, blockNumber);
+        const onChainNonce = await provider.getTransactionCount(senderAddress, blockNumber);
+
         // DB Transaction 1: Idempotency and Nonce Reservation
         await this.database.transaction(async (txClient: any) => {
             const withdrawalRes = await txClient.query(
@@ -312,6 +326,39 @@ export class KmsCustodyProvider implements ICustodyAdapter {
                 `SELECT next_nonce FROM hot_wallet_nonces WHERE network = $1 AND address = $2 FOR UPDATE`,
                 [request.network, senderAddress.toLowerCase()]
             );
+
+            // P0-2 Fix: Gas-aware spendable balance calculation.
+            // Sum both VALUE and COUNT of pending unmined transactions under the strict DB lock.
+            // Gas obligations are computed from the known gas ceilings per transaction type.
+            const wRes = await txClient.query(`
+                SELECT COALESCE(SUM(amount), '0') as sum, COUNT(*) as cnt FROM withdrawals
+                WHERE network = $1 AND asset = $2 AND crypto_status IN ('SIGNING', 'SUBMITTING', 'BROADCAST') AND network_nonce >= $3
+            `, [request.network, request.asset, onChainNonce]);
+            const wPendingValue = ethers.parseEther(wRes.rows[0].sum || '0');
+            const wPendingCount = BigInt(wRes.rows[0].cnt || '0');
+
+            const tRes = await txClient.query(`
+                SELECT COALESCE(SUM(tt.amount), '0') as sum, COUNT(*) as cnt FROM treasury_custody_artifacts tca
+                JOIN treasury_transactions tt ON tca.treasury_intent_id = tt.client_withdrawal_id
+                WHERE tca.network = $1 AND tt.asset = $2 AND tca.status IN ('RESERVING', 'SIGNING', 'BROADCAST') AND tca.network_nonce >= $3
+            `, [request.network, request.asset, onChainNonce]);
+            const tPendingValue = ethers.parseEther(tRes.rows[0].sum || '0');
+            const tPendingCount = BigInt(tRes.rows[0].cnt || '0');
+
+            // Total pending = value obligations + gas obligations for ALL pending txs
+            const totalPendingValue = wPendingValue + tPendingValue;
+            const totalPendingGas = (wPendingCount * WITHDRAWAL_MAX_GAS) + (tPendingCount * TREASURY_MAX_GAS);
+            const totalPending = totalPendingValue + totalPendingGas;
+
+            const valueNeeded = ethers.parseEther(request.amount);
+            // This transaction's own gas ceiling (customer withdrawal = 21000 * 20gwei)
+            const thisGas = WITHDRAWAL_MAX_GAS;
+            const totalNeeded = valueNeeded + thisGas + RESERVATION_SAFETY_BUFFER;
+            const available = currentBalance - totalPending;
+
+            if (available < totalNeeded) {
+                throw new Error(`Insufficient physical funds in hot wallet. On-chain: ${ethers.formatEther(currentBalance)}, Pending value: ${ethers.formatEther(totalPendingValue)}, Pending gas: ${ethers.formatEther(totalPendingGas)}, Needed (value+gas+buffer): ${ethers.formatEther(totalNeeded)}`);
+            }
 
             if (nonceRes.rows.length === 0) {
                 const onChainNonce = await provider.getTransactionCount(senderAddress);
@@ -527,6 +574,11 @@ export class KmsCustodyProvider implements ICustodyAdapter {
         // nonce + create the artifact row atomically) or a crash between
         // reservation and signing (reuse the DURABLE reserved nonce — never
         // re-allocate, which would burn a nonce and gap the shared sequence).
+        // Block-aware physical balance evaluation outside DB lock
+        const blockNumber = await provider.getBlockNumber();
+        const currentBalance = await provider.getBalance(senderAddress, blockNumber);
+        const onChainNonce = await provider.getTransactionCount(senderAddress, blockNumber);
+
         let nonce: number | undefined = undefined;
         let artifactId: string | undefined = undefined;
 
@@ -563,6 +615,37 @@ export class KmsCustodyProvider implements ICustodyAdapter {
                 `SELECT next_nonce FROM hot_wallet_nonces WHERE network = $1 AND address = $2 FOR UPDATE`,
                 [request.network, senderAddress.toLowerCase()]
             );
+
+            // P0-2 Fix: Gas-aware spendable balance calculation (same model as requestWithdrawal).
+            const wRes = await txClient.query(`
+                SELECT COALESCE(SUM(amount), '0') as sum, COUNT(*) as cnt FROM withdrawals
+                WHERE network = $1 AND asset = $2 AND crypto_status IN ('SIGNING', 'SUBMITTING', 'BROADCAST') AND network_nonce >= $3
+            `, [request.network, request.asset, onChainNonce]);
+            const wPendingValue = ethers.parseEther(wRes.rows[0].sum || '0');
+            const wPendingCount = BigInt(wRes.rows[0].cnt || '0');
+
+            const tRes = await txClient.query(`
+                SELECT COALESCE(SUM(tt.amount), '0') as sum, COUNT(*) as cnt FROM treasury_custody_artifacts tca
+                JOIN treasury_transactions tt ON tca.treasury_intent_id = tt.client_withdrawal_id
+                WHERE tca.network = $1 AND tt.asset = $2 AND tca.status IN ('RESERVING', 'SIGNING', 'BROADCAST') AND tca.network_nonce >= $3
+            `, [request.network, request.asset, onChainNonce]);
+            const tPendingValue = ethers.parseEther(tRes.rows[0].sum || '0');
+            const tPendingCount = BigInt(tRes.rows[0].cnt || '0');
+
+            // Total pending = value obligations + gas obligations for ALL pending txs
+            const totalPendingValue = wPendingValue + tPendingValue;
+            const totalPendingGas = (wPendingCount * WITHDRAWAL_MAX_GAS) + (tPendingCount * TREASURY_MAX_GAS);
+            const totalPending = totalPendingValue + totalPendingGas;
+
+            const valueNeeded = ethers.parseEther(request.amount);
+            // This transaction's own gas ceiling (treasury transfer = 60000 * 20gwei)
+            const thisGas = TREASURY_MAX_GAS;
+            const totalNeeded = valueNeeded + thisGas + RESERVATION_SAFETY_BUFFER;
+            const available = currentBalance - totalPending;
+
+            if (available < totalNeeded) {
+                throw new Error(`Insufficient physical funds in hot wallet for treasury sweep. On-chain: ${ethers.formatEther(currentBalance)}, Pending value: ${ethers.formatEther(totalPendingValue)}, Pending gas: ${ethers.formatEther(totalPendingGas)}, Needed (value+gas+buffer): ${ethers.formatEther(totalNeeded)}`);
+            }
             if (nonceRes.rows.length === 0) {
                 const onChainNonce = await provider.getTransactionCount(senderAddress);
                 nonce = onChainNonce;

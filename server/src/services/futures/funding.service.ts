@@ -230,7 +230,6 @@ export class FuturesFundingService {
               const newAvail = decimalAdd(userAvail, marginRelease);
               if (decimalCompare(newAvail, p.absoluteAmount) < 0) {
                 userFundedAmount = newAvail;
-                insuranceFundedAmount = decimalSubtract(p.absoluteAmount, newAvail);
               }
             }
           }
@@ -245,14 +244,13 @@ export class FuturesFundingService {
               amount: userFundedAmount,
               balancePool: 'available'
             });
-          }
-
-          if (decimalCompare(insuranceFundedAmount, '0') > 0) {
+            // P0-3 Fix: Settle every leg directly against the Insurance Fund to perfectly preserve double-entry.
+            // Imbalances and bankruptcies naturally resolve in the Insurance Fund net balance over the epoch.
             entries.push({
               accountId: INSURANCE_FUND_ACCOUNT_ID,
               asset: collateralAsset,
-              direction: 'DEBIT',
-              amount: insuranceFundedAmount,
+              direction: p.isCredit ? 'DEBIT' : 'CREDIT',
+              amount: userFundedAmount,
               balancePool: 'available'
             });
           }
@@ -267,68 +265,12 @@ export class FuturesFundingService {
             }, txClient);
           }
           settledCount++;
-
-          // Accumulate per-asset payer/receiver totals for the explicit house leg.
-          if (p.isCredit) {
-            creditByAsset.set(collateralAsset, decimalAdd(creditByAsset.get(collateralAsset) || '0', p.absoluteAmount));
-          } else {
-            debitByAsset.set(collateralAsset, decimalAdd(debitByAsset.get(collateralAsset) || '0', p.absoluteAmount));
-          }
         } catch (err: any) {
           if (err.message && (err.message.includes('violate') || err.message.includes('duplicate') || err.message.includes('already exists'))) {
             logger.debug('Funding already settled for position', { positionId: p.row.id, referenceId });
             settledCount++;
           } else {
             throw err; // fail loudly for genuine errors — rollback the entire epoch
-          }
-        }
-      }
-
-      // ── Strict zero-sum house leg (funding imbalance) ──────────────────
-      // Funding transfers value between longs and shorts. When open interest is
-      // imbalanced (only longs OR only shorts exist), the funding surplus or
-      // shortfall is explicitly booked against the Insurance Fund — the repo's
-      // defined house account — so that for every asset:
-      //
-      //     total payer (DEBIT) + total receiver (CREDIT) + house leg = 0
-      //
-      // No funding value appears or disappears merely because only one side
-      // has positions. The house leg is itself idempotent via its referenceId
-      // and rolls back with the epoch if it cannot be funded.
-      // Iterate over the union of both maps' keys so that an all-DEBIT or
-      // all-CREDIT scenario (only-longs or only-shorts) still produces a
-      // house leg.
-      const allAssets = new Set([...creditByAsset.keys(), ...debitByAsset.keys()]);
-      for (const asset of allAssets) {
-        const credit = creditByAsset.get(asset) || '0';
-        const debit = debitByAsset.get(asset) || '0';
-        const net = decimalSubtract(credit, debit);
-        if (decimalCompare(net, '0') === 0) continue; // balanced — no house leg needed
-
-        const houseRef = `FUNDING-HOUSE-${symbol}-${epoch}-${asset}`;
-        const housePays = decimalCompare(net, '0') > 0; // receivers got more than payers paid
-        const houseAmount = housePays ? net : decimalSubtract('0', net);
-        try {
-          await ledgerService.postTransaction({
-            accountId: INSURANCE_FUND_ACCOUNT_ID,
-            transactionType: 'FUTURES_FUNDING_PAYMENT',
-            referenceId: houseRef,
-            description: `Funding house balancing leg for ${symbol} epoch ${epoch} (${asset})`,
-            entries: [
-              {
-                accountId: INSURANCE_FUND_ACCOUNT_ID,
-                asset,
-                direction: housePays ? 'DEBIT' : 'CREDIT',
-                amount: houseAmount
-              }
-            ]
-          }, txClient);
-        } catch (err: any) {
-          if (err.message && (err.message.includes('violate') || err.message.includes('duplicate') || err.message.includes('already exists'))) {
-            logger.debug('Funding house leg already settled', { symbol, epoch, asset, houseRef });
-          } else {
-            logger.error('Failed to settle funding house leg', { symbol, epoch, asset, error: err.message });
-            throw err; // rollback the entire epoch — no unilateral value flow
           }
         }
       }

@@ -9,13 +9,18 @@ import { auditService } from '../admin/audit.service';
 import { RecordAuditLogDto } from '../../models/admin.model';
 import { validateAmount, decimalNormalize, decimalAdd } from '../ledger/decimal';
 import { logger } from '../../config/logger';
+import { env } from '../../config/env';
 import { AppError } from '../../middleware/errorHandler';
 import { custodyService } from '../custody/custody.service';
 import { CustodyTransactionNotFoundError } from '../custody/custody.errors';
+import { manualTxVerificationService } from '../custody/manual-tx-verification.service';
 import { eventBus } from '../market/event-bus';
 import { NotificationEventType, WithdrawalNotificationEvent } from '../notification/notification.types';
 
 export type WithdrawalResolutionDirective = 'FAILED' | 'COMPLETED';
+
+/** A physical blockchain tx hash — the ONLY value accepted for confirmation. */
+const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 
 export interface CryptoWithdrawDto {
   userId: string;
@@ -373,7 +378,7 @@ export class WithdrawalService {
     return this.database.transaction(async (txClient) => {
       const res = await txClient.query<any>(
         `SELECT * FROM withdrawals
-         WHERE status = 'PENDING' AND crypto_status IN ('SIGNING', 'UNKNOWN')
+         WHERE status = 'PENDING' AND crypto_status IN ('SIGNING', 'UNKNOWN', 'SUBMITTING')
          AND updated_at < NOW() - INTERVAL '${olderThanMinutes} minutes'
          ORDER BY updated_at ASC
          LIMIT $1
@@ -412,6 +417,148 @@ export class WithdrawalService {
        WHERE id = $3`,
       [providerId, providerWithdrawalId, id]
     );
+  }
+
+  /**
+   * Phase 11K — manual Safe mode.
+   * Transition an approved (claimed → SUBMITTING) withdrawal to
+   * READY_FOR_MANUAL_EXECUTION. The backend does NOT sign or broadcast; a
+   * human performs execution via Safe/MetaMask. Only transitions from the
+   * claim-time SUBMITTING state; an idempotent no-op otherwise.
+   */
+  public async markReadyForManualExecution(id: string): Promise<void> {
+    await this.database.query(
+      `UPDATE withdrawals
+       SET crypto_status = 'READY_FOR_MANUAL_EXECUTION', updated_at = NOW()
+       WHERE id = $1 AND status = 'PENDING' AND crypto_status = 'SUBMITTING'`,
+      [id]
+    );
+  }
+
+  /**
+   * Phase 11K — manual Safe mode.
+   *
+   * Administrator confirmation of a manual customer withdrawal execution.
+   *
+   * Security model:
+   * - Only READY_FOR_MANUAL_EXECUTION withdrawals may be confirmed.
+   * - A REAL, verifiable blockchain transaction hash is required.
+   * - The transaction is independently verified on-chain (sender, destination,
+   *   asset, amount, chainId, receipt) BEFORE SUBMITTED is written.
+   * - An operator's assertion alone is never accepted.
+   * - A tx_hash cannot be reused to settle a different withdrawal.
+   * - No private key ever enters this path.
+   *
+   * On success: crypto_status -> SUBMITTED, tx_hash -> verified hash.
+   * Ledger settlement happens later via completeWithdrawal (WithdrawalStatusWorker).
+   */
+  public async confirmManualWithdrawal(
+    withdrawalId: string,
+    txHash: string,
+    adminUserId: string,
+    audit?: RecordAuditLogDto
+  ): Promise<void> {
+    if (!TX_HASH_RE.test(txHash)) {
+      throw new AppError('Transaction hash must be a 0x-prefixed 64-hex hash', 400, 'INVALID_TX_HASH');
+    }
+
+    try {
+      await this.database.transaction(async (txClient) => {
+      // 1. Lock the withdrawal row and join its owning user (self-action guard).
+      const wRes = await txClient.query<any>(
+        `SELECT w.*, a.user_id
+         FROM withdrawals w
+         JOIN accounts a ON w.account_id = a.id
+         WHERE w.id = $1 FOR UPDATE`,
+        [withdrawalId]
+      );
+      if (wRes.rows.length === 0) throw new AppError('Withdrawal not found', 404, 'NOT_FOUND');
+      const w = wRes.rows[0];
+
+      if (w.user_id === adminUserId) {
+        throw new AppError('Administrators cannot confirm their own withdrawals', 403, 'FORBIDDEN_SELF_ACTION');
+      }
+
+      // 2. State guard: only READY_FOR_MANUAL_EXECUTION may be confirmed.
+      if (w.status !== 'PENDING' || w.crypto_status !== 'READY_FOR_MANUAL_EXECUTION') {
+        throw new AppError(
+          `Withdrawal is not awaiting manual execution (crypto_status=${w.crypto_status})`,
+          400,
+          'INVALID_STATE'
+        );
+      }
+
+      // 3. Duplicate tx_hash guard: one physical transaction settles at most
+      //    one withdrawal intent.
+      const dupRes = await txClient.query<any>(
+        `SELECT id FROM withdrawals
+         WHERE tx_hash = $1 AND crypto_status IN ('SUBMITTED', 'CONFIRMED', 'COMPLETED') AND id <> $2`,
+        [txHash, withdrawalId]
+      );
+      if (dupRes.rows.length > 0) {
+        throw new AppError('Transaction hash is already used by another withdrawal', 409, 'DUPLICATE_TX_HASH');
+      }
+
+      // 4. Independent on-chain verification (fail closed).
+      //    Authorized sender for customer withdrawals is the configured cold
+      //    EOA / MetaMask address (CUSTODY_HOT_WALLET_ADDRESS). If it is not
+      //    configured, verification fails closed — we never guess a sender.
+      if (!env.CUSTODY_HOT_WALLET_ADDRESS) {
+        throw new AppError(
+          'CUSTODY_HOT_WALLET_ADDRESS is not configured; manual withdrawal confirmation is disabled',
+          503,
+          'SENDER_NOT_CONFIGURED'
+        );
+      }
+      const verification = await manualTxVerificationService.verifyWithdrawalTx({
+        network: w.network,
+        txHash,
+        expectedSender: env.CUSTODY_HOT_WALLET_ADDRESS,
+        expectedDestination: w.destination_address,
+        asset: w.asset,
+        expectedAmount: w.amount,
+      });
+
+      if (!verification.verified) {
+        throw new AppError(
+          `On-chain verification failed: ${verification.reason || 'unknown reason'}`,
+          422,
+          'ONCHAIN_VERIFICATION_FAILED'
+        );
+      }
+
+      // 5. Atomically mark SUBMITTED with the verified tx hash.
+      await txClient.query(
+        `UPDATE withdrawals
+         SET crypto_status = 'SUBMITTED',
+             tx_hash = $1,
+             provider_withdrawal_id = $1,
+             provider_id = 'manual_safe',
+             confirmed_by = $2,
+             confirmed_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $3`,
+        [txHash, adminUserId, withdrawalId]
+      );
+
+      // 6. Audit inside the same transaction (failure rolls back confirmation).
+      if (audit) {
+        await auditService.record(audit, txClient);
+      }
+      });
+    } catch (err: any) {
+      // F1 (Phase 11K-B): the partial unique index uq_withdrawals_tx_hash is
+      // the authoritative concurrency guard. Two concurrent confirmations of
+      // the SAME physical tx_hash against DIFFERENT withdrawals both pass the
+      // application-level duplicate check (neither sees the other's uncommitted
+      // row), but the second UPDATE violates the unique index (23505). Translate
+      // that DB violation into the same clean DUPLICATE_TX_HASH error the
+      // sequential application guard produces. Everything else propagates.
+      if (err?.code === '23505' || /duplicate key value violates unique constraint/.test(String(err?.message || ''))) {
+        throw new AppError('Transaction hash is already used by another withdrawal', 409, 'DUPLICATE_TX_HASH');
+      }
+      throw err;
+    }
   }
 
   public async updateCryptoStatus(id: string, cryptoStatus: string): Promise<void> {
@@ -646,7 +793,7 @@ export class WithdrawalService {
       if (wRes.rows.length === 0) throw new AppError('Withdrawal not found', 404, 'NOT_FOUND');
       const w = wRes.rows[0];
 
-      if (w.status !== 'PENDING' || (w.crypto_status !== 'PENDING' && w.crypto_status !== 'RESERVED' && w.crypto_status !== 'APPROVED')) {
+      if (w.status !== 'PENDING' || (w.crypto_status !== 'PENDING' && w.crypto_status !== 'RESERVED' && w.crypto_status !== 'APPROVED' && w.crypto_status !== 'READY_FOR_MANUAL_EXECUTION')) {
         throw new AppError('Cannot cancel a withdrawal that has been submitted', 400, 'INVALID_STATE');
       }
 

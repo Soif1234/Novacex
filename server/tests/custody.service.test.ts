@@ -59,18 +59,33 @@ describe('CustodyService Configuration', () => {
     expect(() => createCustodyService()).toThrow('forbidden in production');
   });
 
-  it('F. production + localhost RPC -> FAIL', () => {
+  it('F. production + kms -> forbidden (Phase 11K guard fires before RPC check)', () => {
+    // Phase 11K: KMS is forbidden entirely in production. The guard fires
+    // before RPC/localhost validation, which is stronger than the original
+    // localhost-RPC check that was only reachable within the kms branch.
     env.NODE_ENV = 'production';
     env.CUSTODY_PROVIDER = 'kms';
     env.CUSTODY_KMS_KEY_ID = 'valid-key';
     env.CUSTODY_EVM_RPC_URL = 'http://127.0.0.1:8545';
-    expect(() => createCustodyService()).toThrow('Localhost RPC is forbidden');
+    expect(() => createCustodyService()).toThrow('forbidden in production environment');
   });
 
-  it('G. production + missing RPC -> FAIL', () => {
+  it('G. production + kms + missing RPC -> forbidden (guard fires first)', () => {
     env.NODE_ENV = 'production';
     env.CUSTODY_PROVIDER = 'kms';
     env.CUSTODY_KMS_KEY_ID = 'valid-key';
+    // Even without RPC, the early guard rejects production+kms before the
+    // RPC-required check is reached.
+    expect(() => createCustodyService()).toThrow('forbidden in production environment');
+  });
+
+  it('G2. non-production + kms + missing RPC -> RPC required (reachable path)', () => {
+    // Non-production kms still validates RPC is present (original guard
+    // preserved in a reachable path).
+    env.CUSTODY_PROVIDER = 'kms';
+    env.CUSTODY_KMS_KEY_ID = 'valid-key';
+    env.CUSTODY_EVM_RPC_URL = undefined as any;
+    // NODE_ENV is 'test' from beforeEach, so kms is allowed.
     expect(() => createCustodyService()).toThrow('CUSTODY_EVM_RPC_URL is required');
   });
 

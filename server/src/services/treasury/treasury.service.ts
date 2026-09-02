@@ -28,7 +28,7 @@ export interface TreasuryTransaction {
   logIndex: number;
   blockNumber: number;
   blockHash: string;
-  status: 'PENDING' | 'CONFIRMED' | 'FAILED' | 'REORGED' | 'RECONCILIATION_REQUIRED';
+  status: 'PENDING' | 'READY_FOR_MANUAL_EXECUTION' | 'CONFIRMED' | 'FAILED' | 'REORGED' | 'RECONCILIATION_REQUIRED';
   clientWithdrawalId?: string;
 }
 

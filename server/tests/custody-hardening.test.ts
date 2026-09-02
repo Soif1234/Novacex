@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createCustodyService } from '../src/services/custody/custody.service';
 import { KmsCustodyProvider } from '../src/services/custody/kms-custody-provider';
 import { getAddressFromKmsPublicKey } from '../src/services/custody/kms-crypto';
@@ -28,27 +28,30 @@ describe('Phase 10.4 Step 6E-5C: Custody Production Hardening & Safety Invariant
       (env as any).CUSTODY_ENABLED = true;
       (env as any).NODE_ENV = 'production';
 
-      // C: Mock provider in production -> throws
+      // Phase 11K: CUSTODY_PROVIDER='mock' in production -> throws
       (env as any).CUSTODY_PROVIDER = 'mock';
       expect(() => createCustodyService()).toThrow(/forbidden in production/);
 
-      // D: Localhost RPC in production -> throws
+      // Phase 11K: CUSTODY_PROVIDER='kms' in production -> throws.
+      // The Phase 11K guard fires before any RPC/key validation, making the
+      // original localhost-RPC check unreachable in production. This is
+      // strictly stronger: kms is entirely forbidden in production.
       (env as any).CUSTODY_PROVIDER = 'kms';
       (env as any).CUSTODY_KMS_KEY_ID = 'kms-key-123';
       (env as any).CUSTODY_EVM_RPC_URL = 'http://localhost:8545';
-      expect(() => createCustodyService()).toThrow(/Localhost RPC is forbidden in production/);
+      expect(() => createCustodyService()).toThrow(/forbidden in production environment/);
 
       (env as any).CUSTODY_EVM_RPC_URL = 'http://127.0.0.1:8545';
-      expect(() => createCustodyService()).toThrow(/Localhost RPC is forbidden in production/);
+      expect(() => createCustodyService()).toThrow(/forbidden in production environment/);
 
-      // E: Missing RPC in production -> throws
+      // Missing RPC in production is also blocked by the same guard.
       (env as any).CUSTODY_EVM_RPC_URL = '';
-      expect(() => createCustodyService()).toThrow(/CUSTODY_EVM_RPC_URL is required/);
+      expect(() => createCustodyService()).toThrow(/forbidden in production environment/);
 
-      // A: Missing KMS key ID -> throws
+      // Missing KMS key is also blocked by the same guard.
       (env as any).CUSTODY_EVM_RPC_URL = 'https://mainnet.infura.io/v3/fake-key';
       (env as any).CUSTODY_KMS_KEY_ID = '';
-      expect(() => createCustodyService()).toThrow(/CUSTODY_KMS_KEY_ID is required/);
+      expect(() => createCustodyService()).toThrow(/forbidden in production environment/);
     } finally {
       Object.assign(env, origEnv);
     }
