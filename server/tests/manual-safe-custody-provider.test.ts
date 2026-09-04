@@ -102,6 +102,7 @@ describe('ManualSafeCustodyProvider — B. KMS Forbidden in Production', () => {
   });
 
   it('B4. production + manual_safe -> ALLOWED', () => {
+    env.CUSTODY_CHAIN_ID = 1;
     env.CUSTODY_PROVIDER = 'manual_safe' as any;
     const s = createCustodyService();
     expect(s.getProviderId()).toBe('manual_safe');
@@ -145,10 +146,10 @@ describe('ManualSafeCustodyProvider — C. READY_FOR_MANUAL_EXECUTION', () => {
     expect(result.accountId).toBe('HOUSE_TREASURY');
   });
 
-  it('C3. provider does not advertise BALANCE_QUERY or DEPOSIT_ADDRESS', () => {
+  it('C3. provider advertises DEPOSIT_ADDRESS but not BALANCE_QUERY', () => {
     const caps = provider.getCapabilities();
     expect(caps).not.toContain('BALANCE_QUERY');
-    expect(caps).not.toContain('DEPOSIT_ADDRESS');
+    expect(caps).toContain('DEPOSIT_ADDRESS');
   });
 
   it('C4. getWithdrawalStatus returns PENDING when no tx_hash present', async () => {

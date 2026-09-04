@@ -220,16 +220,21 @@ export function requireAuthOrApiKey(requiredPermission?: ApiKeyPermission) {
 }
 
 /**
- * Middleware enforcing 2FA verification for sensitive operations
+ * Middleware enforcing 2FA verification for sensitive operations.
+ * Fails closed: if 2FA is not enrolled and active, access is denied (HTTP 403).
  */
-export function require2FA(req: Request, res: Response, next: NextFunction): void {
+export async function require2FA(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     if (!req.user) {
       throw new AppError('Authentication required', 401, 'UNAUTHORIZED');
     }
 
     if (!req.user.twoFactorEnabled) {
-      return next(); // User has not enabled 2FA
+      throw new AppError(
+        'Two-factor authentication must be enrolled and active for this operation',
+        403,
+        '2FA_ENROLLMENT_REQUIRED'
+      );
     }
 
     const token = (req.headers['x-2fa-code'] || req.headers['X-2FA-CODE'] || req.body?.twoFactorCode || req.body?.twoFactorToken) as string;
@@ -237,9 +242,8 @@ export function require2FA(req: Request, res: Response, next: NextFunction): voi
       throw new AppError('Two-Factor Authentication code required (X-2FA-Code header)', 401, '2FA_REQUIRED');
     }
 
-    authService.verify2FAForSensitiveAction(req.user.id, token)
-      .then(() => next())
-      .catch((err) => next(err));
+    await authService.verify2FAForSensitiveAction(req.user.id, token);
+    next();
   } catch (err) {
     next(err);
   }

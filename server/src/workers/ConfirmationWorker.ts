@@ -11,21 +11,38 @@
  */
 
 import { logger } from '../config/logger';
+import { env } from '../config/env';
 import { IBlockchainSource } from '../services/blockchain/types';
+import { EthereumSource } from '../services/blockchain/sources/ethereum-source';
 import { ConfirmationWorkerService } from '../services/blockchain/confirmation-worker.service';
 import { db } from '../config/database';
 
 export class ConfirmationWorker {
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
+  private source: IBlockchainSource | null = null;
 
   constructor(
-    private readonly source: IBlockchainSource | null,
+    source: IBlockchainSource | null = null,
     private readonly pollIntervalMs: number = 1000 * 60, // 60 seconds
-  ) {}
+  ) {
+    this.source = source;
+  }
+
+  public setSource(source: IBlockchainSource | null): void {
+    this.source = source;
+  }
+
+  public getSource(): IBlockchainSource | null {
+    return this.source;
+  }
 
   public start(): void {
     if (this.isRunning) return;
+
+    if (!this.source && env.BLOCKCHAIN_MONITORING_ENABLED && env.ETHEREUM_RPC_URL) {
+      this.source = new EthereumSource({ rpcUrl: env.ETHEREUM_RPC_URL, requestTimeoutMs: 10000 });
+    }
 
     if (!this.source) {
       logger.info('ConfirmationWorker: no blockchain source configured — staying inert (no network)');

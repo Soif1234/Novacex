@@ -29,7 +29,7 @@ export class FuturesOrderService {
   
   private subscribers: Set<() => void> = new Set();
   
-  constructor(private persist: boolean = true) {
+  constructor(private persist: boolean = false) {
     if (this.persist) {
       this.load();
     }
@@ -127,30 +127,29 @@ export class FuturesOrderService {
   public async fetchPositionsFromBackend(accountId?: string): Promise<FuturesPosition[]> {
     try {
       if (typeof window !== 'undefined') {
-        const backendPositions = await apiClient.get<FuturesPositionEntity[]>('/futures/positions');
-        if (Array.isArray(backendPositions)) {
-          this.positions = backendPositions.map(bp => ({
-            positionId: bp.id,
-            accountId: bp.accountId,
-            symbol: bp.symbol,
-            side: bp.side as PositionSide,
-            quantity: bp.quantity,
-            entryPrice: bp.entryPrice,
-            markPrice: bp.markPrice,
-            liquidationPrice: bp.liquidationPrice,
-            leverage: bp.leverage,
-            marginMode: bp.marginMode as MarginMode,
-            initialMargin: bp.initialMargin,
-            maintenanceMargin: bp.maintenanceMargin,
-            realizedPnl: bp.realizedPnl,
-            unrealizedPnl: bp.unrealizedPnl || '0',
-            status: bp.status as any,
-            createdAt: new Date(bp.createdAt).getTime(),
-            updatedAt: new Date(bp.updatedAt).getTime(),
-          }));
-          this.save();
-          this.notify();
-        }
+        const rawRes = await apiClient.get<any>('/futures/positions');
+        const backendPositions: FuturesPositionEntity[] = Array.isArray(rawRes) ? rawRes : (rawRes?.positions || []);
+        this.positions = backendPositions.map(bp => ({
+          positionId: bp.id,
+          accountId: bp.accountId,
+          symbol: bp.symbol,
+          side: bp.side as PositionSide,
+          quantity: bp.quantity,
+          entryPrice: bp.entryPrice,
+          markPrice: bp.markPrice,
+          liquidationPrice: bp.liquidationPrice,
+          leverage: bp.leverage,
+          marginMode: bp.marginMode as MarginMode,
+          initialMargin: bp.initialMargin,
+          maintenanceMargin: bp.maintenanceMargin,
+          realizedPnl: bp.realizedPnl,
+          unrealizedPnl: bp.unrealizedPnl || '0',
+          status: bp.status as any,
+          createdAt: new Date(bp.createdAt).getTime(),
+          updatedAt: new Date(bp.updatedAt).getTime(),
+        }));
+        if (this.persist) this.save();
+        this.notify();
       }
     } catch {}
     return this.positions;
@@ -159,37 +158,71 @@ export class FuturesOrderService {
   public async fetchOrdersFromBackend(accountId?: string): Promise<FuturesOrder[]> {
     try {
       if (typeof window !== 'undefined') {
-        const backendOrders = await apiClient.get<OrderEntity[]>('/futures/orders');
-        if (Array.isArray(backendOrders)) {
-          for (const bo of backendOrders) {
-            const existing = this.orders.find(o => o.id === bo.id);
-            const status: any = bo.status === 'NEW' || bo.status === 'PARTIALLY_FILLED' ? 'PENDING' : bo.status;
-            if (existing) {
-              existing.status = status;
-              existing.filledQuantity = bo.filledQuantity;
-            } else {
-              this.orders.unshift({
-                id: bo.id,
-                accountId: bo.accountId,
-                symbol: bo.symbol,
-                side: bo.side as OrderSide,
-                positionSide: 'LONG',
-                type: bo.type as any,
-                price: bo.price,
-                quantity: bo.quantity,
-                filledQuantity: bo.filledQuantity,
-                remainingQuantity: bo.remainingQuantity,
-                status,
-                leverage: 10,
-                marginMode: 'ISOLATED',
-                createdAt: new Date(bo.createdAt).getTime(),
-                updatedAt: new Date(bo.updatedAt).getTime(),
-              });
+        const rawRes = await apiClient.get<any>('/futures/orders');
+        const backendOrders: OrderEntity[] = Array.isArray(rawRes) ? rawRes : (rawRes?.orders || []);
+
+        for (const bo of backendOrders) {
+          const existing = this.orders.find(o => o.id === bo.id);
+          const status: any = bo.status === 'NEW' || bo.status === 'PARTIALLY_FILLED' ? 'PENDING' : bo.status;
+          if (existing) {
+            existing.status = status;
+            existing.filledQuantity = bo.filledQuantity;
+            existing.remainingQuantity = bo.remainingQuantity;
+            existing.price = bo.price;
+            existing.updatedAt = new Date(bo.updatedAt).getTime();
+          } else {
+            this.orders.unshift({
+              id: bo.id,
+              accountId: bo.accountId,
+              symbol: bo.symbol,
+              side: bo.side as OrderSide,
+              positionSide: 'LONG',
+              type: bo.type as any,
+              price: bo.price,
+              stopPrice: (bo as any).stopPrice || undefined,
+              quantity: bo.quantity,
+              filledQuantity: bo.filledQuantity,
+              remainingQuantity: bo.remainingQuantity,
+              status,
+              leverage: 10,
+              marginMode: 'ISOLATED',
+              createdAt: new Date(bo.createdAt).getTime(),
+              updatedAt: new Date(bo.updatedAt).getTime(),
+            });
+          }
+
+          // Authoritative sync to OrderCoreService
+          const coreStatus: any = bo.status === 'NEW' ? 'NEW' : bo.status === 'PARTIALLY_FILLED' ? 'PARTIALLY_FILLED' : bo.status;
+          syncOrderToCore(
+            bo.id,
+            bo.accountId,
+            bo.symbol,
+            'FUTURES',
+            bo.side as any,
+            bo.type as any,
+            bo.quantity,
+            bo.price,
+            (bo as any).stopPrice || undefined,
+            coreStatus,
+            '0',
+            bo.filledQuantity,
+            bo.remainingQuantity
+          );
+        }
+
+        // Reconcile local state if accountId provided
+        if (accountId && backendOrders.length >= 0) {
+          const backendIds = new Set(backendOrders.map(b => b.id));
+          for (const localOrd of this.orders) {
+            if (localOrd.accountId === accountId && (localOrd.status === 'PENDING' || localOrd.status === 'NEW') && !backendIds.has(localOrd.id)) {
+              localOrd.status = 'CANCELLED';
+              syncOrderToCore(localOrd.id, localOrd.accountId, localOrd.symbol, 'FUTURES', localOrd.side as any, localOrd.type as any, localOrd.quantity, localOrd.price, undefined, 'CANCELLED');
             }
           }
-          this.save();
-          this.notify();
         }
+
+        if (this.persist) this.save();
+        this.notify();
       }
     } catch {}
     return this.orders;
@@ -289,19 +322,23 @@ export class FuturesOrderService {
   }
 
   public async cancelOrder(orderId: string) {
-    const order = this.orders.find(o => o.id === orderId);
-    if (!order) throw new Error('Order not found');
-
     if (typeof window !== 'undefined') {
       await apiClient.post(`/futures/orders/${orderId}/cancel`);
     } else {
       throw new Error('Futures order cancellation not supported offline');
     }
 
-    order.status = 'CANCELLED';
-    order.updatedAt = Date.now();
-    this.save();
-    this.notify();
+    const order = this.orders.find(o => o.id === orderId);
+    if (order) {
+      order.status = 'CANCELLED';
+      order.updatedAt = Date.now();
+      if (this.persist) this.save();
+      this.notify();
+    }
+    const coreOrder = orderCoreService.getOrder(orderId);
+    if (coreOrder) {
+      syncOrderToCore(coreOrder.id, coreOrder.userId, coreOrder.symbol, 'FUTURES', coreOrder.side as any, coreOrder.type as any, coreOrder.quantity, coreOrder.price, coreOrder.stopPrice, 'CANCELLED');
+    }
   }
 
   public async addIsolatedMargin(accountId: string, positionId: string, amount: string): Promise<FuturesPosition> {
@@ -346,7 +383,7 @@ export class FuturesOrderService {
     } else {
       this.positions.push(newPos);
     }
-    this.save();
+    if (this.persist) this.save();
     this.notify();
     return newPos;
   }
@@ -379,10 +416,10 @@ export class FuturesOrderService {
       this.trades = [];
       this.positions = [];
     }
-    this.save();
+    if (this.persist) this.save();
     this.notify();
     orderCoreService.reset(accountId);
   }
 }
 
-export const futuresOrderService = new FuturesOrderService(typeof window !== 'undefined');
+export const futuresOrderService = new FuturesOrderService(false);

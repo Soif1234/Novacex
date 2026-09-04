@@ -303,16 +303,16 @@ describe('Phase 9.4: Blockchain Monitor Service — Ethereum (ERC-20)', () => {
     expect(allRows.rows[0].cnt).toBe(0);
   });
 
-  // 6. Wrong native/token type rejected
-  it('06. ERC-20 USDT transfer to an ETH deposit address is REJECTED (asset mismatch)', async () => {
+  // 6. Multi-asset forwarder support (CRIT-01 remediation)
+  it('06. ERC-20 USDT transfer to an ETH deposit address is ACCEPTED (CRIT-01 multi-asset forwarder)', async () => {
     // Create an ETH deposit address (different address than USDT)
     const { service } = makeEnabledStack();
     const ethAddr = await service.getOrCreateDepositAddress({ userId, asset: 'ETH', network: 'ETHEREUM' });
     const usdtAddr = await service.getOrCreateDepositAddress({ userId, asset: 'USDT', network: 'ETHEREUM' });
 
-    // Inject a USDT ERC-20 transfer to the ETH deposit address
-    // Asset resolves to USDT (contract match), but the address is an ETH
-    // deposit address — address match includes asset, so REJECTED.
+    // Inject a USDT ERC-20 transfer to the ETH deposit address.
+    // In Phase 15D-1 (CRIT-01), the cryptographic identity is (userId, network).
+    // The forwarder address can receive any supported token, so this is ACCEPTED.
     mockSource.injectBlock({
       number: 1,
       timestamp: 1_700_000_000,
@@ -332,8 +332,16 @@ describe('Phase 9.4: Blockchain Monitor Service — Ethereum (ERC-20)', () => {
 
     const result = await monitor.runOnce();
     expect(result.detected).toBe(1);
-    expect(result.rejected).toBe(1);
-    expect(result.inserted).toBe(0);
+    expect(result.rejected).toBe(0);
+    expect(result.inserted).toBe(1);
+
+    const usdtRes = await db.query(
+      'SELECT status, amount, asset FROM blockchain_deposits WHERE transaction_hash = $1',
+      ['0x' + 'a'.repeat(64)],
+    );
+    expect(usdtRes.rows[0].status).toBe('DETECTED');
+    expect(usdtRes.rows[0].asset).toBe('USDT');
+    expect(usdtRes.rows[0].amount).toBe('1');
 
     // A native ETH transfer to the ETH address should succeed
     mockSource.injectBlock({

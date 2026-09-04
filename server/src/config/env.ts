@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import { ethers } from 'ethers';
 
 // Load .env if present
 dotenv.config();
@@ -133,8 +134,185 @@ function parseBoolean(val: string | undefined, fallback: boolean): boolean {
   return val.toLowerCase() === 'true' || val === '1';
 }
 
+/**
+ * Phase 15C verified Sepolia test addresses.
+ * A production process MUST NEVER start with any of these.
+ */
+export const SEPOLIA_TEST_ADDRESSES: ReadonlySet<string> = new Set([
+  '0x13Fc38B11A3C610B4F8789a0AC532d12AaD8eD95'.toLowerCase(), // Sepolia Hot Wallet
+  '0x31c5a0946fde4dD32C9da92f8c035b4A17fC1737'.toLowerCase(), // Sepolia Factory
+  '0xCd7CAEF9a5237A82E48Ce1790AfFB57878847fd9'.toLowerCase(), // Sepolia Forwarder Implementation
+  '0xe406889DAFCBE9F6B2F0E31c7d06aF113BFae262'.toLowerCase(), // Sepolia Forwarder Proxy
+  '0x0c90608af5A365139FCa9FA31E326b6394E8FA9B'.toLowerCase(), // Sepolia Treasury Safe
+  '0xbAD827522AaadCEC41850E6bbFBCa6201B1fA9e0'.toLowerCase(), // Sepolia Deployer
+]);
+
+/**
+ * Standard Hardhat / Anvil / Ganache test accounts & fixtures.
+ * A production process MUST NEVER start with any of these.
+ */
+export const KNOWN_TEST_FIXTURES: ReadonlySet<string> = new Set([
+  '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'.toLowerCase(), // Hardhat #0
+  '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'.toLowerCase(), // Hardhat #1
+  '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC'.toLowerCase(), // Hardhat #2
+  '0x90F79bf6EB2c4f870365E785982E1f101E93b906'.toLowerCase(), // Hardhat #3
+  '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65'.toLowerCase(), // Hardhat #4
+  '0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc'.toLowerCase(), // Hardhat #5
+  '0x976EA74026E726554dB657fA54763abd0C3a0aa9'.toLowerCase(), // Hardhat #6
+  '0x14dC79964da2C08b23698B3D3cc7Ca32193d9955'.toLowerCase(), // Hardhat #7
+  '0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f'.toLowerCase(), // Hardhat #8
+  '0xa0Ee7A142d267C1f36714E4a8F75612F20a79720'.toLowerCase(), // Hardhat #9
+  '0x000000000000000000000000000000000000dEaD'.toLowerCase(), // Dead address
+  '0x0000000000000000000000000000000000000000'.toLowerCase(), // Zero address
+]);
+
+/**
+ * Phase 15D-2 — CRIT-02 Remediation: Production Custody Configuration Guard.
+ *
+ * Enforces unbypassable fail-closed validation for Ethereum Mainnet custody:
+ * 1. Provider must be manual_safe
+ * 2. Chain ID must be 1 (Ethereum Mainnet)
+ * 3. Addresses must be non-empty, valid checksummed EVM addresses
+ * 4. Addresses cannot be zero, placeholders, repeated-byte test fixtures,
+ *    Sepolia test addresses, or known development fixtures
+ * 5. Relational isolation: Factory != Implementation, Hot Wallet != Factory,
+ *    Hot Wallet != Implementation
+ * 6. Init code hash must be non-empty, 32-byte hex, non-zero, and match the
+ *    expected CREATE2 initCodeHash computed from Implementation Address
+ * 7. RPC endpoints cannot point to localhost / loopback
+ */
+export function validateProductionCustodyConfig(config: EnvironmentConfig): void {
+  // 1. Provider validation
+  if (config.CUSTODY_PROVIDER !== 'manual_safe') {
+    throw new Error(
+      `Production custody configuration error: CUSTODY_PROVIDER must be 'manual_safe' in production (found "${config.CUSTODY_PROVIDER}")`
+    );
+  }
+
+  // 2. Chain ID validation
+  if (config.CUSTODY_CHAIN_ID !== 1) {
+    throw new Error(
+      `Production custody configuration error: CUSTODY_CHAIN_ID must be 1 (Ethereum Mainnet) in production (found ${config.CUSTODY_CHAIN_ID})`
+    );
+  }
+
+  // Helper for address validation
+  const validateAddress = (fieldName: string, address: string | undefined): string => {
+    if (!address || typeof address !== 'string' || address.trim() === '') {
+      throw new Error(`Production custody configuration error: ${fieldName} is missing or empty`);
+    }
+
+    const trimmed = address.trim();
+
+    if (
+      trimmed.includes('...') ||
+      trimmed.toUpperCase().includes('TODO') ||
+      trimmed.toUpperCase().includes('PLACEHOLDER') ||
+      trimmed.toUpperCase().includes('YOUR_ADDRESS')
+    ) {
+      throw new Error(`Production custody configuration error: ${fieldName} is a placeholder ("${trimmed}")`);
+    }
+
+    if (!ethers.isAddress(trimmed)) {
+      throw new Error(`Production custody configuration error: ${fieldName} is not a valid EVM address ("${trimmed}")`);
+    }
+
+    const normalized = ethers.getAddress(trimmed);
+    const lower = normalized.toLowerCase();
+
+    if (normalized === ethers.ZeroAddress || lower === '0x0000000000000000000000000000000000000000') {
+      throw new Error(`Production custody configuration error: ${fieldName} cannot be the zero address`);
+    }
+
+    if (/^0x([0-9a-fA-F])\1{39}$/.test(lower)) {
+      throw new Error(`Production custody configuration error: ${fieldName} is a repeated-byte test fixture ("${trimmed}")`);
+    }
+
+    if (SEPOLIA_TEST_ADDRESSES.has(lower)) {
+      throw new Error(`Production custody configuration error: ${fieldName} matches known Sepolia test address ("${trimmed}")`);
+    }
+
+    if (KNOWN_TEST_FIXTURES.has(lower)) {
+      throw new Error(`Production custody configuration error: ${fieldName} matches known test fixture address ("${trimmed}")`);
+    }
+
+    return normalized;
+  };
+
+  const hotWallet = validateAddress('CUSTODY_HOT_WALLET_ADDRESS', config.CUSTODY_HOT_WALLET_ADDRESS);
+  const factory = validateAddress('CUSTODY_FACTORY_ADDRESS', config.CUSTODY_FACTORY_ADDRESS);
+  const implementation = validateAddress('CUSTODY_IMPLEMENTATION_ADDRESS', config.CUSTODY_IMPLEMENTATION_ADDRESS);
+
+  // 3. Relational isolation checks
+  if (factory === implementation) {
+    throw new Error(
+      `Production custody configuration error: CUSTODY_FACTORY_ADDRESS and CUSTODY_IMPLEMENTATION_ADDRESS cannot be identical ("${factory}")`
+    );
+  }
+  if (hotWallet === factory) {
+    throw new Error(
+      `Production custody configuration error: CUSTODY_HOT_WALLET_ADDRESS and CUSTODY_FACTORY_ADDRESS cannot be identical ("${hotWallet}")`
+    );
+  }
+  if (hotWallet === implementation) {
+    throw new Error(
+      `Production custody configuration error: CUSTODY_HOT_WALLET_ADDRESS and CUSTODY_IMPLEMENTATION_ADDRESS cannot be identical ("${hotWallet}")`
+    );
+  }
+
+  // 4. Init Code Hash validation
+  if (!config.CUSTODY_INIT_CODE_HASH || typeof config.CUSTODY_INIT_CODE_HASH !== 'string' || config.CUSTODY_INIT_CODE_HASH.trim() === '') {
+    throw new Error('Production custody configuration error: CUSTODY_INIT_CODE_HASH is missing or empty');
+  }
+
+  const trimmedHash = config.CUSTODY_INIT_CODE_HASH.trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(trimmedHash)) {
+    throw new Error(`Production custody configuration error: CUSTODY_INIT_CODE_HASH must be a 32-byte hex string (found "${trimmedHash}")`);
+  }
+
+  if (trimmedHash === ethers.ZeroHash || trimmedHash.toLowerCase() === '0x0000000000000000000000000000000000000000000000000000000000000000') {
+    throw new Error('Production custody configuration error: CUSTODY_INIT_CODE_HASH cannot be zero hash');
+  }
+
+  const expectedInitCode = ethers.solidityPacked(
+    ['bytes', 'bytes20', 'bytes'],
+    [
+      '0x3d602d80600a3d3981f3363d3d373d3d3d363d73',
+      implementation,
+      '0x5af43d82803e903d91602b57fd5bf3',
+    ]
+  );
+  const expectedInitCodeHash = ethers.keccak256(expectedInitCode);
+
+  if (trimmedHash.toLowerCase() !== expectedInitCodeHash.toLowerCase()) {
+    throw new Error(
+      `Production custody configuration error: CUSTODY_INIT_CODE_HASH mismatch. Derived hash from CUSTODY_IMPLEMENTATION_ADDRESS is ${expectedInitCodeHash} but configured hash is ${trimmedHash}`
+    );
+  }
+
+  // 5. RPC endpoint safety (Reject localhost / loopback in production)
+  const checkNoLocalhostRpc = (name: string, urlStr: string | undefined) => {
+    if (!urlStr || typeof urlStr !== 'string' || urlStr.trim() === '') return;
+    try {
+      const parsed = new URL(urlStr.trim());
+      const host = parsed.hostname.toLowerCase();
+      if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '[::1]') {
+        throw new Error(
+          `Production custody configuration error: ${name} points to localhost ("${urlStr}") which is forbidden in production`
+        );
+      }
+    } catch (err: any) {
+      if (err.message.includes('Production custody configuration error')) throw err;
+      throw new Error(`Production custody configuration error: ${name} is not a valid URL ("${urlStr}")`);
+    }
+  };
+
+  checkNoLocalhostRpc('ETHEREUM_RPC_URL', config.ETHEREUM_RPC_URL);
+  checkNoLocalhostRpc('CUSTODY_EVM_RPC_URL', config.CUSTODY_EVM_RPC_URL);
+}
+
 export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): EnvironmentConfig {
-  const nodeEnv = (process.env.NODE_ENV || 'development').toLowerCase();
+  const nodeEnv = (overrides.NODE_ENV || process.env.NODE_ENV || 'development').toLowerCase();
   if (!['development', 'staging', 'production', 'test'].includes(nodeEnv)) {
     throw new Error(`Invalid NODE_ENV: "${nodeEnv}". Must be 'development', 'staging', 'production', or 'test'.`);
   }
@@ -185,16 +363,16 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
   const dbName = process.env.DB_NAME || 'mallick_exchange';
   const dbUser = process.env.DB_USER || 'mallick';
   const dbPassword = process.env.DB_PASSWORD || 'mallick_pass';
-  if (nodeEnv === 'production' && !process.env.DATABASE_URL) {
+  if (nodeEnv === 'production' && !(overrides.DATABASE_URL || process.env.DATABASE_URL)) {
     throw new Error('DATABASE_URL must be provided in production');
   }
-  const databaseUrl = process.env.DATABASE_URL || `postgresql://${dbUser}:${dbPassword}@${dbHost}:${dbPort}/${dbName}`;
+  const databaseUrl = overrides.DATABASE_URL || process.env.DATABASE_URL || `postgresql://${dbUser}:${dbPassword}@${dbHost}:${dbPort}/${dbName}`;
 
   const redisHost = process.env.REDIS_HOST || 'localhost';
-  if (nodeEnv === 'production' && !process.env.REDIS_URL) {
+  if (nodeEnv === 'production' && !(overrides.REDIS_URL || process.env.REDIS_URL)) {
     throw new Error('REDIS_URL must be provided in production');
   }
-  const redisUrl = process.env.REDIS_URL || `redis://${redisHost}:${redisPort}`;
+  const redisUrl = overrides.REDIS_URL || process.env.REDIS_URL || `redis://${redisHost}:${redisPort}`;
 
   const externalMarketDataEnabled = parseBoolean(process.env.EXTERNAL_MARKET_DATA_ENABLED, true);
   const externalMarketDataUrl = process.env.EXTERNAL_MARKET_DATA_URL || 'https://data-api.binance.vision/api/v3';
@@ -202,7 +380,7 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
   const externalMarketDataPollIntervalMs = parseNumber(process.env.EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS, 3000, 'EXTERNAL_MARKET_DATA_POLL_INTERVAL_MS');
 
 
-  const hyperliquidEnvRaw = (process.env.HYPERLIQUID_ENV || '').toLowerCase();
+  const hyperliquidEnvRaw = (overrides.HYPERLIQUID_ENV || process.env.HYPERLIQUID_ENV || '').toLowerCase();
 
   if (hyperliquidEnvRaw !== 'mainnet' && hyperliquidEnvRaw !== 'testnet') {
     throw new Error(`Invalid HYPERLIQUID_ENV: "${hyperliquidEnvRaw}". Must be exactly "mainnet" or "testnet".`);
@@ -223,24 +401,24 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
   let hyperliquidAccountAddress = '';
 
   if (hyperliquidEnvRaw === 'testnet') {
-    hyperliquidRestUrl = 'https://api.hyperliquid-testnet.xyz';
-    hyperliquidWsUrl = 'wss://api.hyperliquid-testnet.xyz/ws';
-    hyperliquidAgentPrivateKey = process.env.HYPERLIQUID_TESTNET_AGENT_PRIVATE_KEY || '';
-    hyperliquidAccountAddress = process.env.HYPERLIQUID_TESTNET_ACCOUNT_ADDRESS || '';
+    hyperliquidRestUrl = overrides.HYPERLIQUID_REST_URL || 'https://api.hyperliquid-testnet.xyz';
+    hyperliquidWsUrl = overrides.HYPERLIQUID_WS_URL || 'wss://api.hyperliquid-testnet.xyz/ws';
+    hyperliquidAgentPrivateKey = overrides.HYPERLIQUID_AGENT_PRIVATE_KEY || process.env.HYPERLIQUID_TESTNET_AGENT_PRIVATE_KEY || '';
+    hyperliquidAccountAddress = overrides.HYPERLIQUID_ACCOUNT_ADDRESS || process.env.HYPERLIQUID_TESTNET_ACCOUNT_ADDRESS || '';
     if (!hyperliquidAgentPrivateKey) {
        throw new Error('HYPERLIQUID_TESTNET_AGENT_PRIVATE_KEY is missing but HYPERLIQUID_ENV=testnet');
     }
   } else if (hyperliquidEnvRaw === 'mainnet') {
-    hyperliquidRestUrl = 'https://api.hyperliquid.xyz';
-    hyperliquidWsUrl = 'wss://api.hyperliquid.xyz/ws';
-    hyperliquidAgentPrivateKey = process.env.HYPERLIQUID_MAINNET_AGENT_PRIVATE_KEY || '';
-    hyperliquidAccountAddress = process.env.HYPERLIQUID_MAINNET_ACCOUNT_ADDRESS || '';
+    hyperliquidRestUrl = overrides.HYPERLIQUID_REST_URL || 'https://api.hyperliquid.xyz';
+    hyperliquidWsUrl = overrides.HYPERLIQUID_WS_URL || 'wss://api.hyperliquid.xyz/ws';
+    hyperliquidAgentPrivateKey = overrides.HYPERLIQUID_AGENT_PRIVATE_KEY || process.env.HYPERLIQUID_MAINNET_AGENT_PRIVATE_KEY || '';
+    hyperliquidAccountAddress = overrides.HYPERLIQUID_ACCOUNT_ADDRESS || process.env.HYPERLIQUID_MAINNET_ACCOUNT_ADDRESS || '';
     if (!hyperliquidAgentPrivateKey) {
        throw new Error('HYPERLIQUID_MAINNET_AGENT_PRIVATE_KEY is missing but HYPERLIQUID_ENV=mainnet');
     }
   }
 
-  if (process.env.HYPERLIQUID_REST_URL || process.env.HYPERLIQUID_WS_URL) {
+  if ((!overrides.HYPERLIQUID_REST_URL && process.env.HYPERLIQUID_REST_URL) || (!overrides.HYPERLIQUID_WS_URL && process.env.HYPERLIQUID_WS_URL)) {
     throw new Error('Arbitrary HYPERLIQUID_REST_URL or HYPERLIQUID_WS_URL injection is forbidden. The endpoints are derived securely from HYPERLIQUID_ENV.');
   }
 
@@ -257,9 +435,9 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     HYPERLIQUID_AGENT_PRIVATE_KEY: hyperliquidAgentPrivateKey,
     HYPERLIQUID_ACCOUNT_ADDRESS: hyperliquidAccountAddress,
     APP_VERSION: process.env.APP_VERSION || '1.0.0',
-    CORS_ORIGIN: (nodeEnv === 'production' && (!process.env.CORS_ORIGIN || process.env.CORS_ORIGIN.includes('*')))
+    CORS_ORIGIN: (nodeEnv === 'production' && (!(overrides.CORS_ORIGIN || process.env.CORS_ORIGIN) || (overrides.CORS_ORIGIN || process.env.CORS_ORIGIN)!.includes('*')))
     ? (() => { throw new Error('CORS_ORIGIN must be explicitly configured without wildcards in production'); })()
-    : process.env.CORS_ORIGIN || 'http://localhost:3000,http://127.0.0.1:3000',
+    : (overrides.CORS_ORIGIN || process.env.CORS_ORIGIN || 'http://localhost:3000,http://127.0.0.1:3000'),
     DATABASE_URL: databaseUrl,
     DB_HOST: dbHost,
     DB_PORT: dbPort,
@@ -295,9 +473,9 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     LOAD_SHEDDING_DB_WAITING_THRESHOLD: loadSheddingDbWaitingThreshold,
     LOG_LEVEL: logLevel as 'debug' | 'info' | 'warn' | 'error',
     SHUTDOWN_TIMEOUT_MS: shutdownTimeout,
-    API_KEY_ENCRYPTION_SECRET: (nodeEnv === 'production' && !process.env.API_KEY_ENCRYPTION_SECRET)
+    API_KEY_ENCRYPTION_SECRET: (nodeEnv === 'production' && !(overrides.API_KEY_ENCRYPTION_SECRET || process.env.API_KEY_ENCRYPTION_SECRET))
     ? (() => { throw new Error('API_KEY_ENCRYPTION_SECRET must be provided in production'); })()
-    : process.env.API_KEY_ENCRYPTION_SECRET || undefined,
+    : (overrides.API_KEY_ENCRYPTION_SECRET || process.env.API_KEY_ENCRYPTION_SECRET || undefined),
     AUTO_MIGRATE: autoMigrate,
     EXTERNAL_MARKET_DATA_ENABLED: externalMarketDataEnabled,
     EXTERNAL_MARKET_DATA_URL: externalMarketDataUrl,
@@ -359,6 +537,10 @@ export function loadConfig(overrides: Partial<EnvironmentConfig> = {}): Environm
     NOTIFICATION_FROM_NAME: process.env.NOTIFICATION_FROM_NAME,
     ...overrides
   };
+
+  if (config.NODE_ENV === 'production') {
+    validateProductionCustodyConfig(config);
+  }
 
   return config;
 }

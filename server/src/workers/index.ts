@@ -11,3 +11,4 @@ export * from './WithdrawalStatusWorker';
 export * from './SweepWorker';
 export * from './SweepStatusWorker';
 export * from './TreasuryMonitorWorker';
+export * from './FuturesLimitOrderWorker';

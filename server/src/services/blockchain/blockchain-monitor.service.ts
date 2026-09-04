@@ -349,10 +349,10 @@ export class BlockchainMonitorService {
         });
       }
 
-      // Detect native ETH transfers to active ETH deposit addresses.
+      // Detect native ETH transfers to active deposit addresses on this network.
       // Errors MUST propagate to the batch handler so the checkpoint is
       // never advanced past a block whose address scan failed (RPC outage).
-      const ethAddresses = await this.getActiveDepositAddresses('ETH');
+      const ethAddresses = await this.getActiveDepositAddresses();
       for (const addr of ethAddresses) {
         const txs = await this.source.getAddressTransactions(addr, fromBlock, toBlock);
         for (const tx of txs) {
@@ -572,12 +572,13 @@ export class BlockchainMonitorService {
         };
       }
 
-      // Match destination address against known deposit_addresses (ACTIVE, ROTATED, or REVOKED)
+      // Match destination address against known deposit_addresses on this network (ACTIVE, ROTATED, or REVOKED).
+      // Cryptographic identity is (user_id, network) — one CREATE2 forwarder can receive multiple supported assets.
       const addressMatches = await this.database.query<any>(
         `SELECT id, user_id AS "userId", asset, network, status
          FROM deposit_addresses
-         WHERE LOWER(blockchain_address) = LOWER($1) AND network = $2 AND asset = $3 AND status IN ('ACTIVE', 'ROTATED', 'REVOKED')`,
-        [event.toAddress, this.network, asset],
+         WHERE LOWER(blockchain_address) = LOWER($1) AND network = $2 AND status IN ('ACTIVE', 'ROTATED', 'REVOKED')`,
+        [event.toAddress, this.network],
       );
 
       if (addressMatches.rows.length === 0) {
@@ -586,7 +587,25 @@ export class BlockchainMonitorService {
           status: 'REJECTED',
           rejection: {
             reason: 'UNKNOWN_DEPOSIT_ADDRESS',
-            detail: `No known deposit_address found for ${event.toAddress.slice(0, 12)}... on ${this.network} (${asset})`,
+            detail: `No known deposit_address found for ${event.toAddress.slice(0, 12)}... on ${this.network}`,
+          },
+        };
+      }
+
+      // Assert single ownership: all matching rows for this physical address MUST belong to the same user
+      const userIds = new Set(addressMatches.rows.map((r: any) => r.userId || r.user_id));
+      if (userIds.size > 1) {
+        logger.error('CRITICAL: Multiple users associated with single blockchain address', {
+          address: event.toAddress,
+          network: this.network,
+          userIds: Array.from(userIds),
+        });
+        return {
+          valid: false,
+          status: 'REJECTED',
+          rejection: {
+            reason: 'AMBIGUOUS_DEPOSIT_ADDRESS',
+            detail: `Multiple users found for deposit address ${event.toAddress.slice(0, 12)}...`,
           },
         };
       }

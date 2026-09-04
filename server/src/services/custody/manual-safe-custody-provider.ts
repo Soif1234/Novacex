@@ -72,6 +72,7 @@ export class ManualSafeCustodyProvider implements ICustodyAdapter {
       CustodyProviderCapability.WITHDRAWAL_REQUEST,
       CustodyProviderCapability.WITHDRAWAL_STATUS,
       CustodyProviderCapability.TREASURY_TRANSFER,
+      CustodyProviderCapability.DEPOSIT_ADDRESS,
     ];
   }
 
@@ -103,8 +104,71 @@ export class ManualSafeCustodyProvider implements ICustodyAdapter {
     return [];
   }
 
-  public async getOrCreateDepositAddress(_request: GetOrCreateDepositAddressRequest): Promise<DepositAddress> {
-    throw new Error('Deposit address generation is not supported by the manual_safe provider');
+  public async getOrCreateDepositAddress(request: GetOrCreateDepositAddressRequest): Promise<DepositAddress> {
+    if (request.network !== 'ETHEREUM') {
+      throw new Error(`Network ${request.network} is not supported by manual_safe provider`);
+    }
+
+    if (!env.CUSTODY_FACTORY_ADDRESS || !env.CUSTODY_IMPLEMENTATION_ADDRESS) {
+      throw new Error(
+        `Deposit addresses not configured for manual_safe provider: CUSTODY_FACTORY_ADDRESS and CUSTODY_IMPLEMENTATION_ADDRESS must be set`
+      );
+    }
+
+    if (env.NODE_ENV === 'production') {
+      if (env.CUSTODY_CHAIN_ID !== 1) {
+        throw new Error(`Production requires CUSTODY_CHAIN_ID=1 (Ethereum Mainnet); found ${env.CUSTODY_CHAIN_ID}`);
+      }
+      if (!env.CUSTODY_INIT_CODE_HASH) {
+        throw new Error('Production requires explicit CUSTODY_INIT_CODE_HASH');
+      }
+    }
+
+    const factoryAddress = ethers.getAddress(env.CUSTODY_FACTORY_ADDRESS);
+    const implementationAddress = ethers.getAddress(env.CUSTODY_IMPLEMENTATION_ADDRESS);
+
+    const expectedInitCode = ethers.solidityPacked(
+      ['bytes', 'bytes20', 'bytes'],
+      [
+        '0x3d602d80600a3d3981f3363d3d373d3d3d363d73',
+        implementationAddress,
+        '0x5af43d82803e903d91602b57fd5bf3',
+      ]
+    );
+    const expectedInitCodeHash = ethers.keccak256(expectedInitCode);
+
+    if (env.CUSTODY_INIT_CODE_HASH && env.CUSTODY_INIT_CODE_HASH !== expectedInitCodeHash) {
+      throw new Error(
+        `CRITICAL: initCodeHash mismatch. Expected ${expectedInitCodeHash} but got ${env.CUSTODY_INIT_CODE_HASH}`
+      );
+    }
+
+    const salt = ethers.keccak256(
+      ethers.solidityPacked(['string', 'string'], [request.userId, request.network])
+    );
+
+    const address = ethers.getCreate2Address(
+      factoryAddress,
+      salt,
+      expectedInitCodeHash
+    );
+
+    return {
+      address,
+      asset: request.asset,
+      network: request.network,
+      userId: request.userId,
+      requiresMemo: false,
+      providerId: this.providerId,
+      status: 'ACTIVE',
+      createdAt: new Date(),
+      metadata: {
+        factoryAddress,
+        implementationAddress,
+        initCodeHash: expectedInitCodeHash,
+        salt,
+      },
+    };
   }
 
   /**

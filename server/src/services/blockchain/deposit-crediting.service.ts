@@ -61,12 +61,17 @@ export class DepositCreditingService {
         }
 
         const addressRes = await txClient.query<any>(
-          `SELECT user_id, status FROM deposit_addresses WHERE LOWER(blockchain_address) = LOWER($1) AND network = $2 AND asset = $3`,
-          [deposit.toAddress, deposit.network, deposit.asset]
+          `SELECT user_id, status FROM deposit_addresses WHERE LOWER(blockchain_address) = LOWER($1) AND network = $2 AND status IN ('ACTIVE', 'ROTATED', 'REVOKED')`,
+          [deposit.toAddress, deposit.network]
         );
         
         if (addressRes.rows.length === 0) {
           throw new Error(`Deposit address ownership not found for ${deposit.toAddress}`);
+        }
+
+        const userIds = new Set(addressRes.rows.map((r: any) => r.user_id ?? r.userId));
+        if (userIds.size > 1) {
+          throw new Error(`Ambiguous deposit address ownership: multiple users mapped to ${deposit.toAddress}`);
         }
 
         const userId = addressRes.rows[0].user_id ?? addressRes.rows[0].userId;

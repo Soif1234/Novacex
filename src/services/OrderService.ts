@@ -15,7 +15,7 @@ export class OrderService {
 
   constructor(
     private tradeSvc: TradeService,
-    private persist: boolean = true
+    private persist: boolean = false
   ) {
     if (this.persist) {
       this.load();
@@ -72,33 +72,65 @@ export class OrderService {
   public async fetchOrdersFromBackend(accountId?: string): Promise<DemoOrder[]> {
     try {
       if (typeof window !== 'undefined') {
-        const backendOrders = await apiClient.get<OrderEntity[]>('/spot/orders');
-        if (Array.isArray(backendOrders)) {
-          for (const bo of backendOrders) {
-            const existing = this.orders.find(o => o.id === bo.id);
-            const status: OrderStatus = bo.status === 'NEW' || bo.status === 'PARTIALLY_FILLED' ? 'PENDING' : (bo.status as OrderStatus);
-            if (existing) {
-              existing.status = status;
-              existing.filledQuantity = bo.filledQuantity;
-            } else {
-              this.orders.unshift({
-                id: bo.id,
-                accountId: bo.accountId,
-                symbol: bo.symbol,
-                side: bo.side,
-                type: bo.type,
-                price: bo.price,
-                quantity: bo.quantity,
-                filledQuantity: bo.filledQuantity,
-                status,
-                createdAt: new Date(bo.createdAt).getTime(),
-                updatedAt: new Date(bo.updatedAt).getTime(),
-              });
+        const rawRes = await apiClient.get<any>('/spot/orders');
+        const backendOrders: OrderEntity[] = Array.isArray(rawRes) ? rawRes : (rawRes?.orders || []);
+
+        for (const bo of backendOrders) {
+          const existing = this.orders.find(o => o.id === bo.id);
+          const status: OrderStatus = bo.status === 'NEW' || bo.status === 'PARTIALLY_FILLED' ? 'PENDING' : (bo.status as OrderStatus);
+          if (existing) {
+            existing.status = status;
+            existing.filledQuantity = bo.filledQuantity;
+            existing.price = bo.price;
+            existing.updatedAt = new Date(bo.updatedAt).getTime();
+          } else {
+            this.orders.unshift({
+              id: bo.id,
+              accountId: bo.accountId,
+              symbol: bo.symbol,
+              side: bo.side,
+              type: bo.type,
+              price: bo.price,
+              quantity: bo.quantity,
+              filledQuantity: bo.filledQuantity,
+              status,
+              createdAt: new Date(bo.createdAt).getTime(),
+              updatedAt: new Date(bo.updatedAt).getTime(),
+            });
+          }
+
+          // Authoritative sync to OrderCoreService
+          const coreStatus: any = bo.status === 'NEW' ? 'NEW' : bo.status === 'PARTIALLY_FILLED' ? 'PARTIALLY_FILLED' : bo.status;
+          syncOrderToCore(
+            bo.id,
+            bo.accountId,
+            bo.symbol,
+            'SPOT',
+            bo.side,
+            bo.type,
+            bo.quantity,
+            bo.price,
+            (bo as any).stopPrice || undefined,
+            coreStatus,
+            '0',
+            bo.filledQuantity,
+            bo.remainingQuantity
+          );
+        }
+
+        // Reconcile local state if accountId provided
+        if (accountId && backendOrders.length >= 0) {
+          const backendIds = new Set(backendOrders.map(b => b.id));
+          for (const localOrd of this.orders) {
+            if (localOrd.accountId === accountId && localOrd.status === 'PENDING' && !backendIds.has(localOrd.id)) {
+              localOrd.status = 'CANCELLED';
+              syncOrderToCore(localOrd.id, localOrd.accountId, localOrd.symbol, 'SPOT', localOrd.side, localOrd.type as any, localOrd.quantity, localOrd.price, undefined, 'CANCELLED');
             }
           }
-          this.save();
-          this.notify();
         }
+
+        if (this.persist) this.save();
+        this.notify();
       }
     } catch {}
     return this.orders;
@@ -162,21 +194,23 @@ export class OrderService {
   }
 
   public async cancelOrder(orderId: string) {
-    const order = this.orders.find(o => o.id === orderId);
-    if (!order) throw new Error('Order not found');
-    if (order.status !== 'PENDING') throw new Error('Only PENDING orders can be cancelled');
-
     if (typeof window !== 'undefined') {
       await apiClient.post(`/spot/orders/${orderId}/cancel`);
     } else {
       throw new Error('Order cancellation not supported offline');
     }
 
-    order.status = 'CANCELLED';
-    order.updatedAt = Date.now();
-    this.save();
-    this.notify();
-    syncOrderToCore(order.id, order.accountId, order.symbol, 'SPOT', order.side, order.type as any, order.quantity, order.price, undefined, 'CANCELLED');
+    const order = this.orders.find(o => o.id === orderId);
+    if (order) {
+      order.status = 'CANCELLED';
+      order.updatedAt = Date.now();
+      if (this.persist) this.save();
+      this.notify();
+    }
+    const coreOrder = orderCoreService.getOrder(orderId);
+    if (coreOrder) {
+      syncOrderToCore(coreOrder.id, coreOrder.userId, coreOrder.symbol, 'SPOT', coreOrder.side, coreOrder.type, coreOrder.quantity, coreOrder.price, undefined, 'CANCELLED');
+    }
   }
 
   private updateOrderStatus(orderId: string, status: OrderStatus) {
@@ -184,7 +218,7 @@ export class OrderService {
     if (order) {
       order.status = status;
       order.updatedAt = Date.now();
-      this.save();
+      if (this.persist) this.save();
       this.notify();
       const coreStatus = status === 'PENDING' ? 'OPEN' : status;
       syncOrderToCore(order.id, order.accountId, order.symbol, 'SPOT', order.side, order.type as any, order.quantity, order.price, undefined, coreStatus as any);
@@ -197,10 +231,10 @@ export class OrderService {
     } else {
       this.orders = [];
     }
-    this.save();
+    if (this.persist) this.save();
     this.notify();
     orderCoreService.reset(accountId);
   }
 }
 
-export const orderService = new OrderService(tradeService, typeof window !== 'undefined');
+export const orderService = new OrderService(tradeService, false);

@@ -73,11 +73,17 @@ export class EthereumSource implements IBlockchainSource {
   private readonly timeoutMs: number;
   private readonly averageBlockTimeSeconds: number;
   private requestId = 1;
+  private readonly blockCache = new Map<number, any>();
+  private readonly maxCacheSize = 250;
 
   constructor(config: EthereumSourceConfig) {
     this.rpcUrl = config.rpcUrl && config.rpcUrl.trim().length > 0 ? config.rpcUrl.trim() : null;
     this.timeoutMs = config.requestTimeoutMs ?? 10_000;
     this.averageBlockTimeSeconds = config.averageBlockTimeSeconds ?? 12;
+  }
+
+  public clearBlockCache(): void {
+    this.blockCache.clear();
   }
 
   /** True when an RPC endpoint has been configured. */
@@ -168,19 +174,28 @@ export class EthereumSource implements IBlockchainSource {
     const addressLower = address.toLowerCase();
 
     for (let n = fromBlock; n <= toBlock; n++) {
-      let block: any = null;
-      try {
-        const res = await this.rpc('eth_getBlockByNumber', [
-          `0x${n.toString(16)}`,
-          true, // full transaction objects
-        ]);
-        block = res.result ?? null;
-      } catch (err: any) {
-        // RPC timeout / failure: propagate so the monitor never advances
-        // its checkpoint past an incompletely scanned block.
-        throw new Error(
-          `EthereumSource: failed to fetch block ${n} for address scan: ${err?.message || String(err)}`,
-        );
+      let block: any = this.blockCache.get(n) ?? null;
+      if (!block) {
+        try {
+          const res = await this.rpc('eth_getBlockByNumber', [
+            `0x${n.toString(16)}`,
+            true, // full transaction objects
+          ]);
+          block = res.result ?? null;
+          if (block) {
+            if (this.blockCache.size >= this.maxCacheSize) {
+              const oldestKey = this.blockCache.keys().next().value;
+              if (oldestKey !== undefined) this.blockCache.delete(oldestKey);
+            }
+            this.blockCache.set(n, block);
+          }
+        } catch (err: any) {
+          // RPC timeout / failure: propagate so the monitor never advances
+          // its checkpoint past an incompletely scanned block.
+          throw new Error(
+            `EthereumSource: failed to fetch block ${n} for address scan: ${err?.message || String(err)}`,
+          );
+        }
       }
 
       if (!block || !Array.isArray(block.transactions)) {

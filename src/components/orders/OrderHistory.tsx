@@ -7,6 +7,9 @@ import { Order, TradeFill } from "../../types/orderCore";
 import { Search, ChevronDown, ChevronUp, X } from "lucide-react";
 import { tradingPairRegistry } from "../../services/market/TradingPairRegistry";
 import { safeFormatDate } from "../../services/storageUtil";
+import { orderService as spotOrderService } from "../../services/OrderService";
+import { futuresOrderService } from "../../services/futures/FuturesOrderService";
+import { wsClient } from "../../services/websocket/wsClient";
 
 export function OrderHistory() {
   const { user } = useAuth();
@@ -24,17 +27,57 @@ export function OrderHistory() {
   const accountId = user?.id || 'demo-user-1';
 
   useEffect(() => {
+    let isMounted = true;
     const loadOrders = () => {
-      const allOrders = orderCoreService.getOrders(accountId);
-      const completed = allOrders.filter(
-        (o) => o.status === "FILLED" || o.status === "CANCELLED" || o.status === "REJECTED" || o.status === "EXPIRED"
-      );
-      setOrders(completed);
+      if (isMounted) {
+        const allOrders = orderCoreService.getOrders(accountId);
+        const completed = allOrders.filter(
+          (o) => o.status === "FILLED" || o.status === "CANCELLED" || o.status === "REJECTED" || o.status === "EXPIRED"
+        );
+        setOrders(completed);
+      }
     };
 
     loadOrders();
+
+    const syncBackend = async () => {
+      try {
+        const promises: Promise<any>[] = [];
+        if (typeof spotOrderService?.fetchOrdersFromBackend === 'function') {
+          promises.push(spotOrderService.fetchOrdersFromBackend(accountId));
+        }
+        if (typeof futuresOrderService?.fetchOrdersFromBackend === 'function') {
+          promises.push(futuresOrderService.fetchOrdersFromBackend(accountId));
+        }
+        if (promises.length > 0) {
+          await Promise.allSettled(promises);
+          if (isMounted) {
+            loadOrders();
+          }
+        }
+      } catch (err) {}
+    };
+
+    syncBackend();
+
     const unsubscribe = orderCoreService.subscribe(loadOrders);
-    return () => unsubscribe();
+
+    const unsubWs = typeof wsClient?.subscribe === 'function' ? wsClient.subscribe('user:orders', () => {
+      syncBackend();
+    }) : () => {};
+
+    const unsubStatus = typeof wsClient?.onStatusChange === 'function' ? wsClient.onStatusChange((status) => {
+      if (status === 'CONNECTED') {
+        syncBackend();
+      }
+    }) : () => {};
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+      unsubWs();
+      unsubStatus();
+    };
   }, [user, accountId]);
 
   const handleOrderClick = (order: Order) => {

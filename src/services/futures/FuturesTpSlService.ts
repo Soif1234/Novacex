@@ -1,5 +1,6 @@
 import { FuturesPosition, TpSlConfiguration } from '../../types/futures';
 import { Decimal } from 'decimal.js';
+import { apiClient } from '../api/client';
 
 export class FuturesTpSlService {
   private configs: TpSlConfiguration[] = [];
@@ -131,6 +132,17 @@ export class FuturesTpSlService {
      
      this.save();
      this.notify();
+
+     if (position.positionId) {
+       apiClient.post(`/futures/positions/${position.positionId}/tpsl`, {
+         takeProfitEnabled: config.takeProfitEnabled,
+         takeProfitPrice: config.takeProfitPrice,
+         stopLossEnabled: config.stopLossEnabled,
+         stopLossPrice: config.stopLossPrice,
+       }).catch(err => {
+         console.warn('Background sync of TP/SL config to backend failed:', err?.message || err);
+       });
+     }
   }
 
   public cancelConfig(tpSlId: string) {
@@ -140,6 +152,15 @@ export class FuturesTpSlService {
          config.updatedAt = Date.now();
          this.save();
          this.notify();
+
+         if (config.positionId) {
+           apiClient.post(`/futures/positions/${config.positionId}/tpsl`, {
+             takeProfitEnabled: false,
+             stopLossEnabled: false,
+           }).catch(err => {
+             console.warn('Background sync of TP/SL cancellation to backend failed:', err?.message || err);
+           });
+         }
      }
   }
   
@@ -167,72 +188,17 @@ export class FuturesTpSlService {
      }
   }
 
-  public async checkTriggers(positions: FuturesPosition[], markPrices: Record<string, string>, placeOrderCb: (order: any, price: string) => Promise<void>) {
-     let changed = false;
-     
-     for (const pos of positions) {
-         if (pos.status !== 'OPEN') {
-             continue; // or autocancel
-         }
-         const active = this.getConfigForPosition(pos.positionId);
-         if (!active) continue;
-
-         const markPrice = markPrices[pos.symbol] || pos.markPrice;
-         const currentMark = new Decimal(markPrice);
-         
-         let triggered = false;
-         let execPrice = '';
-         let triggerType = '';
-
-         if (active.takeProfitEnabled && active.takeProfitPrice) {
-             const tp = new Decimal(active.takeProfitPrice);
-             if ((pos.side === 'LONG' && currentMark.gte(tp)) || 
-                 (pos.side === 'SHORT' && currentMark.lte(tp))) {
-                 triggered = true;
-                 triggerType = 'TP';
-                 execPrice = active.takeProfitPrice;
-             }
-         }
-
-         if (!triggered && active.stopLossEnabled && active.stopLossPrice) {
-             const sl = new Decimal(active.stopLossPrice);
-             if ((pos.side === 'LONG' && currentMark.lte(sl)) || 
-                 (pos.side === 'SHORT' && currentMark.gte(sl))) {
-                 triggered = true;
-                 triggerType = 'SL';
-                 execPrice = active.stopLossPrice; 
-             }
-         }
-
-         if (triggered) {
-             active.status = 'TRIGGERED';
-             active.triggerType = triggerType as any;
-             active.updatedAt = Date.now();
-             changed = true;
-             try {
-                 await placeOrderCb({
-                     accountId: pos.accountId,
-                     symbol: pos.symbol,
-                     side: pos.side === 'LONG' ? 'SELL' : 'BUY',
-                     positionSide: pos.side,
-                     type: 'MARKET',
-                     quantity: active.quantity,
-                     leverage: pos.leverage,
-                     marginMode: pos.marginMode,
-                     reduceOnly: true,
-                     closePosition: true
-                 }, execPrice);
-                 
-             } catch(e) {
-                 console.error('TP/SL execution failed', e);
-             }
-         }
-     }
-     
-     if (changed) {
-         this.save();
-         this.notify();
-     }
+  /**
+   * @deprecated TP/SL triggers are evaluated and executed exclusively by the backend TpSlWorker.
+   * This method is preserved as a safe no-op for backward compatibility.
+   */
+  public async checkTriggers(
+    _positions: FuturesPosition[],
+    _markPrices: Record<string, string>,
+    _placeOrderCb?: (order: any, price: string) => Promise<void>
+  ): Promise<void> {
+    // No-op: Backend TpSlWorker is the sole execution authority
+    return;
   }
 }
 

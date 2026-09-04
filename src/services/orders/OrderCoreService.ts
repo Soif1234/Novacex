@@ -7,7 +7,7 @@ export class OrderCoreService {
     private persistKey = 'demo_core_orders';
     private subscribers: Set<() => void> = new Set();
 
-    constructor(private persist: boolean = true) {
+    constructor(private persist: boolean = false) {
         if (this.persist) {
             this.load();
         }
@@ -68,6 +68,19 @@ export class OrderCoreService {
 
     private notify() {
         this.subscribers.forEach(cb => cb());
+    }
+
+    public setAuthoritativeOrders(orders: Order[], userId?: string) {
+        if (userId) {
+            this.orders = this.orders.filter(o => o.userId !== userId && (o.userId || userId !== 'demo-user-1'));
+            this.orders.unshift(...orders);
+        } else {
+            this.orders = [...orders];
+        }
+        if (this.persist) {
+            this.save();
+        }
+        this.notify();
     }
 
     public createOrder(order: Order) {
@@ -174,4 +187,4 @@ export class OrderCoreService {
     }
 }
 
-export const orderCoreService = new OrderCoreService(typeof window !== 'undefined');
+export const orderCoreService = new OrderCoreService(false);

@@ -543,9 +543,14 @@ export function createCustodyService(options?: Partial<CustodyServiceOptions>): 
       const kmsClient = new KMSClient({ region });
       adapter = new KmsCustodyProvider(kmsClient, config, db);
     } else if (providerStr === 'manual_safe') {
-      // Phase 11K — the production manual Safe mode. No KMS, no signing, no
+      // Phase 11K / 15B.3 — the production manual Safe mode. No KMS, no signing, no
       // broadcast, no outbound nonce allocation. Execution is performed by a
       // human (Safe 1-of-1 / MetaMask / cold EOA) and verified read-only.
+      if (isProduction && env.CUSTODY_CHAIN_ID !== 1) {
+        throw new Error(
+          `CUSTODY_CHAIN_ID must be 1 (Ethereum Mainnet) in production environment (found ${env.CUSTODY_CHAIN_ID})`
+        );
+      }
       adapter = new ManualSafeCustodyProvider(db);
     } else {
       throw new Error(`Unknown CUSTODY_PROVIDER: ${providerStr}`);

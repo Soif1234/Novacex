@@ -20,12 +20,36 @@ export interface InternalTransfer {
   completedAt?: number;
 }
 
+/**
+ * Generates a cryptographically secure, collision-resistant reference identifier
+ * for internal financial transfers.
+ *
+ * Uses the platform cryptographic API (crypto.randomUUID) with an RFC 4122 v4
+ * CSPRNG fallback (crypto.getRandomValues). Avoids Math.random() and timestamp-only keys.
+ */
+export function generateReferenceId(): string {
+  if (typeof crypto !== 'undefined') {
+    if (typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    if (typeof crypto.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 0x0f) | 0x40; // UUID v4
+      bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant RFC 4122
+      const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+  }
+  throw new Error('Cryptographically secure random number generator is unavailable');
+}
+
 export class InternalTransferService {
   private persistKey = 'demo_transfers';
   private persist() {}
   private subscribers = new Set<any>();
   private transfers: any[] = [];
-    constructor() {}
+  constructor() {}
 
   private load() {
     try {
@@ -73,12 +97,13 @@ export class InternalTransferService {
     return this.transfers.find(t => t.id === id);
   }
 
-    public async createTransfer(
+  public async createTransfer(
     asset: string,
     amount: string,
     fromWallet: WalletType,
     toWallet: WalletType,
-    accountId: string = 'demo-user-1'
+    accountId: string = 'demo-user-1',
+    customReferenceId?: string
   ): Promise<any> {
     if (fromWallet === toWallet) {
       throw new Error('Cannot transfer to the same wallet');
@@ -92,12 +117,16 @@ export class InternalTransferService {
       const fromAccId = fromWallet === 'SPOT' ? spotAccId : futuresAccId;
       const toAccId = toWallet === 'SPOT' ? spotAccId : futuresAccId;
 
+      const referenceId = customReferenceId && customReferenceId.trim()
+        ? customReferenceId.trim()
+        : generateReferenceId();
+
       const res = await apiClient.post('/wallet/transfer', {
         fromAccountId: fromAccId,
         toAccountId: toAccId,
         asset,
         amount,
-        referenceId: Math.random().toString(36).substring(2, 11),
+        referenceId,
         description: `Internal Transfer from ${fromWallet} to ${toWallet}`,
       });
       return res;

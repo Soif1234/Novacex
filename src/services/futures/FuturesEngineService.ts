@@ -90,13 +90,8 @@ export class FuturesEngineService {
       // @ts-ignore
       await this.orderService.checkStopOrders(markPrices);
 
-      // 3. Evaluate & Execute TP / SL Triggers
-      const openPositions = this.orderService.getAllPositions().filter(p => p.status === 'OPEN');
-      if (openPositions.length > 0) {
-        await this.tpSlService.checkTriggers(openPositions, markPrices, async (orderPayload) => {
-          await this.orderService.placeOrder(orderPayload);
-        });
-      }
+      // 3. TP / SL triggers are evaluated and executed exclusively by the backend TpSlWorker.
+      // The browser is no longer an execution authority; orders execute whether the browser is open or closed.
       // @ts-ignore
 
       // 4. Evaluate & Execute Funding Settlement when due

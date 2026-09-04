@@ -799,73 +799,81 @@ export class FuturesService {
 
 
   public async cancelOrder(userId: string, orderId: string): Promise<OrderEntity> {
-    const orderRes = await this.database.query<any>('SELECT * FROM orders WHERE id = $1', [orderId]);
-    const orderRow = orderRes.rows[0];
-    if (!orderRow) {
-      throw new FuturesError(`Futures order "${orderId}" was not found`, 404, FuturesErrorCode.ORDER_NOT_FOUND);
-    }
+    let cancelledOrder!: OrderEntity;
 
-    const accRes = await this.database.query<any>('SELECT id, user_id AS "userId" FROM accounts WHERE id = $1', [
-      orderRow.accountId || orderRow.account_id,
-    ]);
-    const acc = accRes.rows[0];
-    if (!acc || (acc.userId || acc.user_id) !== userId) {
-      throw new AccountOwnershipDeniedError(orderRow.accountId || orderRow.account_id);
-    }
+    await this.database.transaction(async (tx) => {
+      const orderRes = await tx.query<any>('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
+      const orderRow = orderRes.rows[0];
+      if (!orderRow) {
+        throw new FuturesError(`Futures order "${orderId}" was not found`, 404, FuturesErrorCode.ORDER_NOT_FOUND);
+      }
 
-    const order: OrderEntity = {
-      id: orderRow.id,
-      clientOrderId: orderRow.clientOrderId || orderRow.client_order_id,
-      accountId: orderRow.accountId || orderRow.account_id,
-      market: 'FUTURES',
-      symbol: orderRow.symbol,
-      side: orderRow.side,
-      type: orderRow.type,
+      const accRes = await tx.query<any>('SELECT id, user_id AS "userId" FROM accounts WHERE id = $1', [
+        orderRow.accountId || orderRow.account_id,
+      ]);
+      const acc = accRes.rows[0];
+      if (!acc || (acc.userId || acc.user_id) !== userId) {
+        throw new AccountOwnershipDeniedError(orderRow.accountId || orderRow.account_id);
+      }
+
+      const order: OrderEntity = {
+        id: orderRow.id,
+        clientOrderId: orderRow.clientOrderId || orderRow.client_order_id,
+        accountId: orderRow.accountId || orderRow.account_id,
+        market: 'FUTURES',
+        symbol: orderRow.symbol,
+        side: orderRow.side,
+        type: orderRow.type,
         price: orderRow.price,
         stopPrice: orderRow.stopPrice || orderRow.stop_price,
         quantity: orderRow.quantity,
-      filledQuantity: orderRow.filledQuantity || orderRow.filled_quantity,
-      remainingQuantity: orderRow.remainingQuantity || orderRow.remaining_quantity,
-      lockedAmount: orderRow.lockedAmount || orderRow.locked_amount,
-      lockedAsset: orderRow.lockedAsset || orderRow.locked_asset,
-      status: orderRow.status,
-      timeInForce: orderRow.timeInForce || orderRow.time_in_force,
-      createdAt: new Date(orderRow.createdAt || orderRow.created_at),
-      updatedAt: new Date(orderRow.updatedAt || orderRow.updated_at),
-    };
+        filledQuantity: orderRow.filledQuantity || orderRow.filled_quantity,
+        remainingQuantity: orderRow.remainingQuantity || orderRow.remaining_quantity,
+        lockedAmount: orderRow.lockedAmount || orderRow.locked_amount,
+        lockedAsset: orderRow.lockedAsset || orderRow.locked_asset,
+        status: orderRow.status,
+        timeInForce: orderRow.timeInForce || orderRow.time_in_force,
+        createdAt: new Date(orderRow.createdAt || orderRow.created_at),
+        updatedAt: new Date(orderRow.updatedAt || orderRow.updated_at),
+      };
 
-    if (order.status === 'CANCELLED') {
-      return order;
-    }
+      if (order.status === 'CANCELLED') {
+        cancelledOrder = order;
+        return;
+      }
 
-    if (order.status !== 'NEW' && order.status !== 'PARTIALLY_FILLED') {
-      throw new FuturesError(
-        `Futures order "${orderId}" cannot be cancelled in status "${order.status}"`,
-        400,
-        FuturesErrorCode.ORDER_NOT_CANCELLABLE
-      );
-    }
+      if (order.status !== 'NEW' && order.status !== 'PARTIALLY_FILLED') {
+        throw new FuturesError(
+          `Futures order "${orderId}" cannot be cancelled in status "${order.status}"`,
+          400,
+          FuturesErrorCode.ORDER_NOT_CANCELLABLE
+        );
+      }
 
-    // Release remaining locked margin if opening order had reserved margin
-    if (decimalCompare(order.lockedAmount, '0') > 0) {
-      await this.ledger.release(
-        order.accountId,
-        order.lockedAsset || 'FUTURES_USDT',
-        order.lockedAmount,
-        'FUTURES_MARGIN_RELEASE',
-        `FUTURES-UNLOCK-${order.id}`,
-        `Cancel Futures order: ${order.symbol} ${order.side} ${order.quantity}`
-      );
-    }
+      // Release remaining locked margin if opening order had reserved margin
+      if (decimalCompare(order.lockedAmount, '0') > 0) {
+        await this.ledger.release(
+          order.accountId,
+          order.lockedAsset || 'FUTURES_USDT',
+          order.lockedAmount,
+          'FUTURES_MARGIN_RELEASE',
+          `FUTURES-UNLOCK-${order.id}`,
+          `Cancel Futures order: ${order.symbol} ${order.side} ${order.quantity}`,
+          undefined,
+          tx
+        );
+      }
 
+      order.status = 'CANCELLED';
+      order.updatedAt = new Date();
 
-    order.status = 'CANCELLED';
-    order.updatedAt = new Date();
+      await tx.query('UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2', [
+        'CANCELLED',
+        order.id,
+      ]);
 
-    await this.database.query('UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2', [
-      'CANCELLED',
-      order.id,
-    ]);
+      cancelledOrder = order;
+    });
 
     // ── Emit Domain Events strictly after successful commit ──────────────
     try {
@@ -874,31 +882,475 @@ export class FuturesService {
         type: 'futures.order.updated',
         channel: 'user:orders',
         userId,
-        symbol: order.symbol,
+        symbol: cancelledOrder.symbol,
         timestamp: Date.now(),
         version: '1.0.0',
         payload: {
-          orderId: order.id,
-          clientOrderId: order.clientOrderId,
+          orderId: cancelledOrder.id,
+          clientOrderId: cancelledOrder.clientOrderId,
           market: 'FUTURES',
-          symbol: order.symbol,
-          side: order.side,
-          type: order.type,
-          price: order.price,
-          quantity: order.quantity,
-          filledQuantity: order.filledQuantity,
-          remainingQuantity: order.remainingQuantity,
+          symbol: cancelledOrder.symbol,
+          side: cancelledOrder.side,
+          type: cancelledOrder.type,
+          price: cancelledOrder.price,
+          quantity: cancelledOrder.quantity,
+          filledQuantity: cancelledOrder.filledQuantity,
+          remainingQuantity: cancelledOrder.remainingQuantity,
           status: 'CANCELLED',
-          timeInForce: order.timeInForce,
-          createdAt: order.createdAt.getTime(),
-          updatedAt: order.updatedAt.getTime(),
+          timeInForce: cancelledOrder.timeInForce,
+          createdAt: cancelledOrder.createdAt.getTime(),
+          updatedAt: cancelledOrder.updatedAt.getTime(),
         },
       });
     } catch (evtErr: any) {
       logger.warn('Failed to emit futures cancel event', { error: evtErr.message });
     }
 
-    return order;
+    return cancelledOrder;
+  }
+
+  /**
+   * Authoritatively execute a resting FUTURES LIMIT order when market/mark price crosses.
+   *
+   * Invariant guarantees:
+   * 1. Atomicity & Concurrency: Claims order with SELECT ... FOR UPDATE within a transaction.
+   *    If order status is not 'NEW' / 'PARTIALLY_FILLED', immediately aborts with null.
+   * 2. Authoritative Mark Price: Checks markPrice from markPrices provider (or override).
+   *    Fail-closed if missing, non-positive, or does not cross.
+   * 3. Price Crossing:
+   *    BUY LIMIT: markPrice <= order.price
+   *    SELL LIMIT: markPrice >= order.price
+   * 4. State & Margin Race (Section 7):
+   *    - For opening: Verifies reserved locked margin on account. If deficit, transitions order to REJECTED.
+   *    - For closing: Verifies open position exists. If closed/liquidated while resting, transitions order to REJECTED.
+   * 5. Canonical Execution Path: Reuses exact ledger, position, fee, and trade settlement.
+   * 6. Events & Domain Notifications: Emits futures.trade.executed, futures.position.updated, futures.order.updated after commit.
+   */
+  public async executeRestingOrder(
+    orderId: string,
+    markPriceOverride?: string,
+    fillQuantity?: string
+  ): Promise<FuturesExecutionResult | null> {
+    let resultingOrder: OrderEntity | undefined;
+    let resultingFuturesOrder: FuturesOrderEntity | undefined;
+    let resultingPosition: FuturesPositionEntity | undefined;
+    let executedTrade: TradeEntity | undefined;
+    let accountUserId: string | undefined;
+
+    await this.database.transaction(async (tx) => {
+      // 1. Atomic claim: Lock order with FOR UPDATE
+      const orderRes = await tx.query<any>(
+        `SELECT o.*, fo.id as fo_id, fo.position_side, fo.leverage, fo.margin_mode,
+                fo.reduce_only, fo.close_position, a.user_id as user_id
+         FROM orders o
+         JOIN futures_orders fo ON o.id = fo.order_id
+         JOIN accounts a ON o.account_id = a.id
+         WHERE o.id = $1 AND o.market = 'FUTURES' AND o.status IN ('NEW', 'PARTIALLY_FILLED')
+         FOR UPDATE OF o`,
+        [orderId]
+      );
+
+      const row = orderRes.rows[0];
+      if (!row) {
+        // Order is not in NEW/PARTIALLY_FILLED status, does not exist, or was concurrently processed/cancelled
+        return;
+      }
+
+      accountUserId = row.user_id || row.userId;
+      const cleanSymbol = row.symbol.trim().toUpperCase();
+      const contract = this.getContractConfig(cleanSymbol);
+      const totalQty = decimalNormalize(row.quantity);
+      const remainingQty = decimalNormalize(row.remaining_quantity || row.remainingQuantity || totalQty);
+      const cleanPrice = decimalNormalize(row.price);
+      const positionSide = (row.position_side || row.positionSide) as PositionSide;
+      const leverage = Number(row.leverage);
+      const marginMode = (row.margin_mode || row.marginMode) as MarginMode;
+      const isReduceOnly = Boolean(row.reduce_only || row.reduceOnly);
+      const collateralAsset = row.locked_asset || row.lockedAsset || 'FUTURES_USDT';
+      const lockedAmount = row.locked_amount || row.lockedAmount || '0';
+
+      // Determine fill quantity: defaults to full remaining quantity
+      const execQty = fillQuantity ? decimalNormalize(fillQuantity) : remainingQty;
+      if (decimalCompare(execQty, '0') <= 0 || decimalCompare(execQty, remainingQty) > 0) {
+        return;
+      }
+
+      // 2. Authoritative mark price resolution
+      let markPrice: string | undefined = markPriceOverride;
+      if (!markPrice) {
+        try {
+          markPrice = await this.markPrices.getMarkPrice(cleanSymbol);
+        } catch (err: any) {
+          logger.warn('Failed to fetch mark price for resting limit order', { orderId, symbol: cleanSymbol, error: err.message });
+          return; // fail-closed: do not execute at unknown price
+        }
+      }
+
+      if (!markPrice || decimalCompare(markPrice, '0') <= 0) {
+        return; // fail-closed: non-positive or invalid price
+      }
+
+      // 3. Price crossing condition:
+      // BUY: markPrice <= order.price
+      // SELL: markPrice >= order.price
+      let crosses = false;
+      if (row.side === 'BUY' && decimalCompare(markPrice, cleanPrice) <= 0) {
+        crosses = true;
+      } else if (row.side === 'SELL' && decimalCompare(markPrice, cleanPrice) >= 0) {
+        crosses = true;
+      }
+
+      if (!crosses) {
+        return; // price has not reached or crossed the limit order price
+      }
+
+      const isOpening =
+        (row.side === 'BUY' && positionSide === 'LONG') ||
+        (row.side === 'SELL' && positionSide === 'SHORT');
+      const isClosing =
+        (row.side === 'SELL' && positionSide === 'LONG') ||
+        (row.side === 'BUY' && positionSide === 'SHORT');
+
+      // 4. Position & Margin validation (Section 7 - Insufficient Margin / State Race)
+      const existingPosition = await this.positions.getOpenPosition(row.account_id, cleanSymbol, positionSide, tx, true);
+
+      if (isClosing && !existingPosition) {
+        // The position to close is no longer open (e.g. liquidated or closed by TP/SL)
+        // Transition order safely to REJECTED according to the existing business model
+        if (decimalCompare(lockedAmount, '0') > 0) {
+          await this.ledger.release(
+            row.account_id,
+            collateralAsset,
+            lockedAmount,
+            'FUTURES_MARGIN_RELEASE',
+            `FUTURES-UNLOCK-${row.id}`,
+            `Reject resting order: no position to close`,
+            undefined,
+            tx
+          );
+        }
+        await tx.query("UPDATE orders SET status = 'REJECTED', updated_at = NOW() WHERE id = $1", [row.id]);
+        return;
+      }
+
+      if (isOpening) {
+        // Check account locked balance satisfies order.lockedAmount
+        const bal = await this.ledger.getBalance(row.account_id, collateralAsset, tx);
+        if (decimalCompare(bal.lockedBalance, lockedAmount) < 0) {
+          // Insufficient margin race: locked balance was depleted/corrupted
+          if (decimalCompare(bal.lockedBalance, '0') > 0 && decimalCompare(lockedAmount, '0') > 0) {
+            const toRelease = decimalMin(bal.lockedBalance, lockedAmount);
+            await this.ledger.release(
+              row.account_id,
+              collateralAsset,
+              toRelease,
+              'FUTURES_MARGIN_RELEASE',
+              `FUTURES-UNLOCK-${row.id}`,
+              `Reject resting order: margin deficit`,
+              undefined,
+              tx
+            );
+          }
+          await tx.query("UPDATE orders SET status = 'REJECTED', updated_at = NOW() WHERE id = $1", [row.id]);
+          return;
+        }
+
+        if (existingPosition) {
+          if (existingPosition.leverage !== leverage || existingPosition.marginMode !== marginMode) {
+            // Position mismatch: release locked margin and reject
+            if (decimalCompare(lockedAmount, '0') > 0) {
+              await this.ledger.release(
+                row.account_id,
+                collateralAsset,
+                lockedAmount,
+                'FUTURES_MARGIN_RELEASE',
+                `FUTURES-UNLOCK-${row.id}`,
+                `Reject resting order: leverage/marginMode mismatch`,
+                undefined,
+                tx
+              );
+            }
+            await tx.query("UPDATE orders SET status = 'REJECTED', updated_at = NOW() WHERE id = $1", [row.id]);
+            return;
+          }
+        }
+      }
+
+      // 5. Canonical Execution (LIMIT order fills at limit price)
+      const execPrice = cleanPrice;
+
+      if (isOpening) {
+        if (existingPosition) {
+          resultingPosition = await this.positions.increasePosition(
+            existingPosition,
+            execQty,
+            execPrice,
+            contract.maintenanceMarginRate,
+            undefined,
+            tx
+          );
+        } else {
+          resultingPosition = await this.positions.createPosition({
+            accountId: row.account_id,
+            symbol: cleanSymbol,
+            side: positionSide,
+            quantity: execQty,
+            entryPrice: execPrice,
+            leverage,
+            marginMode,
+            maintenanceMarginRate: contract.maintenanceMarginRate,
+            collateralAsset,
+          }, tx);
+        }
+      } else if (isClosing && existingPosition) {
+        const reduceRes = await this.positions.reducePosition(
+          existingPosition,
+          execQty,
+          execPrice,
+          contract.maintenanceMarginRate,
+          undefined,
+          tx
+        );
+        resultingPosition = reduceRes.updatedPosition;
+
+        const pnlRef = `FUTURES-PNL-${row.id}`;
+        const entries: any[] = [];
+
+        if (decimalCompare(reduceRes.freedMargin, '0') > 0) {
+          const collateralForReduce = existingPosition.collateralAsset || 'FUTURES_USDT';
+          entries.push(
+            { accountId: row.account_id, asset: collateralForReduce, direction: 'DEBIT', amount: reduceRes.freedMargin, balancePool: 'locked' },
+            { accountId: row.account_id, asset: collateralForReduce, direction: 'CREDIT', amount: reduceRes.freedMargin, balancePool: 'available' }
+          );
+        }
+
+        if (decimalCompare(reduceRes.realizedPnl, '0') > 0) {
+          entries.push({ accountId: row.account_id, asset: existingPosition.collateralAsset || 'FUTURES_USDT', direction: 'CREDIT', amount: reduceRes.realizedPnl, balancePool: 'available' });
+          entries.push({ accountId: INSURANCE_FUND_ACCOUNT_ID, asset: existingPosition.collateralAsset || 'FUTURES_USDT', direction: 'DEBIT', amount: reduceRes.realizedPnl, balancePool: 'available' });
+        } else if (decimalCompare(reduceRes.realizedPnl, '0') < 0) {
+          const loss = decimalSubtract('0', reduceRes.realizedPnl);
+          const bal = await this.ledger.getBalance(row.account_id, existingPosition.collateralAsset || 'FUTURES_USDT', tx);
+          const tempAvailable = decimalAdd(bal.availableBalance, reduceRes.freedMargin);
+          const debitLoss = decimalCompare(tempAvailable, loss) >= 0 ? loss : tempAvailable;
+          if (decimalCompare(debitLoss, '0') > 0) {
+            entries.push({ accountId: row.account_id, asset: existingPosition.collateralAsset || 'FUTURES_USDT', direction: 'DEBIT', amount: debitLoss, balancePool: 'available' });
+            entries.push({ accountId: INSURANCE_FUND_ACCOUNT_ID, asset: existingPosition.collateralAsset || 'FUTURES_USDT', direction: 'CREDIT', amount: debitLoss, balancePool: 'available' });
+          }
+        }
+
+        if (entries.length > 0) {
+          await this.ledger.postTransaction({
+            accountId: row.account_id,
+            transactionType: 'FUTURES_PNL_REALIZED',
+            referenceId: pnlRef,
+            description: `Futures Position Reduction: ${cleanSymbol} ${positionSide} ${execQty} @ ${execPrice}`,
+            entries
+          }, tx);
+        }
+      }
+
+      // Calculate and debit maker trading fee for resting limit order
+      const feeResult = this.feeSvc.calculateExecutionFee(execQty, execPrice, true);
+      const tradeId = crypto.randomUUID();
+
+      if (decimalCompare(feeResult.feeAmount, '0') > 0) {
+        const feeAssetForDebit = existingPosition?.collateralAsset || collateralAsset || 'FUTURES_USDT';
+        const bal = await this.ledger.getBalance(row.account_id, feeAssetForDebit, tx);
+        const feeDebit = decimalCompare(bal.availableBalance, feeResult.feeAmount) >= 0 ? feeResult.feeAmount : bal.availableBalance;
+        if (decimalCompare(feeDebit, '0') > 0) {
+          await this.ledger.postTransaction({
+            accountId: row.account_id,
+            transactionType: 'TRADING_FEE' as any,
+            referenceId: `FUTURES-FEE-${tradeId}`,
+            description: `Futures Trading Fee (${feeResult.feeType}): ${cleanSymbol} order ${row.id}`,
+            entries: [
+              { accountId: row.account_id, asset: feeAssetForDebit, direction: 'DEBIT', amount: feeDebit, balancePool: 'available' },
+              { accountId: '11111111-1111-1111-1111-111111111111', asset: feeAssetForDebit, direction: 'CREDIT', amount: feeDebit, balancePool: 'available' }
+            ]
+          }, tx);
+        }
+      }
+
+      // Create trade execution record
+      executedTrade = {
+        id: tradeId,
+        orderId: row.id,
+        accountId: row.account_id,
+        market: 'FUTURES',
+        symbol: cleanSymbol,
+        side: row.side,
+        price: execPrice,
+        quantity: execQty,
+        quoteQuantity: decimalMultiply(execQty, execPrice),
+        fee: feeResult.feeAmount,
+        feeAsset: existingPosition?.collateralAsset || collateralAsset || 'FUTURES_USDT',
+        isMaker: true,
+        createdAt: new Date(),
+      };
+
+      await tx.query(
+        `INSERT INTO trades (
+          id, order_id, account_id, market, symbol, side, price, quantity, quote_quantity,
+          fee, fee_asset, is_maker, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [
+          executedTrade.id,
+          executedTrade.orderId,
+          executedTrade.accountId,
+          executedTrade.market,
+          executedTrade.symbol,
+          executedTrade.side,
+          executedTrade.price,
+          executedTrade.quantity,
+          executedTrade.quoteQuantity,
+          executedTrade.fee,
+          executedTrade.feeAsset,
+          executedTrade.isMaker,
+          executedTrade.createdAt,
+        ]
+      );
+
+      // Compute new filled and remaining quantities
+      const prevFilled = row.filled_quantity || row.filledQuantity || '0';
+      const updatedFilled = decimalAdd(prevFilled, execQty);
+      const updatedRemaining = decimalSubtract(totalQty, updatedFilled);
+      const newStatus: OrderStatus = decimalCompare(updatedRemaining, '0') <= 0 ? 'FILLED' : 'PARTIALLY_FILLED';
+
+      // Update order in database
+      await tx.query(
+        'UPDATE orders SET status = $1, filled_quantity = $2, remaining_quantity = $3, updated_at = NOW() WHERE id = $4',
+        [newStatus, updatedFilled, decimalCompare(updatedRemaining, '0') <= 0 ? '0' : updatedRemaining, row.id]
+      );
+
+      resultingOrder = {
+        id: row.id,
+        clientOrderId: row.client_order_id,
+        accountId: row.account_id,
+        market: 'FUTURES',
+        symbol: cleanSymbol,
+        side: row.side,
+        type: row.type,
+        price: cleanPrice,
+        stopPrice: row.stop_price,
+        quantity: totalQty,
+        filledQuantity: updatedFilled,
+        remainingQuantity: decimalCompare(updatedRemaining, '0') <= 0 ? '0' : updatedRemaining,
+        lockedAmount,
+        lockedAsset: collateralAsset,
+        status: newStatus,
+        timeInForce: row.time_in_force || 'GTC',
+        createdAt: new Date(row.created_at),
+        updatedAt: new Date(),
+      };
+
+      resultingFuturesOrder = {
+        id: row.fo_id,
+        orderId: row.id,
+        accountId: row.account_id,
+        symbol: cleanSymbol,
+        positionSide,
+        leverage,
+        marginMode,
+        reduceOnly: isReduceOnly,
+        closePosition: Boolean(row.close_position || row.closePosition),
+        createdAt: new Date(row.created_at),
+      };
+    });
+
+    if (!resultingOrder || !resultingFuturesOrder || !executedTrade) {
+      return null;
+    }
+
+    // ── Emit Domain Events strictly after successful commit ──────────────
+    try {
+      if (accountUserId) {
+        eventBus.publish({
+          id: crypto.randomUUID(),
+          type: 'futures.order.updated',
+          channel: 'user:orders',
+          userId: accountUserId,
+          symbol: resultingOrder.symbol,
+          timestamp: Date.now(),
+          version: '1.0.0',
+          payload: {
+            orderId: resultingOrder.id,
+            clientOrderId: resultingOrder.clientOrderId,
+            accountId: resultingOrder.accountId,
+            symbol: resultingOrder.symbol,
+            side: resultingOrder.side,
+            positionSide: resultingFuturesOrder.positionSide,
+            type: resultingOrder.type,
+            status: resultingOrder.status,
+            price: resultingOrder.price,
+            quantity: resultingOrder.quantity,
+            filledQuantity: resultingOrder.filledQuantity,
+            remainingQuantity: resultingOrder.remainingQuantity,
+            timestamp: Date.now(),
+          },
+        });
+      }
+
+      eventBus.publish({
+        id: crypto.randomUUID(),
+        type: 'futures.trade.executed',
+        channel: 'trades',
+        symbol: executedTrade.symbol,
+        timestamp: executedTrade.createdAt.getTime(),
+        version: '1.0.0',
+        payload: {
+          tradeId: executedTrade.id,
+          orderId: executedTrade.orderId,
+          accountId: executedTrade.accountId,
+          symbol: executedTrade.symbol,
+          side: executedTrade.side,
+          price: executedTrade.price,
+          quantity: executedTrade.quantity,
+          quoteQuantity: executedTrade.quoteQuantity,
+          fee: executedTrade.fee,
+          feeAsset: executedTrade.feeAsset,
+          isMaker: executedTrade.isMaker,
+          timestamp: executedTrade.createdAt.getTime(),
+        },
+      });
+
+      if (resultingPosition && accountUserId) {
+        eventBus.publish({
+          id: crypto.randomUUID(),
+          type: 'futures.position.updated',
+          channel: 'user:positions',
+          userId: accountUserId,
+          symbol: resultingPosition.symbol,
+          timestamp: Date.now(),
+          version: '1.0.0',
+          payload: {
+            positionId: resultingPosition.id,
+            accountId: resultingPosition.accountId,
+            symbol: resultingPosition.symbol,
+            side: resultingPosition.side,
+            quantity: resultingPosition.quantity,
+            entryPrice: resultingPosition.entryPrice,
+            markPrice: resultingPosition.markPrice,
+            liquidationPrice: resultingPosition.liquidationPrice,
+            leverage: resultingPosition.leverage,
+            marginMode: resultingPosition.marginMode,
+            initialMargin: resultingPosition.initialMargin,
+            maintenanceMargin: resultingPosition.maintenanceMargin,
+            realizedPnl: resultingPosition.realizedPnl,
+            status: resultingPosition.status,
+            timestamp: Date.now(),
+          },
+        });
+      }
+    } catch (evtErr: any) {
+      logger.warn('Failed to emit futures events for resting order', { error: evtErr.message });
+    }
+
+    return {
+      order: resultingOrder,
+      futuresOrder: resultingFuturesOrder,
+      position: resultingPosition,
+      trade: executedTrade,
+    };
   }
 
 

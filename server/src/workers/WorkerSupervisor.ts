@@ -1,6 +1,8 @@
 import { logger } from '../config/logger';
 import { liquidationWorker } from './LiquidationWorker';
 import { fundingWorker } from './FundingWorker';
+import { tpSlWorker } from './TpSlWorker';
+import { futuresLimitOrderWorker } from './FuturesLimitOrderWorker';
 import { reconciliationWorker } from './ReconciliationWorker';
 import { blockchainMonitorWorker } from './BlockchainMonitorWorker';
 import { depositCreditingWorker } from './DepositCreditingWorker';
@@ -44,6 +46,20 @@ export class WorkerSupervisor {
       start: () => fundingWorker.start(),
       stop: () => fundingWorker.stop(),
       getStatus: () => ({ isRunning: (fundingWorker as any).isRunning ?? false }),
+    });
+
+    this.register({
+      name: 'TpSlWorker',
+      start: () => tpSlWorker.start(),
+      stop: () => tpSlWorker.stop(),
+      getStatus: () => ({ isRunning: (tpSlWorker as any).isRunning ?? false }),
+    });
+
+    this.register({
+      name: 'FuturesLimitOrderWorker',
+      start: () => futuresLimitOrderWorker.start(),
+      stop: () => futuresLimitOrderWorker.stop(),
+      getStatus: () => ({ isRunning: (futuresLimitOrderWorker as any).isRunning ?? false }),
     });
 
     this.register({

@@ -14,9 +14,12 @@ export function syncOrderToCore(
     stopPrice: string | undefined,
     status: NormalizedOrderStatus,
     fee: string = '0',
-    executedQuantity: string = '0'
+    executedQuantity: string = '0',
+    remainingQuantity?: string,
+    averageFillPrice?: string
 ) {
-    if (!orderCoreService.getOrder(id)) {
+    const existing = orderCoreService.getOrder(id);
+    if (!existing) {
         orderCoreService.createOrder({
             id,
             userId,
@@ -28,15 +31,24 @@ export function syncOrderToCore(
             price,
             stopPrice,
             executedQuantity,
-            remainingQuantity: quantity,
-            averageFillPrice: '0',
+            remainingQuantity: remainingQuantity || quantity,
+            averageFillPrice: averageFillPrice || '0',
             status,
             fee,
             createdAt: Date.now(),
             updatedAt: Date.now()
         });
     } else {
-        orderCoreService.updateOrder({ id, status });
+        orderCoreService.updateOrder({
+            id,
+            status,
+            executedQuantity: executedQuantity !== undefined ? executedQuantity : existing.executedQuantity,
+            remainingQuantity: remainingQuantity !== undefined ? remainingQuantity : existing.remainingQuantity,
+            averageFillPrice: averageFillPrice !== undefined ? averageFillPrice : existing.averageFillPrice,
+            price: price !== undefined ? price : existing.price,
+            stopPrice: stopPrice !== undefined ? stopPrice : existing.stopPrice,
+            fee: fee !== undefined ? fee : existing.fee,
+        });
     }
 }
 

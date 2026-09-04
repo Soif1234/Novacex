@@ -3,22 +3,67 @@ import { orderCoreService } from "../../services/orders/OrderCoreService";
 import { useAuth } from "../../contexts/AuthContext";
 import { orderService as spotOrderService } from "../../services/OrderService";
 import { futuresOrderService } from "../../services/futures/FuturesOrderService";
+import { wsClient } from "../../services/websocket/wsClient";
 import { Button } from "../ui/Button";
 
 export function OpenOrders({ symbol }: { symbol?: string }) {
   const { user } = useAuth();
   const accountId = user?.id || 'demo-user-1';
-  const [orders, setOrders] = useState(orderCoreService.getOrders(accountId));
+  const [orders, setOrders] = useState(() => orderCoreService.getOrders(accountId));
   const [filterMarket, setFilterMarket] = useState<string>('ALL');
   const [filterSymbol, setFilterSymbol] = useState<string>('ALL');
   const [cancellingIds, setCancellingIds] = useState<Record<string, boolean>>({});
   const cancellingIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    const loadOrders = () => setOrders(orderCoreService.getOrders(accountId));
+    let isMounted = true;
+
+    const loadOrders = () => {
+      if (isMounted) {
+        setOrders(orderCoreService.getOrders(accountId));
+      }
+    };
+
     loadOrders();
+
+    const syncBackend = async () => {
+      try {
+        const promises: Promise<any>[] = [];
+        if (typeof spotOrderService?.fetchOrdersFromBackend === 'function') {
+          promises.push(spotOrderService.fetchOrdersFromBackend(accountId));
+        }
+        if (typeof futuresOrderService?.fetchOrdersFromBackend === 'function') {
+          promises.push(futuresOrderService.fetchOrdersFromBackend(accountId));
+        }
+        if (promises.length > 0) {
+          await Promise.allSettled(promises);
+          if (isMounted) {
+            setOrders(orderCoreService.getOrders(accountId));
+          }
+        }
+      } catch (err) {}
+    };
+
+    syncBackend();
+
     const unsubscribe = orderCoreService.subscribe(loadOrders);
-    return () => unsubscribe();
+
+    const unsubWs = typeof wsClient?.subscribe === 'function' ? wsClient.subscribe('user:orders', () => {
+      syncBackend();
+    }) : () => {};
+
+    const unsubStatus = typeof wsClient?.onStatusChange === 'function' ? wsClient.onStatusChange((status) => {
+      if (status === 'CONNECTED') {
+        syncBackend();
+      }
+    }) : () => {};
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+      unsubWs();
+      unsubStatus();
+    };
   }, [user, accountId]);
 
   const handleCancel = async (o: { id: string; market?: string }) => {

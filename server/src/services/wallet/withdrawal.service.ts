@@ -7,7 +7,7 @@ import { amlService, AmlService } from '../compliance/aml.service';
 import { withdrawalPolicyService } from './withdrawal-policy.service';
 import { auditService } from '../admin/audit.service';
 import { RecordAuditLogDto } from '../../models/admin.model';
-import { validateAmount, decimalNormalize, decimalAdd } from '../ledger/decimal';
+import { validateAmount, decimalNormalize, decimalAdd, decimalCompare, decimalIsPositive } from '../ledger/decimal';
 import { logger } from '../../config/logger';
 import { env } from '../../config/env';
 import { AppError } from '../../middleware/errorHandler';
@@ -88,7 +88,7 @@ export class WithdrawalService {
         throw new AppError(`Destination memo is required for ${network}`, 400, 'MISSING_MEMO');
       }
 
-      if (parseFloat(amount) < parseFloat(minWithdrawal)) {
+      if (decimalCompare(amount, String(minWithdrawal)) < 0) {
         throw new AppError(`Withdrawal amount is below minimum of ${minWithdrawal}`, 400, 'BELOW_MINIMUM');
       }
 
@@ -195,10 +195,10 @@ export class WithdrawalService {
 
   public async getWithdrawalsPendingReview(limit = 100): Promise<any[]> {
     const res = await this.database.query<any>(
-      `SELECT w.id, w.asset, w.network, w.amount, w.fee, w.destination_address as "destinationAddress", w.destination_memo as "destinationMemo", w.created_at as "createdAt", w.review_reason as "reviewReason", a.user_id as "userId"
+      `SELECT w.id, w.asset, w.network, w.amount, w.fee, w.destination_address as "destinationAddress", w.destination_memo as "destinationMemo", w.created_at as "createdAt", w.review_reason as "reviewReason", a.user_id as "userId", w.crypto_status as "cryptoStatus", w.status
        FROM withdrawals w
        JOIN accounts a ON w.account_id = a.id
-       WHERE w.crypto_status = 'PENDING_REVIEW'
+       WHERE w.crypto_status IN ('PENDING_REVIEW', 'READY_FOR_MANUAL_EXECUTION', 'UNKNOWN')
        ORDER BY w.created_at ASC
        LIMIT $1`,
       [limit]
@@ -648,7 +648,7 @@ export class WithdrawalService {
       entries: settleEntries
     }, txClient);
 
-    if (parseFloat(w.fee) > 0) {
+    if (w.fee && decimalIsPositive(String(w.fee))) {
       const feeEntries: any[] = [
         { accountId: w.account_id, asset: w.asset, direction: 'DEBIT', amount: w.fee, balancePool: 'locked' },
         { accountId: SYSTEM_VAULT, asset: w.asset, direction: 'CREDIT', amount: w.fee, balancePool: 'available' }
